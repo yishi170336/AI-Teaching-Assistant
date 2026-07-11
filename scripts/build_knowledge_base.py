@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
 
 from backend.app.config import settings
 from backend.app.rag.pipeline import build_knowledge_base
+from backend.app.rag.multimodal import BuildModelConfig
 
 
 def main() -> None:
@@ -18,6 +19,11 @@ def main() -> None:
     parser.add_argument("--knowledge-base", default="default", help="知识库标识")
     parser.add_argument("--chapter-limit", type=int, default=settings.initial_chapter_limit)
     parser.add_argument("--full", action="store_true", help="索引教材全部章节")
+    parser.add_argument(
+        "--without-multimodal-llm",
+        action="store_true",
+        help="不调用 DeepSeek 做语义清洗和电路图理解，仅运行可审计的本地降级流程",
+    )
     args = parser.parse_args()
 
     if args.knowledge_base == "default":
@@ -30,6 +36,16 @@ def main() -> None:
         output_dir,
         settings.embedding_model_path,
         chapter_limit=None if args.full else args.chapter_limit,
+        model_config=(
+            None
+            if args.without_multimodal_llm
+            else BuildModelConfig(
+                provider="deepseek",
+                model=settings.deepseek_model,
+                api_key=settings.deepseek_api_key,
+                base_url=settings.deepseek_base_url,
+            )
+        ),
     )
     print(json.dumps(meta, ensure_ascii=False, indent=2))
 

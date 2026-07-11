@@ -60,6 +60,7 @@ import {
   SessionSummary,
   SourceInfo,
   uploadKnowledgeFile,
+  rebuildKnowledgeBase,
 } from '../lib/api'
 import { ChatMode, useChatStore } from '../store/chatStore'
 
@@ -880,7 +881,7 @@ function StudentPageContent() {
 
   const uploadRequest: NonNullable<UploadProps['customRequest']> = async (options) => {
     try {
-      const result = await uploadKnowledgeFile(options.file as File, knowledgeBase)
+      const result = await uploadKnowledgeFile(options.file as File, knowledgeBase, modelConfig)
       options.onSuccess?.(result)
       toast.success(result.message)
       void refreshStatuses()
@@ -888,6 +889,16 @@ function StudentPageContent() {
       const detail = error instanceof Error ? error.message : '上传失败'
       options.onError?.(new Error(detail))
       toast.error(detail)
+    }
+  }
+
+  const rebuildCurrentKnowledgeBase = async () => {
+    try {
+      const result = await rebuildKnowledgeBase(knowledgeBase, modelConfig)
+      toast.success(result.message)
+      void refreshStatuses()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '知识库重建失败')
     }
   }
 
@@ -1001,6 +1012,14 @@ function StudentPageContent() {
           <p className="ant-upload-text">拖入教材或题库，或点击选择文件</p>
           <p className="ant-upload-hint">支持 PDF、Word、Markdown、Excel、JSON，单文件最大 80 MB</p>
         </Upload.Dragger>
+        <Button
+          block
+          icon={<Database size={16} />}
+          onClick={() => void rebuildCurrentKnowledgeBase()}
+          disabled={statuses.find((item) => item.id === knowledgeBase)?.state === 'building'}
+        >
+          使用当前模型重新构建已有资料
+        </Button>
         <div className="modal-note">
           <Check size={15} /> 新知识库构建期间可继续使用其他已就绪知识库
         </div>

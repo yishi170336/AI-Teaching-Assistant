@@ -35,10 +35,35 @@ def test_openai_compatible_client_builds_chat_completions_endpoint():
         base_url="https://api.deepseek.com/",
     )
     assert client.endpoint == "https://api.deepseek.com/chat/completions"
-    assert client._messages([
-        {"role": "user", "content": "题目", "images": ["private-image"]}
-    ]) == [{"role": "user", "content": "题目"}]
     asyncio.run(client.close())
+
+
+def test_openai_compatible_client_preserves_plain_text_messages():
+    messages = [
+        {"role": "system", "content": "You are a circuit tutor."},
+        {"role": "user", "content": "Analyze this circuit."},
+    ]
+
+    assert OpenAICompatibleClient._messages(messages) == messages
+
+
+def test_openai_compatible_client_builds_multimodal_image_url_content():
+    png_base64 = "iVBORw0KGgoAAAANSUhEUg=="
+
+    assert OpenAICompatibleClient._messages(
+        [{"role": "user", "content": "Analyze this circuit.", "images": [png_base64]}]
+    ) == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Analyze this circuit."},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{png_base64}"},
+                },
+            ],
+        }
+    ]
 
 
 def test_openai_stream_continues_after_length_finish_reason():

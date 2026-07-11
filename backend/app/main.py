@@ -20,7 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from backend.app.agents.workflow import CircuitTutorEngine
 from backend.app.config import settings
 from backend.app.rag.manager import KnowledgeBaseManager
-from backend.app.schemas import ChatRequest
+from backend.app.rag.multimodal import BuildModelConfig
+from backend.app.schemas import ChatRequest, KnowledgeBaseRebuildRequest
 from backend.app.services.memory import ConversationMemory
 from backend.app.services.ollama_client import OllamaClient
 from backend.app.services.openai_compatible_client import OpenAICompatibleClient
@@ -63,6 +64,7 @@ async def lifespan(_: FastAPI):
     yield
     await ollama.close()
     await memory.close()
+    knowledge_bases.close_all()
 
 
 app = FastAPI(
@@ -138,6 +140,38 @@ async def health() -> dict[str, Any]:
 @app.get("/api/kb/status")
 async def knowledge_base_status() -> dict[str, Any]:
     return {"knowledge_bases": knowledge_bases.statuses()}
+
+
+@app.post("/api/kb/rebuild")
+async def rebuild_knowledge_base(payload: KnowledgeBaseRebuildRequest) -> dict[str, Any]:
+    api_key = payload.api_key
+    base_url = payload.base_url
+    if payload.model_provider == "deepseek":
+        api_key = api_key or settings.deepseek_api_key
+        base_url = (base_url or settings.deepseek_base_url) if payload.api_key else settings.deepseek_base_url
+    elif payload.model_provider == "qwen":
+        api_key = api_key or settings.qwen_api_key
+        base_url = (base_url or settings.qwen_base_url) if payload.api_key else settings.qwen_base_url
+    config = BuildModelConfig(
+        provider=payload.model_provider,
+        model=payload.model,
+        api_key=api_key,
+        base_url=base_url,
+    )
+    try:
+        knowledge_bases.start_build(
+            payload.knowledge_base,
+            chapter_limit=payload.chapter_limit,
+            model_config=config if config.enabled else None,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "knowledge_base": payload.knowledge_base,
+        "state": "building",
+        "message": "多模态知识库已开始后台重建",
+    }
 
 
 @app.get("/api/sessions")
@@ -228,10 +262,10 @@ def select_model_client(payload: ChatRequest) -> tuple[Any, bool]:
 
     if payload.model_provider == "deepseek":
         api_key = payload.api_key or settings.deepseek_api_key
-        base_url = payload.base_url or settings.deepseek_base_url
+        base_url = (payload.base_url or settings.deepseek_base_url) if payload.api_key else settings.deepseek_base_url
     elif payload.model_provider == "qwen":
         api_key = payload.api_key or settings.qwen_api_key
-        base_url = payload.base_url or settings.qwen_base_url
+        base_url = (payload.base_url or settings.qwen_base_url) if payload.api_key else settings.qwen_base_url
     else:
         api_key = payload.api_key
         base_url = payload.base_url
@@ -412,6 +446,10 @@ async def upload(
     file: UploadFile = File(...),
     knowledge_base: str = Form("default"),
     rebuild: bool = Form(True),
+    model_provider: str = Form("deepseek"),
+    model: str = Form(""),
+    api_key: str = Form(""),
+    base_url: str = Form(""),
 ) -> dict[str, Any]:
     try:
         knowledge_base = knowledge_bases.validate_id(knowledge_base)
@@ -438,8 +476,25 @@ async def upload(
 
     indexable = suffix in {".pdf", ".md", ".txt", ".docx", ".xlsx", ".json"}
     if rebuild and indexable:
+        provided_api_key = bool(api_key.strip())
+        if model_provider == "deepseek":
+            api_key = api_key or settings.deepseek_api_key
+            base_url = (base_url or settings.deepseek_base_url) if provided_api_key else settings.deepseek_base_url
+        elif model_provider == "qwen":
+            api_key = api_key or settings.qwen_api_key
+            base_url = (base_url or settings.qwen_base_url) if provided_api_key else settings.qwen_base_url
+        build_model = BuildModelConfig(
+            provider=model_provider,
+            model=model.strip(),
+            api_key=api_key.strip(),
+            base_url=base_url.strip(),
+        )
         try:
-            knowledge_bases.start_build(knowledge_base, chapter_limit=None)
+            knowledge_bases.start_build(
+                knowledge_base,
+                chapter_limit=None,
+                model_config=build_model if build_model.enabled else None,
+            )
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
@@ -449,6 +504,7 @@ async def upload(
         "content_type": file.content_type or mimetypes.guess_type(original_name)[0],
         "knowledge_base": knowledge_base,
         "indexing": bool(rebuild and indexable),
+        "multimodal_model": f"{model_provider}/{model}" if model else "未配置，使用安全降级",
         "message": "文件已保存，知识库正在后台更新" if rebuild and indexable else "文件已保存",
     }
 

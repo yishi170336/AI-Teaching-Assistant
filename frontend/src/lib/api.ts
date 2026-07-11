@@ -191,13 +191,42 @@ export async function fetchKnowledgeBases(): Promise<KBStatus[]> {
   return (await response.json()).knowledge_bases || []
 }
 
-export async function uploadKnowledgeFile(file: File, knowledgeBase: string) {
+export async function uploadKnowledgeFile(
+  file: File,
+  knowledgeBase: string,
+  modelConfig: ModelConfig,
+) {
   const data = new FormData()
   data.append('file', file)
   data.append('knowledge_base', knowledgeBase)
   data.append('rebuild', 'true')
+  data.append('model_provider', modelConfig.provider)
+  data.append('model', modelConfig.model)
+  data.append('api_key', modelConfig.apiKey)
+  data.append('base_url', modelConfig.baseUrl)
   const response = await fetch('/api/upload', { method: 'POST', body: data })
   const result = await response.json()
   if (!response.ok) throw new Error(result.detail || result.error || '上传失败')
+  return result
+}
+
+export async function rebuildKnowledgeBase(
+  knowledgeBase: string,
+  modelConfig: ModelConfig,
+) {
+  const response = await fetch('/api/kb/rebuild', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      knowledge_base: knowledgeBase,
+      model_provider: modelConfig.provider,
+      model: modelConfig.model,
+      api_key: modelConfig.apiKey,
+      base_url: modelConfig.baseUrl,
+      chapter_limit: null,
+    }),
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.detail || result.error || '重建失败')
   return result
 }

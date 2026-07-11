@@ -35,6 +35,7 @@ class Settings:
     ollama_model: str = os.getenv("OLLAMA_MODEL", "qwen3.5:2b")
     deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
     deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
     qwen_api_key: str = os.getenv("QWEN_API_KEY", os.getenv("DASHSCOPE_API_KEY", ""))
     qwen_base_url: str = os.getenv(
         "QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -49,6 +50,18 @@ class Settings:
     max_upload_mb: int = int(os.getenv("MAX_UPLOAD_MB", "80"))
     max_attachment_mb: int = int(os.getenv("MAX_ATTACHMENT_MB", "20"))
     max_chat_attachments: int = int(os.getenv("MAX_CHAT_ATTACHMENTS", "5"))
+    qdrant_url: str = os.getenv("QDRANT_URL", "")
+    qdrant_api_key: str = os.getenv("QDRANT_API_KEY", "")
+    neo4j_uri: str = os.getenv("NEO4J_URI", "")
+    neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")
+    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "")
+    neo4j_database: str = os.getenv("NEO4J_DATABASE", "neo4j")
+    sina_endpoint: str = os.getenv("SINA_ENDPOINT", "")
+    pdf_extract_kit_output_dir: str = os.getenv("PDF_EXTRACT_KIT_OUTPUT_DIR", "")
+    clip_model_path: str = os.getenv("CLIP_MODEL_PATH", "")
+    rerank_model_path: str = os.getenv("RERANK_MODEL_PATH", "")
+    multimodal_image_limit: int = int(os.getenv("MULTIMODAL_IMAGE_LIMIT", "0"))
+    multimodal_min_image_area: int = int(os.getenv("MULTIMODAL_MIN_IMAGE_AREA", "12000"))
     frontend_origins: tuple[str, ...] = tuple(
         value.strip()
         for value in os.getenv(

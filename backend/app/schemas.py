@@ -76,3 +76,35 @@ class KBStatus(BaseModel):
     documents: int = 0
     chunks: int = 0
     message: str = ""
+
+
+class KnowledgeBaseRebuildRequest(BaseModel):
+    knowledge_base: str = Field(default="default", min_length=1, max_length=48)
+    model_provider: Literal["ollama", "deepseek", "qwen", "custom"] = "deepseek"
+    model: str = Field(min_length=1, max_length=128)
+    api_key: str = Field(default="", max_length=512)
+    base_url: str = Field(default="", max_length=512)
+    chapter_limit: int | None = Field(default=None, ge=1)
+
+    @field_validator("knowledge_base")
+    @classmethod
+    def valid_knowledge_base(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,48}", value):
+            raise ValueError("知识库名称仅允许字母、数字、连字符和下划线")
+        return value
+
+    @field_validator("model", "api_key", "base_url")
+    @classmethod
+    def strip_rebuild_fields(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_endpoint(self) -> "KnowledgeBaseRebuildRequest":
+        if self.base_url:
+            parsed = urlparse(self.base_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("API Base URL 必须是有效的 HTTP(S) 地址")
+        if self.model_provider == "custom" and (not self.api_key or not self.base_url):
+            raise ValueError("自定义 API 必须填写 API Key 和 Base URL")
+        return self

@@ -100,7 +100,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start.ps1
 - 通义千问 API：默认提供 `qwen-plus`、`qwen-max` 和 `qwen-turbo`，Base URL 可按百炼工作空间修改。
 - 自定义 API：填写任意兼容 OpenAI Chat Completions 的模型名称、API Key 和 Base URL。
 
-页面输入的模型配置和 API Key 会写入当前浏览器的 `localStorage`，不会写入项目文件；配置弹窗提供清除已保存密钥的入口。公用电脑不建议保存云端密钥。也可以在 `.env` 配置 `DEEPSEEK_API_KEY`、`QWEN_API_KEY` 及对应 Base URL。使用云端模型时，题目、最近对话和检索上下文会发送到所选服务；附件图片仍先由本地视觉节点提取结构化题目蓝图。
+页面输入的模型配置和 API Key 会写入当前浏览器的 `localStorage`，不会写入项目文件；配置弹窗提供清除已保存密钥的入口。公用电脑不建议保存云端密钥。也可以在 `.env` 配置 `DEEPSEEK_API_KEY`、`QWEN_API_KEY` 及对应 Base URL。使用云端多模态模型时，题目、最近对话、检索上下文和必要的电路图会发送到所选服务。
 
 ## 环境重建
 
@@ -139,12 +139,40 @@ docker compose up -d redis
 
 1. 选择默认知识库，或输入英文标识创建独立知识库。
 2. 上传 PDF、Word、Markdown、文本、Excel 或 JSON。
-3. 后端在后台执行清洗、Chunking、Embedding 和索引重载。
+3. 后端把当前选中的模型配置仅传给本次后台任务，执行语义清洗、版面解析、电路图理解、Chunking、Embedding 和索引重载；API Key 不写入知识库产物。
 4. `/api/kb/status` 返回 `building`、`ready` 或 `error`。
+
+已有资料无需重新上传：在同一弹窗点击“使用当前模型重新构建已有资料”即可启动 v2 多模态重建。
 
 Excel 题库至少需要以下列：`题号`、`题目文本`、`知识点标签`、`标准答案`、`易错点`。其余支持列为 `难度`、`题型`、`解题步骤`。
 
-学生交互栏的回形针按钮可上传题目图片或文档附件。图片会由本地 `qwen3.5:2b` 视觉能力识别题干、参数、连接关系和知识点，再进入答疑或同类出题工作流；附件和识别过程均保留在本机。
+学生交互栏的回形针按钮可上传题目图片或文档附件。图片会由当前选择且支持视觉输入的模型识别题干、参数、连接关系和知识点，再进入答疑或同类出题工作流；选择远程模型时图片会发送到对应 API。
+
+## 多模态图文知识库（v2）
+
+新版建库同时产出以下可审计数据：
+
+- `cleaning_audit.json`：DeepSeek/规则对每页的保留或丢弃决定及原因，原 PDF 永不物理修改。
+- `multimodal_elements.jsonl`：文本、公式、表格、图片、电路图的页码、bbox、阅读顺序、原图路径和内容哈希。
+- `artifacts/`：从 PDF 提取的原始图片。
+- `knowledge_graph.json`：Chunk—概念—电路元件关系；配置 Neo4j 后会同步到图数据库。
+- `qdrant/`：Linux/macOS 未配置 `QDRANT_URL` 时可使用 Qdrant 嵌入式持久化；同时保留 `vectors.faiss` 兼容回退。
+
+完整处理顺序为：语义清洗 → PDF-Extract-Kit 结构结果（若已配置）/PyMuPDF 可审计降级 → SINA 电路识别（若已配置）/多模态模型与 OpenCV 降级 → Netlist/描述融合 → 文本与可选 CLIP 图片向量 → Qdrant + BM25 + 本地图谱/Neo4j → 融合重排。检索命中的电路图会和结构化描述一起交给答疑模型。
+
+PDF-Extract-Kit 和 SINA 依赖较重，建议部署成独立 GPU worker，不要安装到 FastAPI 环境：
+
+1. PDF worker 将每本书结果导出为 `<PDF文件名不含扩展名>.json`，在 `.env` 设置 `PDF_EXTRACT_KIT_OUTPUT_DIR`。系统兼容 `elements` 或 `content_list` 列表，并读取 `page/page_idx`、`type/category`、`bbox`、`text/content`。
+2. SINA worker 暴露 `POST multipart/form-data`，字段名为 `image`，返回 `components`、`nets`、`netlist`、`description` 和 `confidence`，在 `.env` 设置 `SINA_ENDPOINT`。
+3. 设置本地 `CLIP_MODEL_PATH` 后建立独立图片向量集合；设置 `RERANK_MODEL_PATH` 后启用 CrossEncoder 重排。未配置时图片的 VLM 结构描述仍可被文本向量检索。
+
+Qdrant 和 Neo4j 可用 Docker 启动：
+
+```powershell
+docker compose up -d qdrant neo4j
+```
+
+随后设置 `QDRANT_URL=http://127.0.0.1:6333`、`NEO4J_URI=bolt://127.0.0.1:7687` 和 Neo4j 密码。若只做本机小规模验证，可不启动它们：Linux/macOS 使用 Qdrant 嵌入式模式，图检索使用 `knowledge_graph.json`；Windows 为避免嵌入式 Qdrant 与 Torch/FAISS 的本地运行库冲突，默认直接使用同一批向量的 FAISS 兼容索引，配置 Qdrant 服务地址后自动切换为 Qdrant 在线查询。
 
 ## 核心 API
 
@@ -177,6 +205,7 @@ Excel 题库至少需要以下列：`题号`、`题目文本`、`知识点标签
 - `file`：上传文件。
 - `knowledge_base`：默认 `default`。
 - `rebuild`：默认 `true`。
+- `model_provider`、`model`、`api_key`、`base_url`：本次多模态建库使用的模型配置；网页会自动提交当前选择。
 
 ### 其他
 
@@ -186,6 +215,7 @@ Excel 题库至少需要以下列：`题号`、`题目文本`、`知识点标签
 - `GET /api/sessions/{session_id}`
 - `DELETE /api/sessions/{session_id}`（同时删除该会话的附件）
 - `GET /api/kb/status`
+- `POST /api/kb/rebuild`（使用当前模型配置重建已有资料）
 - `GET /api/teacher/status`
 
 ## 测试与诊断

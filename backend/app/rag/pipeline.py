@@ -14,9 +14,17 @@ import fitz
 import numpy as np
 from docx import Document
 from openpyxl import load_workbook
-from sentence_transformers import SentenceTransformer
 
+from backend.app.config import settings
 from backend.app.rag.models import PageDocument, TextChunk
+from backend.app.rag.multimodal import (
+    BuildModelConfig,
+    LayoutElement,
+    build_local_knowledge_graph,
+    enhance_pdf,
+    multimodal_chunks,
+)
+from backend.app.rag.stores import build_qdrant_indexes, sync_neo4j_graph
 
 
 logger = logging.getLogger(__name__)
@@ -46,6 +54,25 @@ TAG_KEYWORDS = (
     "欧姆定律",
     "基尔霍夫定律",
     "戴维南定理",
+    "诺顿定理",
+    "叠加定理",
+    "节点电压法",
+    "网孔电流法",
+    "KCL",
+    "KVL",
+    "正弦稳态",
+    "相量",
+    "复阻抗",
+    "感抗",
+    "容抗",
+    "RLC",
+    "谐振",
+    "有功功率",
+    "无功功率",
+    "视在功率",
+    "功率因数",
+    "运算放大器",
+    "负反馈",
 )
 
 
@@ -144,8 +171,15 @@ def extract_pdf(path: Path, chapter_limit: int | None = None) -> list[PageDocume
             elif level >= 2:
                 current_section = title
         text = clean_page_text(raw_text, repeated_noise)
-        if len(text) < 30:
+        page_object = document[page_number - 1]
+        has_visual_content = bool(page_object.get_images(full=True)) or len(page_object.get_drawings()) >= 3
+        has_formula_content = bool(
+            re.search(r"[=+−±√∫ΣΩπ^_].*[A-Za-z0-9]|[A-Za-z0-9].*[=+−±√∫ΣΩπ^_]", text)
+        )
+        if len(text) < 30 and not has_visual_content and not has_formula_content:
             continue
+        if not text:
+            text = "[本页主要包含电路图、公式或其他图形内容]"
         page_docs.append(
             PageDocument(
                 text=text,
@@ -371,6 +405,12 @@ def chunk_documents(documents: Iterable[PageDocument], max_chars: int = 900) -> 
                     page_end=document.page,
                     doc_type=document.doc_type,
                     knowledge_tags=_knowledge_tags(text, document.section),
+                    element_type=document.element_type,
+                    bbox=document.bbox,
+                    parent_id=document.parent_id,
+                    image_path=document.image_path,
+                    content_hash=document.content_hash,
+                    multimodal=document.extra,
                 )
             )
             overlap = text[-140:] if len(text) > 140 else ""
@@ -437,6 +477,9 @@ def build_knowledge_base(
     embedding_model_path: Path,
     *,
     chapter_limit: int | None = None,
+    model_config: BuildModelConfig | None = None,
+    knowledge_base_id: str | None = None,
+    sync_graph_store: bool = True,
 ) -> dict[str, Any]:
     resources_dir = resources_dir.resolve()
     output_dir = output_dir.resolve()
@@ -446,6 +489,8 @@ def build_knowledge_base(
 
     documents: list[PageDocument] = []
     questions: list[dict[str, Any]] = []
+    elements: list[LayoutElement] = []
+    cleaning_audits: list[dict[str, Any]] = []
     source_files = [
         path for path in sorted(resources_dir.iterdir())
         if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
@@ -454,7 +499,17 @@ def build_knowledge_base(
         suffix = path.suffix.lower()
         if suffix == ".pdf":
             extracted = extract_pdf(path, chapter_limit)
+            extracted, pdf_elements, audit = enhance_pdf(
+                path,
+                extracted,
+                output_dir,
+                model_config=model_config,
+            )
             documents.extend(extracted)
+            elements.extend(pdf_elements)
+            cleaning_audits.extend(
+                {**item, "source": path.name} for item in audit
+            )
             _write_clean_markdown(path, extracted, cleaned_dir)
         elif suffix in {".md", ".txt"}:
             extracted = extract_markdown_or_text(path)
@@ -474,7 +529,7 @@ def build_knowledge_base(
         json.dumps(structured_questions, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    chunks = chunk_documents(documents) + question_chunks(questions)
+    chunks = chunk_documents(documents) + multimodal_chunks(elements) + question_chunks(questions)
     if not chunks:
         raise RuntimeError(f"在 {resources_dir} 中没有提取到可索引内容")
 
@@ -483,6 +538,26 @@ def build_knowledge_base(
         "\n".join(json.dumps(chunk.to_dict(), ensure_ascii=False) for chunk in chunks),
         encoding="utf-8",
     )
+    (output_dir / "multimodal_elements.jsonl").write_text(
+        "\n".join(json.dumps(element.to_dict(), ensure_ascii=False) for element in elements),
+        encoding="utf-8",
+    )
+    (output_dir / "cleaning_audit.json").write_text(
+        json.dumps(cleaning_audits, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    graph = build_local_knowledge_graph(chunks)
+    (output_dir / "knowledge_graph.json").write_text(
+        json.dumps(graph, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    if settings.qdrant_url:
+        # Establish native-module import order before Torch on Windows.
+        import qdrant_client  # noqa: F401
+
+    # Import lazily: loading Torch/OpenMP at API import time is expensive and
+    # can conflict with unrelated native extensions on Windows.
+    from sentence_transformers import SentenceTransformer
 
     model = SentenceTransformer(str(embedding_model_path), device="cpu")
     embedding_texts = [
@@ -508,8 +583,16 @@ def build_knowledge_base(
     serialized_index = faiss.serialize_index(index)
     (output_dir / "vectors.faiss").write_bytes(serialized_index.tobytes())
 
+    qdrant_status = build_qdrant_indexes(output_dir, chunks, embeddings)
+    neo4j_status = (
+        sync_neo4j_graph(knowledge_base_id or output_dir.name, graph)
+        if sync_graph_store
+        else {"enabled": False, "reason": "deferred until atomic index activation"}
+    )
+
     metadata = {
         "state": "populated",
+        "schema_version": "2.0-multimodal",
         "resource_dir": str(resources_dir),
         "embedding_model": str(embedding_model_path),
         "dimension": int(embeddings.shape[1]),
@@ -517,6 +600,18 @@ def build_knowledge_base(
         "text_pages": len(documents),
         "questions": len(questions),
         "chunks": len(chunks),
+        "layout_elements": len(elements),
+        "circuit_diagrams": sum(item.element_type == "circuit" for item in elements),
+        "formula_elements": sum(item.element_type == "formula" for item in elements),
+        "table_elements": sum(item.element_type == "table" for item in elements),
+        "discarded_pages": sum(not item.get("keep", True) for item in cleaning_audits),
+        "knowledge_graph": {"nodes": len(graph["nodes"]), "edges": len(graph["edges"]), "neo4j": neo4j_status},
+        "qdrant": qdrant_status,
+        "vision_model": (
+            f"{model_config.provider}/{model_config.model}"
+            if model_config and model_config.enabled
+            else "not-configured (safe fallback)"
+        ),
         "chapter_limit": chapter_limit,
         "sources": [path.name for path in source_files],
     }

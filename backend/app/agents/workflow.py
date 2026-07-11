@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import difflib
 import hashlib
 import json
@@ -513,7 +514,8 @@ class CircuitTutorEngine:
                 "拓扑、已知量与待求量必须分别提取，不能只写宽泛的RLC；看不清处标注不确定，禁止补造。"
             )
             try:
-                vision_text = await self.ollama.chat(
+                vision_client = state.get("llm") or self.ollama
+                vision_text = await vision_client.chat(
                     [{"role": "user", "content": prompt, "images": images}],
                     temperature=0.05,
                     reasoning_budget=160,
@@ -610,8 +612,20 @@ class CircuitTutorEngine:
             f"课程资料：\n{context or '未检索到资料'}"
         )
         user_message: dict[str, Any] = {"role": "user", "content": user}
-        if state.get("attachment_images"):
-            user_message["images"] = state["attachment_images"]
+        images = list(state.get("attachment_images", []))
+        retriever = self.knowledge_bases.get(state.get("knowledge_base", "default"))
+        for hit in state.get("hits", []):
+            relative = hit.chunk.image_path
+            if not relative or len(images) >= 4:
+                continue
+            image_path = (retriever.index_dir / relative).resolve()
+            if retriever.index_dir.resolve() not in image_path.parents or not image_path.is_file():
+                continue
+            # Knowledge-base artifacts were already bounded during ingestion.
+            if image_path.stat().st_size <= 5 * 1024 * 1024:
+                images.append(base64.b64encode(image_path.read_bytes()).decode("ascii"))
+        if images:
+            user_message["images"] = images
         return {"answer_messages": [{"role": "system", "content": system}, user_message]}
 
     async def _answer_llm(self, state: AgentState) -> AgentState:
