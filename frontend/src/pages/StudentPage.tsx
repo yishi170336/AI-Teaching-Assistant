@@ -380,6 +380,7 @@ function SourceCard({ source, index }: { source: SourceInfo; index: number }) {
 function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate: () => void }) {
   const activeSources = useChatStore((state) => state.activeSources)
   const knowledgeBase = useChatStore((state) => state.knowledgeBase)
+  const defaultKnowledgeBase = useChatStore((state) => state.defaultKnowledgeBase)
   const modelProvider = useChatStore((state) => state.modelConfig.provider)
   const mode = useChatStore((state) => state.mode)
   const messages = useChatStore((state) => state.messages)
@@ -401,7 +402,7 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
       <div className="kb-summary-card">
         <span className="kb-icon">{quizContext ? <BrainCircuit size={18} /> : <Database size={18} />}</span>
         <div>
-          <strong>{quizContext ? '原题驱动出题' : knowledgeBase === 'default' ? '默认课程知识库' : knowledgeBase}</strong>
+          <strong>{quizContext ? '原题驱动出题' : knowledgeBase === defaultKnowledgeBase ? '默认课程知识库' : knowledgeBase}</strong>
           <span>{quizContext ? '会话上下文 · 不检索知识库' : `${current?.chunks || 0} 个文本块 · ${current?.documents || 0} 份资料`}</span>
         </div>
         <span className={`kb-state ${quizContext ? 'ready' : current?.state || 'missing'}`}>
@@ -1005,7 +1006,9 @@ function StudentPageContent() {
   const setMode = useChatStore((state) => state.setMode)
   const send = useChatStore((state) => state.send)
   const knowledgeBase = useChatStore((state) => state.knowledgeBase)
+  const defaultKnowledgeBase = useChatStore((state) => state.defaultKnowledgeBase)
   const setKnowledgeBase = useChatStore((state) => state.setKnowledgeBase)
+  const setDefaultKnowledgeBase = useChatStore((state) => state.setDefaultKnowledgeBase)
   const modelConfig = useChatStore((state) => state.modelConfig)
   const setModelConfig = useChatStore((state) => state.setModelConfig)
   const loadSession = useChatStore((state) => state.loadSession)
@@ -1083,13 +1086,32 @@ function StudentPageContent() {
   const kbOptions = useMemo(() => {
     const base = statuses.map((item) => ({
       value: item.id,
-      label: item.id === 'default' ? '默认课程知识库' : item.id,
+      label: item.id === defaultKnowledgeBase ? `${item.id}（默认课程）` : item.id,
     }))
     if (!base.some((item) => item.value === knowledgeBase)) {
-      base.push({ value: knowledgeBase, label: knowledgeBase })
+      base.push({
+        value: knowledgeBase,
+        label: knowledgeBase === defaultKnowledgeBase ? `${knowledgeBase}（默认课程）` : knowledgeBase,
+      })
     }
     return base
-  }, [statuses, knowledgeBase])
+  }, [statuses, knowledgeBase, defaultKnowledgeBase])
+
+  const defaultKbOptions = useMemo(() => statuses.map((item) => ({
+    value: item.id,
+    label: item.id === defaultKnowledgeBase ? `${item.id}（当前默认）` : item.id,
+    disabled: item.state !== 'ready',
+  })), [statuses, defaultKnowledgeBase])
+
+  const chooseDefaultKnowledgeBase = (id: string) => {
+    const target = statuses.find((item) => item.id === id)
+    if (!target || target.state !== 'ready') {
+      toast.warning('只有已就绪的知识库可以设为默认课程知识库')
+      return
+    }
+    setDefaultKnowledgeBase(id)
+    toast.success(`已将 ${id} 设为默认课程知识库`)
+  }
 
   const ask = (prompt: string, preferredMode?: ChatMode) => {
     if (preferredMode) setMode(preferredMode)
@@ -1276,8 +1298,27 @@ function StudentPageContent() {
           </div>
         </div>
         <div className="modal-section">
+          <label>默认课程知识库</label>
+          <Select
+            value={defaultKnowledgeBase}
+            options={defaultKbOptions}
+            onChange={chooseDefaultKnowledgeBase}
+            placeholder="选择默认课程知识库"
+            aria-label="选择默认课程知识库"
+            style={{ width: '100%' }}
+          />
+          <p className="modal-field-help">重新打开学生端或开始新会话时优先使用；该设置保存在当前浏览器中。</p>
+        </div>
+        <div className="modal-section">
           <label>当前目标知识库</label>
-          <Select value={knowledgeBase} options={kbOptions} onChange={setKnowledgeBase} style={{ width: '100%' }} />
+          <Select
+            value={knowledgeBase}
+            options={kbOptions}
+            onChange={setKnowledgeBase}
+            aria-label="选择当前目标知识库"
+            style={{ width: '100%' }}
+          />
+          <p className="modal-field-help">上传与重建仅作用于这里选择的知识库，不会改变上面的默认设置。</p>
         </div>
         <div className="new-kb-row">
           <Input

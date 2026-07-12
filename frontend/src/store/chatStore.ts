@@ -29,6 +29,7 @@ export type PendingAttachment = {
 const sessionKey = 'circuitmind-session-id'
 const studentKey = 'circuitmind-student-id'
 const modelConfigKey = 'circuitmind-model-config'
+const defaultKnowledgeBaseKey = 'circuitmind-default-knowledge-base'
 
 const defaultModelConfig: ModelConfig = {
   provider: 'ollama',
@@ -85,11 +86,19 @@ function getModelConfig(): ModelConfig {
   }
 }
 
+function getDefaultKnowledgeBase(): string {
+  const stored = localStorage.getItem(defaultKnowledgeBaseKey)?.trim() || ''
+  return /^[A-Za-z0-9_-]{1,48}$/.test(stored) ? stored : 'default'
+}
+
+const initialKnowledgeBase = getDefaultKnowledgeBase()
+
 type ChatState = {
   studentId: string
   sessionId: string
   mode: ChatMode
   knowledgeBase: string
+  defaultKnowledgeBase: string
   modelConfig: ModelConfig
   messages: ChatMessage[]
   streaming: boolean
@@ -100,6 +109,7 @@ type ChatState = {
   controller?: AbortController
   setMode: (mode: ChatMode) => void
   setKnowledgeBase: (id: string) => void
+  setDefaultKnowledgeBase: (id: string) => void
   setModelConfig: (config: ModelConfig) => void
   addAttachments: (files: File[]) => Promise<void>
   removeAttachment: (localId: string) => void
@@ -113,7 +123,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   studentId: getStudentId(),
   sessionId: getSessionId(),
   mode: 'auto',
-  knowledgeBase: 'default',
+  knowledgeBase: initialKnowledgeBase,
+  defaultKnowledgeBase: initialKnowledgeBase,
   modelConfig: getModelConfig(),
   messages: [],
   streaming: false,
@@ -123,6 +134,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingAttachments: [],
   setMode: (mode) => set({ mode }),
   setKnowledgeBase: (knowledgeBase) => set({ knowledgeBase }),
+  setDefaultKnowledgeBase: (defaultKnowledgeBase) => {
+    if (!/^[A-Za-z0-9_-]{1,48}$/.test(defaultKnowledgeBase)) return
+    localStorage.setItem(defaultKnowledgeBaseKey, defaultKnowledgeBase)
+    set({ defaultKnowledgeBase, knowledgeBase: defaultKnowledgeBase })
+  },
   setModelConfig: (modelConfig) => {
     const normalized = { ...modelConfig, model: canonicalModel(modelConfig.provider, modelConfig.model) }
     localStorage.setItem(modelConfigKey, JSON.stringify(normalized))
@@ -309,6 +325,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const sessionId = `student-${crypto.randomUUID()}`
     localStorage.setItem(sessionKey, sessionId)
     get().controller?.abort()
-    set({ sessionId, messages: [], streaming: false, stage: '', activeSources: [], pendingAttachments: [], controller: undefined })
+    set({
+      sessionId,
+      knowledgeBase: get().defaultKnowledgeBase,
+      messages: [],
+      streaming: false,
+      stage: '',
+      activeSources: [],
+      pendingAttachments: [],
+      controller: undefined,
+    })
   },
 }))

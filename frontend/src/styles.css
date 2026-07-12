@@ -311,7 +311,9 @@ button { color: inherit; }
 .modal-heading h2 { margin: 1px 0 5px; color: #173f42; font-size: 18px; }
 .modal-heading p { margin: 0; color: #7d918e; font-size: 11px; line-height: 1.6; }
 .modal-section { margin-top: 21px; }
+.modal-section + .modal-section { margin-top: 14px; }
 .modal-section label { display: block; margin-bottom: 7px; color: #42615f; font-size: 10px; font-weight: 800; }
+.modal-field-help { margin: 6px 2px 0; color: #7b918e; font-size: 10px; line-height: 1.55; }
 .new-kb-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: 10px; }
 .kb-dragger { display: block; margin-top: 17px; }
 .kb-dragger .ant-upload-drag { padding: 9px; background: #f6faf8; border-color: #bcd9d3; }
