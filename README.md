@@ -4,8 +4,8 @@
 
 已跑通的链路：
 
-- 默认使用本地 Ollama `qwen3.5:2b`；可切换其他已安装 Ollama 模型，或接入 DeepSeek、通义千问和自定义 OpenAI 兼容 API。私有思考字段不会返回前端。
-- LangGraph 编排的路由 Agent、答疑 Agent、检索 Agent、出题 Agent 和 SymPy 验算 Agent；检索 Agent 仅服务答疑链路。
+- Ollama 是可选服务：可切换已安装的本地模型，或接入 DeepSeek、通义千问和自定义 OpenAI 兼容 API；Ollama 未启动时后端和学生端仍可运行，并优先使用已配置的云模型。私有思考字段不会返回前端。
+- LangGraph 编排的大模型路由 Agent、答疑 Agent、检索 Agent、出题 Agent、学习规划 Agent 和 SymPy 验算 Agent；学习规划会结合知识库资料生成可执行路线。
 - 图片出题先提取“电路拓扑、已知量、特殊条件、待求量”蓝图；连续“再出一道”会沿用最近生成题，同类题不调用知识库检索并必须通过同构校验。
 - 教材清洗、章节/段落语义切分、章/节/页码元数据、结构化题库、384 维向量化和 populated FAISS 索引。
 - 向量语义检索 + BM25 关键词检索 + 规则重排。
@@ -15,6 +15,8 @@
 - React + TypeScript + Ant Design + Zustand + KaTeX 学生端，含 LaTeX 定界符容错预处理。
 - 右上角模型选择器动态读取本机 Ollama 模型；所选模型与云端 API 配置会保存在当前浏览器，也可通过后端环境变量配置。
 - 左侧“最近学习”读取持久化会话列表，支持点击恢复历史对话；刷新页面后会自动恢复当前会话。
+- 学生端知识图谱可视化展示知识点—教材/题库片段关系；检索依据卡展示摘要、知识标签和向量/BM25/图谱评分组成。
+- 答疑和出题内容均可加入持久化错题本；归档前自动提取知识点，错题页可按薄弱点发起知识补全与巩固规划。
 
 ## 当前数据成果
 
@@ -48,10 +50,12 @@ flowchart LR
   API --> R{路由 Agent}
   R -->|答疑| A[答疑 Agent]
   R -->|出题| Q[出题 Agent]
+  R -->|学习规划| LP[学习规划 Agent]
   A --> W[Query 改写]
   Q --> K[原题或最近题蓝图提取]
   W --> H[向量 + BM25 + Rerank]
   H --> V[(FAISS + Chunk 元数据)]
+  LP --> H
   A --> L[Ollama qwen3.5:2b]
   K --> L
   Q --> P[知识点校验 + 会话去重 + SymPy 验算]
@@ -60,11 +64,13 @@ flowchart LR
 
 ## 直接启动
 
-确保 Ollama 已运行且存在 `qwen3.5:2b`：
+若使用本地模型，可启动 Ollama 并确认存在可用模型：
 
 ```powershell
 ollama list
 ```
+
+Ollama 未启动不会阻止程序启动；可以先在页面配置云端 API，后续启动 Ollama 后重新打开模型弹窗即可选择刚发现的本地模型。
 
 模型权重不会提交到 GitHub。首次运行先下载项目使用的嵌入模型：
 
@@ -97,7 +103,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start.ps1
 
 - 本地 Ollama：自动显示 `ollama list` 中已经安装的模型。
 - DeepSeek API：默认提供 `deepseek-v4-flash` 和 `deepseek-v4-pro`。
-- 通义千问 API：默认优先提供支持图片问答的 `qwen3-vl-plus`，并保留 `qwen-plus`、`qwen-max` 和 `qwen-turbo`；Base URL 可按百炼工作空间修改。
+- 通义千问 API：模型下拉表提供 `Qwen3.7-Plus`、`Qwen3.7-Max`、`qwen-vl-max`、`qwen3-vl-8b-instruct`、`qwen3-vl-plus`、`qwen3-vl-flash` 和 `qwen3-vl-embedding`；Base URL 可按百炼工作空间修改。
 - 自定义 API：填写任意兼容 OpenAI Chat Completions 的模型名称、API Key 和 Base URL。
 
 页面输入的模型配置和 API Key 会写入当前浏览器的 `localStorage`，不会写入项目文件；配置弹窗提供清除已保存密钥的入口。公用电脑不建议保存云端密钥。也可以在 `.env` 配置 `DEEPSEEK_API_KEY`、`QWEN_API_KEY` 及对应 Base URL。使用云端多模态模型时，题目、最近对话、检索上下文和必要的电路图会发送到所选服务。
@@ -215,7 +221,11 @@ docker compose up -d qdrant redis
 - `GET /api/sessions/{session_id}`
 - `DELETE /api/sessions/{session_id}`（同时删除该会话的附件）
 - `GET /api/kb/status`
+- `GET /api/kb/{knowledge_base}/graph`
 - `POST /api/kb/rebuild`（使用当前模型配置重建已有资料）
+- `GET /api/mistakes?student_id=...`
+- `POST /api/mistakes`（调用当前模型提取知识点后归档）
+- `DELETE /api/mistakes/{mistake_id}?student_id=...`
 - `GET /api/teacher/status`
 
 ## 测试与诊断

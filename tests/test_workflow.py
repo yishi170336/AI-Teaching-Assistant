@@ -173,6 +173,31 @@ def test_quiz_graph_has_no_knowledge_base_retrieval_node():
     assert "generate_quiz" in graph.nodes
 
 
+def test_learning_plan_graph_has_analysis_retrieval_and_generation_nodes():
+    engine = object.__new__(CircuitTutorEngine)
+    graph = engine._build_plan_graph().get_graph()
+    assert "analyze_learning_goal" in graph.nodes
+    assert "retrieve_learning_materials" in graph.nodes
+    assert "generate_learning_plan" in graph.nodes
+
+
+def test_router_uses_model_to_select_learning_plan_intent():
+    class FakeRouterModel:
+        model = "test-router"
+
+        async def chat(self, *_args, **_kwargs):
+            return '{"intent":"plan"}'
+
+    engine = object.__new__(CircuitTutorEngine)
+    routed = asyncio.run(engine._route_intent({
+        "message": "我总在二极管和晶体管题上出错，应该怎么系统补齐？",
+        "attachment_context": "",
+        "mode": "auto",
+        "llm": FakeRouterModel(),
+    }))
+    assert routed["intent"] == "plan"
+
+
 def test_quiz_rendering_is_spacious_structured_and_has_no_references():
     engine = object.__new__(CircuitTutorEngine)
     draft = CircuitTutorEngine._fallback_quiz(

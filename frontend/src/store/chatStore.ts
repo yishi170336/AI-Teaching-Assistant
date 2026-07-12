@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { AttachmentInfo, ModelConfig, ModelProviderId, SourceInfo, StoredMessage, streamChat, uploadChatAttachment } from '../lib/api'
 
-export type ChatMode = 'auto' | 'answer' | 'quiz'
+export type ChatMode = 'auto' | 'answer' | 'quiz' | 'plan'
 
 export type ChatMessage = {
   id: string
@@ -27,6 +27,7 @@ export type PendingAttachment = {
 }
 
 const sessionKey = 'circuitmind-session-id'
+const studentKey = 'circuitmind-student-id'
 const modelConfigKey = 'circuitmind-model-config'
 
 const defaultModelConfig: ModelConfig = {
@@ -41,6 +42,15 @@ function getSessionId() {
   if (!value) {
     value = `student-${crypto.randomUUID()}`
     localStorage.setItem(sessionKey, value)
+  }
+  return value
+}
+
+function getStudentId() {
+  let value = localStorage.getItem(studentKey)
+  if (!value) {
+    value = `learner-${crypto.randomUUID()}`
+    localStorage.setItem(studentKey, value)
   }
   return value
 }
@@ -64,6 +74,7 @@ function getModelConfig(): ModelConfig {
 }
 
 type ChatState = {
+  studentId: string
   sessionId: string
   mode: ChatMode
   knowledgeBase: string
@@ -87,6 +98,7 @@ type ChatState = {
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
+  studentId: getStudentId(),
   sessionId: getSessionId(),
   mode: 'auto',
   knowledgeBase: 'default',

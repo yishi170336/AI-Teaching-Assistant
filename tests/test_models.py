@@ -9,6 +9,7 @@ from backend.app.agents.workflow import CircuitTutorEngine
 from backend.app.schemas import ChatRequest
 from backend.app.services.ollama_client import OllamaClient
 from backend.app.services.openai_compatible_client import OpenAICompatibleClient
+from backend.app.services.model_catalog import choose_default_model
 
 
 def test_chat_request_defaults_to_required_local_qwen():
@@ -113,6 +114,30 @@ def test_ollama_client_accepts_an_installed_model_selection():
     client = OllamaClient(model="qwen3.5:4b")
     assert client.model == "qwen3.5:4b"
     asyncio.run(client.close())
+
+
+def test_cloud_model_is_default_when_ollama_is_offline():
+    provider, model = choose_default_model(
+        {"ok": False, "models": [], "error": "connection refused"},
+        ollama_model="qwen3.5:2b",
+        qwen_model="qwen3-vl-plus",
+        deepseek_model="deepseek-v4-flash",
+        qwen_configured=True,
+        deepseek_configured=False,
+    )
+    assert (provider, model) == ("qwen", "qwen3-vl-plus")
+
+
+def test_running_ollama_uses_an_installed_model_when_default_is_missing():
+    provider, model = choose_default_model(
+        {"ok": True, "model_available": False, "models": ["qwen3.5:4b"]},
+        ollama_model="qwen3.5:2b",
+        qwen_model="qwen3-vl-plus",
+        deepseek_model="deepseek-v4-flash",
+        qwen_configured=True,
+        deepseek_configured=False,
+    )
+    assert (provider, model) == ("ollama", "qwen3.5:4b")
 
 
 def test_answer_workflow_uses_request_selected_client():

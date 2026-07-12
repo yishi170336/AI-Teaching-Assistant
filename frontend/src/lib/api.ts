@@ -7,6 +7,14 @@ export type SourceInfo = {
   page_end: number | null
   score: number
   doc_type: 'textbook' | 'question' | string
+  excerpt?: string
+  knowledge_tags?: string[]
+  element_type?: string
+  vector_score?: number
+  bm25_score?: number
+  graph_score?: number
+  image_score?: number
+  rerank_score?: number
 }
 
 export type KBStatus = {
@@ -44,11 +52,44 @@ export type ModelProviderInfo = {
   base_url: string
   requires_api_key: boolean
   configured: boolean
+  status_message?: string
 }
 
 export type ModelCatalog = {
   default: { provider: ModelProviderId; model: string }
   providers: ModelProviderInfo[]
+  ollama_available?: boolean
+}
+
+export type KnowledgeGraphNode = {
+  id: string
+  type: 'concept' | 'chunk' | 'component' | 'net' | string
+  name: string
+  chunk_id?: string
+}
+
+export type KnowledgeGraphEdge = {
+  source: string
+  target: string
+  type: string
+}
+
+export type KnowledgeGraph = {
+  knowledge_base: string
+  nodes: KnowledgeGraphNode[]
+  edges: KnowledgeGraphEdge[]
+  stats: { nodes: number; edges: number; concepts: number }
+}
+
+export type MistakeItem = {
+  id: string
+  student_id: string
+  session_id: string
+  content: string
+  summary: string
+  agent: string
+  knowledge_points: string[]
+  created_at: string
 }
 
 export type SessionSummary = {
@@ -189,6 +230,53 @@ export async function fetchKnowledgeBases(): Promise<KBStatus[]> {
   const response = await fetch('/api/kb/status')
   if (!response.ok) throw new Error('无法读取知识库状态')
   return (await response.json()).knowledge_bases || []
+}
+
+export async function fetchKnowledgeGraph(knowledgeBase: string): Promise<KnowledgeGraph> {
+  const response = await fetch(`/api/kb/${encodeURIComponent(knowledgeBase)}/graph`)
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.detail || '知识图谱读取失败')
+  return result
+}
+
+export async function fetchMistakes(studentId: string): Promise<MistakeItem[]> {
+  const response = await fetch(`/api/mistakes?student_id=${encodeURIComponent(studentId)}`)
+  if (!response.ok) throw new Error('错题本读取失败')
+  return (await response.json()).mistakes || []
+}
+
+export async function addMistake(
+  studentId: string,
+  sessionId: string,
+  content: string,
+  agent: string,
+  modelConfig: ModelConfig,
+): Promise<MistakeItem> {
+  const response = await fetch('/api/mistakes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      student_id: studentId,
+      session_id: sessionId,
+      content,
+      agent,
+      model_provider: modelConfig.provider,
+      model: modelConfig.model,
+      api_key: modelConfig.apiKey,
+      base_url: modelConfig.baseUrl,
+    }),
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.detail || result.error || '加入错题本失败')
+  return result.mistake
+}
+
+export async function deleteMistake(studentId: string, mistakeId: string): Promise<void> {
+  const response = await fetch(
+    `/api/mistakes/${encodeURIComponent(mistakeId)}?student_id=${encodeURIComponent(studentId)}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) throw new Error('删除错题失败')
 }
 
 export async function uploadKnowledgeFile(

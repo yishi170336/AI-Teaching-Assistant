@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=96)
     message: str = Field(default="", max_length=8000)
-    mode: Literal["auto", "answer", "quiz"] = "auto"
+    mode: Literal["auto", "answer", "quiz", "plan"] = "auto"
     knowledge_base: str = Field(default="default", min_length=1, max_length=48)
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     model_provider: Literal["ollama", "deepseek", "qwen", "custom"] = "ollama"
@@ -68,6 +68,40 @@ class SourceInfo(BaseModel):
     page_end: int | None = None
     score: float = 0.0
     doc_type: str = "textbook"
+
+
+class MistakeCreateRequest(BaseModel):
+    student_id: str = Field(min_length=1, max_length=96)
+    session_id: str = Field(min_length=1, max_length=96)
+    content: str = Field(min_length=1, max_length=16000)
+    agent: str = Field(default="学习 Agent", max_length=64)
+    model_provider: Literal["ollama", "deepseek", "qwen", "custom"] = "ollama"
+    model: str = Field(default="qwen3.5:2b", min_length=1, max_length=128)
+    api_key: str = Field(default="", max_length=512)
+    base_url: str = Field(default="", max_length=512)
+
+    @field_validator("student_id", "session_id")
+    @classmethod
+    def safe_mistake_identifier(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", value):
+            raise ValueError("标识仅允许字母、数字、连字符和下划线")
+        return value
+
+    @field_validator("content", "agent", "model", "api_key", "base_url")
+    @classmethod
+    def strip_mistake_fields(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_mistake_endpoint(self) -> "MistakeCreateRequest":
+        if self.base_url:
+            parsed = urlparse(self.base_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("API Base URL 必须是有效的 HTTP(S) 地址")
+        if self.model_provider == "custom" and (not self.api_key or not self.base_url):
+            raise ValueError("自定义 API 必须填写 API Key 和 Base URL")
+        return self
 
 
 class KBStatus(BaseModel):

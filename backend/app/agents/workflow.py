@@ -26,7 +26,7 @@ class AgentState(TypedDict, total=False):
     mode: str
     knowledge_base: str
     history: list[dict[str, str]]
-    intent: Literal["answer", "quiz"]
+    intent: Literal["answer", "quiz", "plan"]
     rewritten_query: str
     knowledge_point: str
     constraints: list[str]
@@ -38,6 +38,7 @@ class AgentState(TypedDict, total=False):
     attachment_context: str
     attachment_blueprint: dict[str, Any]
     quiz_family: str
+    plan_profile: dict[str, Any]
     reference_question: str
     hits: list[RetrievalHit]
     answer_messages: list[dict[str, Any]]
@@ -390,13 +391,14 @@ async def _emit(state: AgentState, stage: str, message: str, agent: str) -> None
 
 
 class CircuitTutorEngine:
-    """LangGraph orchestrator composed of router, answer, and quiz agents."""
+    """LangGraph orchestrator composed of answer, quiz, and learning-plan agents."""
 
     def __init__(self, ollama: OllamaClient, knowledge_bases: KnowledgeBaseManager) -> None:
         self.ollama = ollama
         self.knowledge_bases = knowledge_bases
         self.answer_graph = self._build_answer_graph()
         self.quiz_graph = self._build_quiz_graph()
+        self.plan_graph = self._build_plan_graph()
         self.graph = self._build_orchestrator()
 
     def _build_answer_graph(self):
@@ -433,21 +435,34 @@ class CircuitTutorEngine:
         graph.add_edge("render_quiz", END)
         return graph.compile()
 
+    def _build_plan_graph(self):
+        graph = StateGraph(AgentState)
+        graph.add_node("analyze_learning_goal", self._analyze_learning_goal)
+        graph.add_node("retrieve_learning_materials", self._plan_retrieve)
+        graph.add_node("generate_learning_plan", self._generate_learning_plan)
+        graph.set_entry_point("analyze_learning_goal")
+        graph.add_edge("analyze_learning_goal", "retrieve_learning_materials")
+        graph.add_edge("retrieve_learning_materials", "generate_learning_plan")
+        graph.add_edge("generate_learning_plan", END)
+        return graph.compile()
+
     def _build_orchestrator(self):
         graph = StateGraph(AgentState)
         graph.add_node("attachment_reader", self._analyze_attachments)
         graph.add_node("intent_router", self._route_intent)
         graph.add_node("answer_agent", self._run_answer_agent)
         graph.add_node("quiz_agent", self._run_quiz_agent)
+        graph.add_node("plan_agent", self._run_plan_agent)
         graph.set_entry_point("attachment_reader")
         graph.add_edge("attachment_reader", "intent_router")
         graph.add_conditional_edges(
             "intent_router",
             lambda state: state["intent"],
-            {"answer": "answer_agent", "quiz": "quiz_agent"},
+            {"answer": "answer_agent", "quiz": "quiz_agent", "plan": "plan_agent"},
         )
         graph.add_edge("answer_agent", END)
         graph.add_edge("quiz_agent", END)
+        graph.add_edge("plan_agent", END)
         return graph.compile()
 
     async def run(
@@ -539,14 +554,39 @@ class CircuitTutorEngine:
     async def _route_intent(self, state: AgentState) -> AgentState:
         await _emit(state, "route", "正在识别学习意图", "路由 Agent")
         mode = state.get("mode", "auto")
-        if mode in {"answer", "quiz"}:
+        if mode in {"answer", "quiz", "plan"}:
             return {"intent": mode}
-        # A deterministic lightweight classifier keeps routing responsive; the
-        # core tutoring/generation nodes still use Qwen's bounded thinking pass.
+        combined = f"{state['message']}\n{state.get('attachment_context', '')}"
+        client = state.get("llm") or self.ollama
+        router_prompt = (
+            "你是学生学习请求路由器。只输出合法 JSON：{\"intent\":\"answer|quiz|plan\"}。"
+            "answer=概念解释、解题、追问；quiz=要求生成练习题或同类题；"
+            "plan=要求制定学习路线、复习安排、知识补全、备考计划，或明显需要跨多个知识点的系统学习方案。"
+            f"\n学生请求：{combined[:5000]}"
+        )
+        try:
+            routed = _json_object(
+                await client.chat(
+                    [{"role": "user", "content": router_prompt}],
+                    temperature=0.0,
+                    json_mode=True,
+                    reasoning_budget=96,
+                )
+            ).get("intent")
+            if routed in {"answer", "quiz", "plan"}:
+                return {"intent": routed}
+        except Exception:
+            # Continue with a deterministic fallback so routing remains usable
+            # for lightweight or temporarily constrained compatible APIs.
+            pass
         quiz_words = (
             "出题", "同类题", "类似题", "练习", "考考我", "生成一道", "来一道", "再来一题", "再出一道", "再出一题", "题目生成"
         )
-        combined = f"{state['message']}\n{state.get('attachment_context', '')}"
+        plan_words = (
+            "学习规划", "学习计划", "复习计划", "学习路线", "规划路线", "知识补全", "查漏补缺", "备考", "巩固计划"
+        )
+        if any(word in combined for word in plan_words):
+            return {"intent": "plan"}
         return {"intent": "quiz" if any(word in combined for word in quiz_words) else "answer"}
 
     async def _run_answer_agent(self, state: AgentState) -> AgentState:
@@ -556,6 +596,87 @@ class CircuitTutorEngine:
     async def _run_quiz_agent(self, state: AgentState) -> AgentState:
         result = await self.quiz_graph.ainvoke(state)
         return dict(result)
+
+    async def _run_plan_agent(self, state: AgentState) -> AgentState:
+        result = await self.plan_graph.ainvoke(state)
+        return dict(result)
+
+    async def _analyze_learning_goal(self, state: AgentState) -> AgentState:
+        await _emit(state, "plan-analyze", "正在识别目标、薄弱点与可用学习时间", "学习规划 Agent")
+        client = state.get("llm") or self.ollama
+        prompt = (
+            "从学生请求中提取可执行学习规划信息。只输出合法 JSON，字段：goal（字符串）、"
+            "knowledge_points（2-8个字符串）、current_level（基础/进阶/未知）、"
+            "time_horizon（字符串）、constraints（字符串数组）。不要虚构学生未提供的时间；未知就写待确认。\n"
+            f"最近对话：{_history_text(state.get('history', []))}\n"
+            f"本轮请求：{state['message']}\n附件信息：{state.get('attachment_context', '')[:4000]}"
+        )
+        try:
+            profile = _json_object(
+                await client.chat(
+                    [{"role": "user", "content": prompt}],
+                    temperature=0.05,
+                    json_mode=True,
+                    reasoning_budget=128,
+                )
+            )
+        except Exception:
+            profile = {}
+        if not profile.get("goal"):
+            profile = {
+                "goal": state["message"][:300],
+                "knowledge_points": [
+                    point for point in _topic_keywords(state["message"])[:6]
+                ] or ["电路基础"],
+                "current_level": "未知",
+                "time_horizon": "待确认",
+                "constraints": [],
+            }
+        points = profile.get("knowledge_points")
+        if not isinstance(points, list):
+            profile["knowledge_points"] = [str(points)] if points else ["电路基础"]
+        return {"plan_profile": profile}
+
+    async def _plan_retrieve(self, state: AgentState) -> AgentState:
+        await _emit(state, "plan-retrieve", "正在从课程知识库定位前置知识与巩固资料", "检索 Agent")
+        profile = state.get("plan_profile", {})
+        query = "学习路径 前置知识 核心概念 典型题 " + " ".join(
+            str(point) for point in profile.get("knowledge_points", [])
+        ) + " " + str(profile.get("goal", ""))
+        retriever = self.knowledge_bases.get(state.get("knowledge_base", "default"))
+        hits = await asyncio.to_thread(retriever.search, query, 8, False, None)
+        return {"hits": hits, "sources": [hit.source_dict() for hit in hits]}
+
+    async def _generate_learning_plan(self, state: AgentState) -> AgentState:
+        client = state.get("llm") or self.ollama
+        await _emit(
+            state,
+            "plan-generate",
+            f"{getattr(client, 'model', '当前模型')} 正在生成可执行学习路线",
+            "学习规划 Agent",
+        )
+        context = _source_context(state.get("hits", []))
+        prompt = (
+            "你是大学电路课程学习规划师。依据学生画像和检索资料制定可执行路线。"
+            "必须先说明规划假设，再按“诊断→前置补全→核心学习→专项练习→复盘验收”排序。"
+            "每阶段写清目标、资料依据[资料n]、具体行动、预计投入、完成标准；"
+            "最后给出一份7天起步清单和可量化验收指标。时间信息未知时给出可伸缩方案，不得伪造固定截止日。"
+            "数学公式使用标准 LaTeX，不展示内部推理。\n\n"
+            f"学生画像：{json.dumps(state.get('plan_profile', {}), ensure_ascii=False)}\n\n"
+            f"学生原始请求：{state['message']}\n\n课程检索资料：\n{context or '未检索到资料'}"
+        )
+        parts: list[str] = []
+        delta_callback = state.get("on_delta")
+        async for token in client.stream_chat(
+            [{"role": "user", "content": prompt}], temperature=0.2
+        ):
+            parts.append(token)
+            if delta_callback:
+                await delta_callback(token)
+        response = "".join(parts).strip()
+        if not response:
+            raise RuntimeError("学习规划模型未返回最终方案")
+        return {"response": response, "agent": "学习规划 Agent"}
 
     async def _rewrite_query(self, state: AgentState) -> AgentState:
         await _emit(state, "rewrite", "正在把口语问题改写为电路术语", "答疑 Agent")

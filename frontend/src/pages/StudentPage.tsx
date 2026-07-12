@@ -18,6 +18,7 @@ import {
   BookOpen,
   Bot,
   BrainCircuit,
+  BookmarkPlus,
   Check,
   ChevronDown,
   ChevronRight,
@@ -30,6 +31,7 @@ import {
   GraduationCap,
   HelpCircle,
   Layers3,
+  Network,
   LoaderCircle,
   Menu,
   MessageSquareText,
@@ -48,15 +50,21 @@ import {
 } from 'lucide-react'
 import MathMarkdown from '../components/MathMarkdown'
 import {
+  addMistake,
+  deleteMistake,
   deleteSession,
+  fetchKnowledgeGraph,
   fetchKnowledgeBases,
+  fetchMistakes,
   fetchModels,
   fetchSession,
   fetchSessions,
   KBStatus,
+  KnowledgeGraph,
   ModelCatalog,
   ModelConfig,
   ModelProviderId,
+  MistakeItem,
   SessionSummary,
   SourceInfo,
   uploadKnowledgeFile,
@@ -65,6 +73,7 @@ import {
 import { ChatMode, useChatStore } from '../store/chatStore'
 
 const { TextArea } = Input
+type WorkspaceView = 'chat' | 'graph' | 'mistakes'
 
 const providerLabels: Record<ModelProviderId, string> = {
   ollama: '本地',
@@ -100,7 +109,7 @@ const fallbackModelCatalog: ModelCatalog = {
       id: 'qwen',
       label: '通义千问 API',
       description: '阿里云百炼文本与多模态 OpenAI 兼容接口',
-      models: ['qwen3-vl-plus', 'qwen-plus', 'qwen-max', 'qwen-turbo'],
+      models: ['Qwen3.7-Plus', 'Qwen3.7-Max', 'qwen-vl-max', 'qwen3-vl-8b-instruct', 'qwen3-vl-plus', 'qwen3-vl-flash', 'qwen3-vl-embedding'],
       default_model: 'qwen3-vl-plus',
       base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       requires_api_key: true,
@@ -171,6 +180,8 @@ function Sidebar({
   onSelectSession,
   onDeleteSession,
   onNewSession,
+  activeView,
+  onView,
 }: {
   open: boolean
   onClose: () => void
@@ -179,6 +190,8 @@ function Sidebar({
   onSelectSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string, title: string) => void
   onNewSession: () => void
+  activeView: WorkspaceView
+  onView: (view: WorkspaceView) => void
 }) {
   const modelProvider = useChatStore((state) => state.modelConfig.provider)
   return (
@@ -202,20 +215,18 @@ function Sidebar({
 
         <nav className="main-nav" aria-label="学生端主导航">
           <div className="nav-label">学习空间</div>
-          <button className="nav-item active">
+          <button className={`nav-item ${activeView === 'chat' ? 'active' : ''}`} onClick={() => onView('chat')}>
             <MessageSquareText size={17} />
             <span>智能学习台</span>
             <span className="nav-live-dot" />
           </button>
-          <button className="nav-item">
+          <button className={`nav-item ${activeView === 'graph' ? 'active' : ''}`} onClick={() => onView('graph')}>
             <BookOpen size={17} />
             <span>知识图谱</span>
-            <span className="soon-label">即将开放</span>
           </button>
-          <button className="nav-item">
+          <button className={`nav-item ${activeView === 'mistakes' ? 'active' : ''}`} onClick={() => onView('mistakes')}>
             <Layers3 size={17} />
             <span>错题本</span>
-            <span className="soon-label">即将开放</span>
           </button>
         </nav>
 
@@ -336,6 +347,22 @@ function SourceCard({ source, index }: { source: SourceInfo; index: number }) {
       </div>
       <strong>{source.section || source.chapter || source.source}</strong>
       <p>{source.source}</p>
+      {source.excerpt && <p className="source-excerpt">{source.excerpt}</p>}
+      {source.knowledge_tags?.length ? (
+        <div className="source-tags">{source.knowledge_tags.slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)}</div>
+      ) : null}
+      <div className="source-score-grid" aria-label="检索评分组成">
+        {[
+          ['向量', source.vector_score],
+          ['关键词', source.bm25_score],
+          ['图谱', source.graph_score],
+        ].map(([label, score]) => (
+          <div key={String(label)}>
+            <span>{label}</span>
+            <i><b style={{ width: `${Math.max(0, Math.min(100, Number(score || 0) * 100))}%` }} /></i>
+          </div>
+        ))}
+      </div>
       <div className="source-meta"><span>{page}</span><span>已重排</span></div>
     </article>
   )
@@ -444,6 +471,7 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
               { label: '智能路由', value: 'auto' },
               { label: 'AI 答疑', value: 'answer' },
               { label: '同类出题', value: 'quiz' },
+              { label: '学习规划', value: 'plan' },
             ]}
           />
           <span className="composer-tip">Shift + Enter 换行</span>
@@ -505,7 +533,7 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
               }
             }}
             autoSize={{ minRows: 1, maxRows: 5 }}
-            placeholder={mode === 'quiz' ? '粘贴原题，或描述想练习的知识点…' : '输入电路问题，支持 LaTeX 公式…'}
+            placeholder={mode === 'quiz' ? '粘贴原题，或描述想练习的知识点…' : mode === 'plan' ? '描述学习目标、薄弱点和可用时间…' : '输入电路问题，支持 LaTeX 公式…'}
             variant="borderless"
             aria-label="输入电路问题"
           />
@@ -539,7 +567,7 @@ function normalizeQuizTitle(content: string) {
   )
 }
 
-function Conversation() {
+function Conversation({ onAddMistake }: { onAddMistake: (content: string, agent: string) => void }) {
   const messages = useChatStore((state) => state.messages)
   const streaming = useChatStore((state) => state.streaming)
   const stage = useChatStore((state) => state.stage)
@@ -593,6 +621,16 @@ function Conversation() {
                 <span>{stage || '正在准备…'}</span>
               </div>
             )}
+            {message.content && !(streaming && index === messages.length - 1) && (
+              <div className="message-tools">
+                <button
+                  type="button"
+                  onClick={() => onAddMistake(message.content, message.role === 'assistant' ? message.agent || '答疑 Agent' : '学生原题')}
+                >
+                  <BookmarkPlus size={14} /> 加入错题本
+                </button>
+              </div>
+            )}
           </div>
         </div>
       ))}
@@ -601,6 +639,138 @@ function Conversation() {
       )}
       <div ref={endRef} />
     </div>
+  )
+}
+
+function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loading: boolean }) {
+  const [selectedId, setSelectedId] = useState('')
+  const visual = useMemo(() => {
+    if (!graph) return { nodes: [], edges: [] }
+    const degree = new Map<string, number>()
+    graph.edges.forEach((edge) => {
+      degree.set(edge.source, (degree.get(edge.source) || 0) + 1)
+      degree.set(edge.target, (degree.get(edge.target) || 0) + 1)
+    })
+    const concepts = graph.nodes
+      .filter((node) => node.type === 'concept')
+      .sort((a, b) => (degree.get(b.id) || 0) - (degree.get(a.id) || 0))
+      .slice(0, 24)
+    const conceptIds = new Set(concepts.map((node) => node.id))
+    const relatedIds = new Set<string>()
+    graph.edges.forEach((edge) => {
+      if (conceptIds.has(edge.source)) relatedIds.add(edge.target)
+      if (conceptIds.has(edge.target)) relatedIds.add(edge.source)
+    })
+    const supports = graph.nodes.filter((node) => relatedIds.has(node.id) && node.type !== 'concept').slice(0, 32)
+    const positioned = [...concepts, ...supports].map((node, index) => {
+      const isConcept = node.type === 'concept'
+      const groupIndex = isConcept ? index : index - concepts.length
+      const groupSize = isConcept ? Math.max(1, concepts.length) : Math.max(1, supports.length)
+      const angle = (Math.PI * 2 * groupIndex) / groupSize - Math.PI / 2
+      const radius = isConcept ? 150 : 235
+      return {
+        ...node,
+        x: 450 + Math.cos(angle) * radius,
+        y: 270 + Math.sin(angle) * radius,
+        degree: degree.get(node.id) || 0,
+      }
+    })
+    const ids = new Set(positioned.map((node) => node.id))
+    return {
+      nodes: positioned,
+      edges: graph.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target)),
+    }
+  }, [graph])
+  const positions = new Map(visual.nodes.map((node) => [node.id, node]))
+  const selected = graph?.nodes.find((node) => node.id === selectedId)
+  const neighbors = selectedId && graph
+    ? graph.edges.filter((edge) => edge.source === selectedId || edge.target === selectedId).length
+    : 0
+
+  if (loading) return <div className="workspace-empty"><LoaderCircle className="spin" /><strong>正在整理知识图谱…</strong></div>
+  if (!graph?.nodes.length) return <div className="workspace-empty"><Network /><strong>当前知识库还没有图谱数据</strong><p>重建知识库后会自动提取知识点与资料关系。</p></div>
+  return (
+    <section className="feature-view graph-view">
+      <div className="feature-heading">
+        <div><span>KNOWLEDGE MAP</span><h1>课程知识图谱</h1><p>点击节点查看知识点与教材片段之间的关系。</p></div>
+        <div className="feature-stats"><strong>{graph.stats.concepts}</strong><span>知识点</span><strong>{graph.stats.edges}</strong><span>关系</span></div>
+      </div>
+      <div className="graph-layout">
+        <div className="graph-canvas">
+          <svg viewBox="0 0 900 540" role="img" aria-label="课程知识关系图">
+            <g className="graph-edges">
+              {visual.edges.map((edge, index) => {
+                const from = positions.get(edge.source)
+                const to = positions.get(edge.target)
+                return from && to ? <line key={`${edge.source}-${edge.target}-${index}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} /> : null
+              })}
+            </g>
+            <g>
+              {visual.nodes.map((node) => (
+                <g
+                  key={node.id}
+                  className={`graph-node ${node.type} ${selectedId === node.id ? 'selected' : ''}`}
+                  transform={`translate(${node.x} ${node.y})`}
+                  onClick={() => setSelectedId(node.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') setSelectedId(node.id)
+                  }}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <circle r={node.type === 'concept' ? Math.min(24, 13 + node.degree) : 8} />
+                  <text y={node.type === 'concept' ? 36 : 22}>{node.name?.slice(0, 12) || '资料片段'}</text>
+                </g>
+              ))}
+            </g>
+          </svg>
+          <div className="graph-legend"><span><i className="concept" />知识点</span><span><i />教材/题库片段</span></div>
+        </div>
+        <aside className="graph-detail">
+          {selected ? <><span>{selected.type === 'concept' ? '知识点' : '资料节点'}</span><h2>{selected.name || '未命名节点'}</h2><p>连接 {neighbors} 个相关节点。可回到智能学习台围绕该知识点提问，或加入学习规划。</p><code>{selected.id}</code></> : <><Network size={28} /><h2>探索知识关系</h2><p>图中较大的绿色节点是核心知识点，外围节点对应教材章节、题目或电路结构。</p></>}
+        </aside>
+      </div>
+    </section>
+  )
+}
+
+function MistakeBookView({
+  mistakes,
+  onDelete,
+  onPlan,
+}: {
+  mistakes: MistakeItem[]
+  onDelete: (id: string) => void
+  onPlan: () => void
+}) {
+  const pointCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    mistakes.flatMap((item) => item.knowledge_points).forEach((point) => counts.set(point, (counts.get(point) || 0) + 1))
+    return [...counts.entries()].sort((a, b) => b[1] - a[1])
+  }, [mistakes])
+  return (
+    <section className="feature-view mistakes-view">
+      <div className="feature-heading">
+        <div><span>MISTAKE REVIEW</span><h1>错题本</h1><p>归档时已自动提取知识点，用于查漏补缺和巩固规划。</p></div>
+        <Button type="primary" icon={<BrainCircuit size={16} />} onClick={onPlan} disabled={!mistakes.length}>生成知识补全规划</Button>
+      </div>
+      {pointCounts.length > 0 && <div className="weakness-strip"><strong>高频薄弱点</strong>{pointCounts.slice(0, 8).map(([point, count]) => <Tag key={point}>{point} · {count}</Tag>)}</div>}
+      {mistakes.length ? (
+        <div className="mistake-grid">
+          {mistakes.map((item) => (
+            <article className="mistake-card" key={item.id}>
+              <div className="mistake-card-head"><span>{item.agent}</span><small>{new Date(item.created_at).toLocaleDateString('zh-CN')}</small></div>
+              <h2>{item.summary}</h2>
+              <div className="mistake-points">{item.knowledge_points.map((point) => <Tag key={point}>{point}</Tag>)}</div>
+              <div className="mistake-content"><MathMarkdown content={item.content} /></div>
+              <Popconfirm title="从错题本删除？" okText="删除" cancelText="取消" onConfirm={() => onDelete(item.id)}>
+                <button className="mistake-delete"><Trash2 size={14} /> 删除</button>
+              </Popconfirm>
+            </article>
+          ))}
+        </div>
+      ) : <div className="workspace-empty"><Layers3 size={30} /><strong>错题本还是空的</strong><p>在答疑或出题结果旁点击“加入错题本”，系统会自动识别知识点。</p></div>}
+    </section>
   )
 }
 
@@ -680,7 +850,7 @@ function ModelSettingsModal({
         <span className="modal-icon"><ServerCog size={22} /></span>
         <div>
           <h2>选择与配置模型</h2>
-          <p>本地模型从 Ollama 自动读取；云端模型通过 OpenAI 兼容接口接入。</p>
+          <p>Ollama 可稍后启动；未连接时仍可配置并使用云端 OpenAI 兼容模型。</p>
         </div>
       </div>
 
@@ -707,34 +877,24 @@ function ModelSettingsModal({
       <div className="model-config-panel">
         <div className="model-field">
           <label>模型名称</label>
-          {draft.provider === 'ollama' ? (
+          {draft.provider !== 'custom' ? (
             <Select
               value={draft.model}
               options={provider.models.map((model) => ({ value: model, label: model }))}
               onChange={(model) => setDraft((value) => ({ ...value, model }))}
               style={{ width: '100%' }}
               showSearch
-              aria-label="选择本地模型"
+              aria-label="选择模型"
             />
           ) : (
-            <>
-              <Input
-                value={draft.model}
-                onChange={(event) => setDraft((value) => ({ ...value, model: event.target.value }))}
-                placeholder="输入模型名称"
-                prefix={<Bot size={15} />}
-              />
-              {provider.models.length > 0 && (
-                <div className="suggested-models">
-                  {provider.models.map((model) => (
-                    <button type="button" key={model} onClick={() => setDraft((value) => ({ ...value, model }))}>
-                      {model}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </>
+            <Input
+              value={draft.model}
+              onChange={(event) => setDraft((value) => ({ ...value, model: event.target.value }))}
+              placeholder="输入模型名称"
+              prefix={<Bot size={15} />}
+            />
           )}
+          {draft.provider === 'ollama' && provider.status_message && <small className="model-status-hint">{provider.status_message}</small>}
         </div>
 
         {draft.provider !== 'ollama' && (
@@ -785,6 +945,7 @@ function ModelSettingsModal({
 }
 
 function StudentPageContent() {
+  const [activeView, setActiveView] = useState<WorkspaceView>('chat')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [kbModalOpen, setKbModalOpen] = useState(false)
   const [modelModalOpen, setModelModalOpen] = useState(false)
@@ -792,6 +953,10 @@ function StudentPageContent() {
   const [statuses, setStatuses] = useState<KBStatus[]>([])
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog>(fallbackModelCatalog)
+  const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraph>()
+  const [graphLoading, setGraphLoading] = useState(false)
+  const [mistakes, setMistakes] = useState<MistakeItem[]>([])
+  const studentId = useChatStore((state) => state.studentId)
   const messages = useChatStore((state) => state.messages)
   const sessionId = useChatStore((state) => state.sessionId)
   const mode = useChatStore((state) => state.mode)
@@ -800,6 +965,7 @@ function StudentPageContent() {
   const knowledgeBase = useChatStore((state) => state.knowledgeBase)
   const setKnowledgeBase = useChatStore((state) => state.setKnowledgeBase)
   const modelConfig = useChatStore((state) => state.modelConfig)
+  const setModelConfig = useChatStore((state) => state.setModelConfig)
   const loadSession = useChatStore((state) => state.loadSession)
   const clear = useChatStore((state) => state.clear)
   const { message: toast } = AntApp.useApp()
@@ -820,19 +986,57 @@ function StudentPageContent() {
     }
   }
 
+  const refreshMistakes = async () => {
+    try {
+      setMistakes(await fetchMistakes(studentId))
+    } catch {
+      setMistakes([])
+    }
+  }
+
+  const refreshModels = async (allowAutoSwitch = false) => {
+    try {
+      const catalog = await fetchModels()
+      setModelCatalog(catalog)
+      const local = catalog.providers.find((item) => item.id === 'ollama')
+      const preferred = catalog.providers.find((item) => item.id === catalog.default.provider)
+      if (allowAutoSwitch && modelConfig.provider === 'ollama' && !local?.configured && preferred?.configured && preferred.id !== 'ollama') {
+        setModelConfig({ provider: preferred.id, model: catalog.default.model, apiKey: '', baseUrl: preferred.base_url })
+        toast.info(`Ollama 未启动，已使用已配置的 ${preferred.label}`)
+      }
+    } catch {
+      setModelCatalog(fallbackModelCatalog)
+    }
+  }
+
   useEffect(() => {
     void refreshStatuses()
     void fetchSession(sessionId).then((stored) => {
       if (stored.length) loadSession(sessionId, stored)
     }).catch(() => undefined)
     void refreshSessions()
-    void fetchModels().then(setModelCatalog).catch(() => setModelCatalog(fallbackModelCatalog))
+    void refreshMistakes()
+    void refreshModels(true)
     const timer = window.setInterval(() => {
       void refreshStatuses()
       void refreshSessions()
+      void refreshModels()
     }, 5000)
     return () => window.clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    if (modelModalOpen) void refreshModels()
+  }, [modelModalOpen])
+
+  useEffect(() => {
+    if (activeView !== 'graph') return
+    setGraphLoading(true)
+    void fetchKnowledgeGraph(knowledgeBase)
+      .then(setKnowledgeGraph)
+      .catch(() => setKnowledgeGraph(undefined))
+      .finally(() => setGraphLoading(false))
+  }, [activeView, knowledgeBase])
 
   const kbOptions = useMemo(() => {
     const base = statuses.map((item) => ({
@@ -850,10 +1054,42 @@ function StudentPageContent() {
     void send(prompt).then(() => refreshSessions())
   }
 
+  const saveMistake = async (content: string, agent: string) => {
+    try {
+      const item = await addMistake(studentId, sessionId, content, agent, modelConfig)
+      setMistakes((current) => [item, ...current.filter((existing) => existing.id !== item.id)])
+      toast.success(`已加入错题本，并识别知识点：${item.knowledge_points.join('、')}`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '加入错题本失败')
+    }
+  }
+
+  const removeMistake = async (id: string) => {
+    try {
+      await deleteMistake(studentId, id)
+      setMistakes((current) => current.filter((item) => item.id !== id))
+      toast.success('已从错题本删除')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '删除错题失败')
+    }
+  }
+
+  const planFromMistakes = () => {
+    const points = [...new Set(mistakes.flatMap((item) => item.knowledge_points))]
+    const summaries = mistakes.slice(0, 12).map((item, index) => `${index + 1}. ${item.summary}（${item.knowledge_points.join('、')}）`)
+    setActiveView('chat')
+    setMode('plan')
+    ask(
+      `请依据我的错题本制定知识补全与巩固学习规划。\n薄弱知识点：${points.join('、')}\n错题摘要：\n${summaries.join('\n')}`,
+      'plan',
+    )
+  }
+
   const selectHistorySession = async (selectedSessionId: string) => {
     try {
       const stored = await fetchSession(selectedSessionId)
       loadSession(selectedSessionId, stored)
+      setActiveView('chat')
       setSidebarOpen(false)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '历史会话恢复失败')
@@ -862,6 +1098,7 @@ function StudentPageContent() {
 
   const startNewSession = () => {
     clear()
+    setActiveView('chat')
     setSidebarOpen(false)
   }
 
@@ -923,6 +1160,8 @@ function StudentPageContent() {
         onSelectSession={(selectedSessionId) => void selectHistorySession(selectedSessionId)}
         onDeleteSession={(deletedSessionId, title) => void deleteHistorySession(deletedSessionId, title)}
         onNewSession={startNewSession}
+        activeView={activeView}
+        onView={(view) => { setActiveView(view); setSidebarOpen(false) }}
       />
       <main className="main-workspace">
         <header className="topbar">
@@ -930,7 +1169,7 @@ function StudentPageContent() {
             <button className="menu-button" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu size={19} /></button>
             <div>
               <span className="breadcrumb">学生工作台 /</span>
-              <strong>{mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : '智能学习'}</strong>
+              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'mistakes' ? '错题本' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
             </div>
           </div>
           <div className="topbar-actions">
@@ -956,15 +1195,21 @@ function StudentPageContent() {
           </div>
         </header>
 
-        <section className="learning-grid">
-          <div className="chat-column">
-            <div className="chat-scroll">
-              {messages.length === 0 ? <Welcome onAsk={ask} /> : <Conversation />}
+        {activeView === 'chat' ? (
+          <section className="learning-grid">
+            <div className="chat-column">
+              <div className="chat-scroll">
+                {messages.length === 0 ? <Welcome onAsk={ask} /> : <Conversation onAddMistake={(content, agent) => void saveMistake(content, agent)} />}
+              </div>
+              <ChatComposer onSend={(value) => ask(value)} />
             </div>
-            <ChatComposer onSend={(value) => ask(value)} />
-          </div>
-          <KnowledgePanel statuses={statuses} onCreate={() => setKbModalOpen(true)} />
-        </section>
+            <KnowledgePanel statuses={statuses} onCreate={() => setKbModalOpen(true)} />
+          </section>
+        ) : activeView === 'graph' ? (
+          <KnowledgeGraphView graph={knowledgeGraph} loading={graphLoading} />
+        ) : (
+          <MistakeBookView mistakes={mistakes} onDelete={(id) => void removeMistake(id)} onPlan={planFromMistakes} />
+        )}
       </main>
 
       <ModelSettingsModal

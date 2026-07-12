@@ -63,6 +63,8 @@ class RetrievalHit:
             "page_end": self.chunk.page_end,
             "score": round(self.score, 4),
             "doc_type": self.chunk.doc_type,
+            "excerpt": self.chunk.text[:360],
+            "knowledge_tags": self.chunk.knowledge_tags[:8],
             "element_type": self.chunk.element_type,
             "bbox": self.chunk.bbox,
             "image_path": self.chunk.image_path,

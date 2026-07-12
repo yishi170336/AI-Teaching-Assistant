@@ -21,11 +21,13 @@ from backend.app.agents.workflow import CircuitTutorEngine
 from backend.app.config import settings
 from backend.app.rag.manager import KnowledgeBaseManager
 from backend.app.rag.multimodal import BuildModelConfig
-from backend.app.schemas import ChatRequest, KnowledgeBaseRebuildRequest
+from backend.app.schemas import ChatRequest, KnowledgeBaseRebuildRequest, MistakeCreateRequest
 from backend.app.services.memory import ConversationMemory
 from backend.app.services.ollama_client import OllamaClient
 from backend.app.services.openai_compatible_client import OpenAICompatibleClient
 from backend.app.services.attachments import ALLOWED_ATTACHMENT_SUFFIXES, AttachmentStore
+from backend.app.services.mistake_book import MistakeBook
+from backend.app.services.model_catalog import QWEN_MODELS, choose_default_model
 
 
 def configure_logging() -> None:
@@ -55,7 +57,7 @@ memory = ConversationMemory()
 knowledge_bases = KnowledgeBaseManager()
 engine = CircuitTutorEngine(ollama, knowledge_bases)
 attachments = AttachmentStore()
-
+mistake_book = MistakeBook()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -128,8 +130,12 @@ def response_chunks(content: str) -> list[str]:
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
     model_health = await ollama.health()
+    remote_configured = bool(settings.qwen_api_key or settings.deepseek_api_key)
     return {
-        "status": "ok" if model_health.get("ok") else "degraded",
+        # Ollama is optional: the web/API service itself remains healthy and a
+        # configured compatible API can be used while the local daemon is down.
+        "status": "ok",
+        "model_ready": bool(model_health.get("ok") or remote_configured),
         "ollama": model_health,
         "memory": memory.backend,
         "knowledge_bases": knowledge_bases.statuses(),
@@ -140,6 +146,16 @@ async def health() -> dict[str, Any]:
 @app.get("/api/kb/status")
 async def knowledge_base_status() -> dict[str, Any]:
     return {"knowledge_bases": knowledge_bases.statuses()}
+
+
+@app.get("/api/kb/{knowledge_base}/graph")
+async def knowledge_graph(knowledge_base: str) -> dict[str, Any]:
+    try:
+        return knowledge_bases.graph(knowledge_base)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/kb/rebuild")
@@ -204,11 +220,20 @@ async def delete_conversation_session(session_id: str) -> dict[str, Any]:
 @app.get("/api/models")
 async def available_models() -> dict[str, Any]:
     model_health = await ollama.health()
-    local_models = model_health.get("models", []) if model_health.get("ok") else model_health.get("models", [])
+    local_models = model_health.get("models", [])
     if settings.ollama_model not in local_models:
         local_models = [settings.ollama_model, *local_models]
+    default_provider, default_model = choose_default_model(
+        model_health,
+        ollama_model=settings.ollama_model,
+        qwen_model=settings.qwen_vision_model,
+        deepseek_model=settings.deepseek_model,
+        qwen_configured=bool(settings.qwen_api_key),
+        deepseek_configured=bool(settings.deepseek_api_key),
+    )
     return {
-        "default": {"provider": "ollama", "model": settings.ollama_model},
+        "default": {"provider": default_provider, "model": default_model},
+        "ollama_available": bool(model_health.get("ok")),
         "providers": [
             {
                 "id": "ollama",
@@ -219,6 +244,7 @@ async def available_models() -> dict[str, Any]:
                 "base_url": settings.ollama_base_url,
                 "requires_api_key": False,
                 "configured": bool(model_health.get("ok")),
+                "status_message": "Ollama 已连接" if model_health.get("ok") else "Ollama 未启动，可稍后重试",
             },
             {
                 "id": "deepseek",
@@ -234,7 +260,7 @@ async def available_models() -> dict[str, Any]:
                 "id": "qwen",
                 "label": "通义千问 API",
                 "description": "阿里云百炼文本与多模态 OpenAI 兼容接口",
-                "models": [settings.qwen_vision_model, "qwen-plus", "qwen-max", "qwen-turbo"],
+                "models": list(dict.fromkeys([*QWEN_MODELS, settings.qwen_vision_model])),
                 "default_model": settings.qwen_vision_model,
                 "base_url": settings.qwen_base_url,
                 "requires_api_key": True,
@@ -252,6 +278,78 @@ async def available_models() -> dict[str, Any]:
             },
         ],
     }
+
+
+def _fallback_knowledge_points(content: str) -> list[str]:
+    candidates = (
+        "PN结", "二极管", "稳压二极管", "晶体管", "三极管", "场效应管", "静态工作点",
+        "共射放大电路", "相量", "复阻抗", "功率因数", "有功功率", "无功功率", "RLC",
+        "谐振", "KCL", "KVL", "戴维南定理", "诺顿定理",
+    )
+    matched = [point for point in candidates if point.lower() in content.lower()]
+    return matched[:8] or ["电路基础"]
+
+
+async def _extract_mistake_metadata(payload: MistakeCreateRequest) -> tuple[list[str], str]:
+    client: Any | None = None
+    should_close = False
+    prompt = (
+        "你是电路课程错题归档助手。只输出合法 JSON，字段 knowledge_points（1-8个准确知识点）"
+        "和 summary（不超过40字的题目摘要）。先识别真正考查内容，不要把‘计算’‘题目’当知识点。\n"
+        f"待归档内容：\n{payload.content[:12000]}"
+    )
+    try:
+        client, should_close = select_model_client(payload)
+        result_text = await client.chat(
+            [{"role": "user", "content": prompt}],
+            temperature=0.0,
+            json_mode=True,
+            reasoning_budget=96,
+        )
+        match = re.search(r"\{.*\}", result_text, re.S)
+        value = json.loads(match.group(0) if match else result_text)
+        points = value.get("knowledge_points", [])
+        if not isinstance(points, list):
+            points = []
+        normalized = [str(point).strip() for point in points if str(point).strip()]
+        summary = str(value.get("summary", "")).strip()
+        return normalized[:8] or _fallback_knowledge_points(payload.content), summary or payload.content[:40]
+    except Exception:
+        logger.warning("Mistake knowledge extraction fell back to local rules", exc_info=True)
+        return _fallback_knowledge_points(payload.content), payload.content.splitlines()[0][:40]
+    finally:
+        if should_close and client is not None:
+            await client.close()
+
+
+@app.get("/api/mistakes")
+async def list_mistakes(student_id: str) -> dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", student_id):
+        raise HTTPException(status_code=400, detail="学生标识不合法")
+    return {"mistakes": await mistake_book.list(student_id)}
+
+
+@app.post("/api/mistakes")
+async def add_mistake(payload: MistakeCreateRequest) -> dict[str, Any]:
+    knowledge_points, summary = await _extract_mistake_metadata(payload)
+    item = await mistake_book.add(
+        student_id=payload.student_id,
+        session_id=payload.session_id,
+        content=payload.content,
+        agent=payload.agent,
+        knowledge_points=knowledge_points,
+        summary=summary,
+    )
+    return {"ok": True, "mistake": item}
+
+
+@app.delete("/api/mistakes/{mistake_id}")
+async def delete_mistake(mistake_id: str, student_id: str) -> dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", student_id) or not re.fullmatch(r"[a-f0-9]{32}", mistake_id):
+        raise HTTPException(status_code=400, detail="错题标识不合法")
+    if not await mistake_book.delete(student_id, mistake_id):
+        raise HTTPException(status_code=404, detail="错题不存在")
+    return {"ok": True}
 
 
 def select_model_client(payload: ChatRequest) -> tuple[Any, bool]:

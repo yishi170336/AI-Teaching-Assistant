@@ -13,6 +13,7 @@ from backend.app.config import settings
 from backend.app.rag.pipeline import build_knowledge_base
 from backend.app.rag.retriever import HybridRetriever
 from backend.app.rag.multimodal import BuildModelConfig
+from backend.app.rag.multimodal import build_local_knowledge_graph
 from backend.app.rag.stores import sync_neo4j_graph
 
 
@@ -88,6 +89,35 @@ class KnowledgeBaseManager:
 
     def statuses(self) -> list[dict[str, Any]]:
         return sorted(self._states.values(), key=lambda item: (item["id"] != "default", item["id"]))
+
+    def graph(self, knowledge_base: str) -> dict[str, Any]:
+        """Return the persisted graph, or derive it from older compatible indexes."""
+        retriever = self.get(knowledge_base)
+        path = retriever.index_dir / "knowledge_graph.json"
+        if path.exists():
+            graph = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            graph = build_local_knowledge_graph(retriever.chunks)
+        nodes = graph.get("nodes", [])
+        edges = graph.get("edges", [])
+        # The student view focuses on concepts and their supporting chunks.
+        allowed_nodes = [node for node in nodes if node.get("type") in {"concept", "chunk", "component", "net"}]
+        visible_nodes = allowed_nodes[:240]
+        allowed_ids = {str(node.get("id")) for node in visible_nodes}
+        allowed_edges = [
+            edge for edge in edges
+            if str(edge.get("source")) in allowed_ids and str(edge.get("target")) in allowed_ids
+        ]
+        return {
+            "knowledge_base": knowledge_base,
+            "nodes": visible_nodes,
+            "edges": allowed_edges[:480],
+            "stats": {
+                "nodes": len(allowed_nodes),
+                "edges": len(allowed_edges),
+                "concepts": sum(node.get("type") == "concept" for node in allowed_nodes),
+            },
+        }
 
     def start_build(
         self,
