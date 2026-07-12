@@ -21,7 +21,11 @@ from backend.app.rag.multimodal import (
     project_student_knowledge_graph,
 )
 from backend.app.services.qwen_multimodal_client import QwenMultimodalAPIError
-from backend.app.rag.ontology import extract_formula_concepts
+from backend.app.rag.ontology import (
+    extract_formula_concepts,
+    meaningful_section,
+    normalize_concept_name,
+)
 
 
 def _diagram_png() -> bytes:
@@ -112,6 +116,59 @@ def test_graph_separates_documents_pages_concepts_and_components():
     assert "formula" not in names_by_type["concept"]
     assert "analog_electronics_pages_101_103" not in names_by_type["concept"]
     assert "Rb" in names_by_type["component"]
+
+
+def test_pdf_section_number_prefixes_are_removed_from_concepts():
+    assert normalize_concept_name(". 1. 3PN结") == "PN结"
+    assert meaningful_section("1. 2. 4 二极管的等效电路") == "二极管的等效电路"
+
+    chunk = TextChunk(
+        id="section-prefix",
+        text="PN结具有单向导电性。",
+        source="lesson.pdf",
+        chapter="第一章",
+        section="1. 1. 3PN结",
+        page_start=31,
+        page_end=31,
+        doc_type="textbook",
+        knowledge_tags=[". 1. 3PN结", "PN结"],
+        element_type="text",
+    )
+    graph = build_local_knowledge_graph([chunk])
+    concept_names = [
+        node["name"] for node in graph["nodes"] if node["type"] == "concept"
+    ]
+
+    assert concept_names == ["PN结"]
+
+
+def test_student_projection_merges_legacy_numbered_concept_aliases():
+    legacy_graph = {
+        "nodes": [
+            {"id": "document:1", "type": "document", "name": "教材"},
+            {"id": "page:1", "type": "page", "name": "第 31 页", "page": 31},
+            {"id": "chunk:1", "type": "chunk", "name": "正文"},
+            {"id": "chunk:2", "type": "chunk", "name": "正文"},
+            {"id": "concept:dirty", "type": "concept", "name": ". 1. 3PN结"},
+            {"id": "concept:clean", "type": "concept", "name": "PN结"},
+        ],
+        "edges": [
+            {"source": "document:1", "type": "HAS_PAGE", "target": "page:1"},
+            {"source": "page:1", "type": "HAS_CHUNK", "target": "chunk:1"},
+            {"source": "page:1", "type": "HAS_CHUNK", "target": "chunk:2"},
+            {"source": "chunk:1", "type": "MENTIONS", "target": "concept:dirty"},
+            {"source": "chunk:2", "type": "MENTIONS", "target": "concept:clean"},
+        ],
+    }
+
+    projected = project_student_knowledge_graph(legacy_graph)
+    concepts = [node for node in projected["nodes"] if node["type"] == "concept"]
+    covers = [edge for edge in projected["edges"] if edge["type"] == "COVERS"]
+
+    assert [node["name"] for node in concepts] == ["PN结"]
+    assert concepts[0]["evidence_count"] == 2
+    assert len(covers) == 1
+    assert covers[0]["evidence_count"] == 2
 
 
 def test_malformed_vision_json_is_safely_normalized():

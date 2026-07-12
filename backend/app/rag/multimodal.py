@@ -25,6 +25,7 @@ from backend.app.rag.ontology import (
     extract_formula_concepts,
     is_course_concept,
     meaningful_section,
+    normalize_concept_name,
 )
 from backend.app.services.qwen_multimodal_client import QwenMultimodalAPIError, QwenVisionClient
 
@@ -1258,10 +1259,12 @@ def build_local_knowledge_graph(chunks: Iterable[TextChunk]) -> dict[str, Any]:
             "element_type": chunk.element_type,
         }
         add_edge(page_id, "HAS_CHUNK", chunk_node)
-        concepts = [
-            concept for concept in dict.fromkeys(chunk.knowledge_tags)
-            if is_course_concept(concept)
-        ]
+        concepts = list(dict.fromkeys(
+            normalized
+            for concept in chunk.knowledge_tags
+            if (normalized := normalize_concept_name(concept))
+            and is_course_concept(normalized)
+        ))
         for concept in concepts:
             concept_id = "concept:" + hashlib.sha1(concept.encode("utf-8")).hexdigest()[:16]
             nodes.setdefault(concept_id, {"id": concept_id, "type": "concept", "name": concept})
@@ -1349,9 +1352,23 @@ def project_student_knowledge_graph(graph: dict[str, Any]) -> dict[str, Any]:
         incoming.setdefault(target, []).append(edge)
 
     visible: dict[str, dict[str, Any]] = {}
+    concept_aliases: dict[str, str] = {}
     for node_id, node in raw_nodes.items():
-        if node.get("type") in {"document", "page", "concept"}:
+        if node.get("type") in {"document", "page"}:
             visible[node_id] = dict(node)
+        elif node.get("type") == "concept":
+            concept_name = normalize_concept_name(str(node.get("name", "")))
+            if not concept_name:
+                continue
+            canonical_id = "concept:" + hashlib.sha1(
+                concept_name.encode("utf-8")
+            ).hexdigest()[:16]
+            concept_aliases[node_id] = canonical_id
+            visible.setdefault(canonical_id, {
+                **node,
+                "id": canonical_id,
+                "name": concept_name,
+            })
 
     projected_edges: list[dict[str, Any]] = []
     seen_edges: set[tuple[str, str, str]] = set()
@@ -1387,7 +1404,8 @@ def project_student_knowledge_graph(graph: dict[str, Any]) -> dict[str, Any]:
     for edge in raw_edges:
         if edge.get("type") != "MENTIONS":
             continue
-        chunk_id, concept_id = str(edge.get("source")), str(edge.get("target"))
+        chunk_id = str(edge.get("source"))
+        concept_id = concept_aliases.get(str(edge.get("target")), "")
         page_id = chunk_to_page.get(chunk_id)
         if not page_id or concept_id not in visible:
             continue
@@ -1430,7 +1448,9 @@ def project_student_knowledge_graph(graph: dict[str, Any]) -> dict[str, Any]:
             visible[merged_id]["evidence_count"] += 1
         for relation in outgoing.get(node_id, []):
             if relation.get("type") == "INSTANCE_OF":
-                add_edge(merged_id, "INSTANCE_OF", str(relation.get("target")))
+                concept_id = concept_aliases.get(str(relation.get("target")), "")
+                if concept_id:
+                    add_edge(merged_id, "INSTANCE_OF", concept_id)
 
     for chunk_id, page_id in chunk_to_page.items():
         chunk = raw_nodes.get(chunk_id, {})

@@ -36,8 +36,21 @@ NON_CONCEPT_TAGS = {
 }
 
 
+def normalize_concept_name(value: str) -> str:
+    """Remove noisy chapter-number prefixes emitted by PDF layout parsing."""
+
+    normalized = re.sub(r"\s+", " ", value).strip()
+    numbered = re.match(
+        r"^[.．、]?\s*(?:\d+\s*[.．]\s*)*\d+\s*(.+)$",
+        normalized,
+    )
+    if numbered and re.search(r"[\u4e00-\u9fff]", numbered.group(1)):
+        normalized = numbered.group(1)
+    return normalized.strip(" .．、:：-")
+
+
 def meaningful_section(section: str) -> str:
-    value = re.sub(r"^\d+(?:\.\d+)*\s*", "", section).strip()
+    value = normalize_concept_name(section)
     if not value or len(value) > 60:
         return ""
     if re.search(r"(?:pages?|页)[_-]?\d+[_-]\d+", value, re.I):
