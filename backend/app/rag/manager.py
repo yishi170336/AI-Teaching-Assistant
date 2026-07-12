@@ -251,8 +251,6 @@ class KnowledgeBaseManager:
 
     async def delete(self, knowledge_base: str) -> None:
         knowledge_base = self.validate_id(knowledge_base)
-        if knowledge_base == "default":
-            raise RuntimeError("系统 default 知识库不能删除")
         running = self._tasks.get(knowledge_base)
         if running is not None and not running.done():
             raise RuntimeError(f"知识库 {knowledge_base} 正在构建，请先取消任务")
@@ -266,7 +264,11 @@ class KnowledgeBaseManager:
         if index_dir.exists():
             await asyncio.to_thread(delete_qdrant_indexes, index_dir)
             await asyncio.to_thread(shutil.rmtree, index_dir)
-        if resource_dir.exists():
+        if resource_dir.exists() and knowledge_base == "default":
+            for resource in resource_dir.iterdir():
+                if resource.is_file():
+                    await asyncio.to_thread(resource.unlink)
+        elif resource_dir.exists():
             await asyncio.to_thread(shutil.rmtree, resource_dir)
         for temporary in settings.vector_stores_dir.glob(f".{knowledge_base}.building-*"):
             if temporary.is_dir():

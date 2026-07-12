@@ -4,7 +4,6 @@ import asyncio
 import io
 
 import fitz
-import pytest
 from PIL import Image, ImageDraw
 
 from backend.app.rag.models import PageDocument, TextChunk
@@ -315,10 +314,32 @@ def test_delete_knowledge_base_removes_index_and_resources(tmp_path, monkeypatch
     assert manager.statuses() == []
 
 
-def test_system_default_knowledge_base_cannot_be_deleted():
+def test_system_default_delete_preserves_custom_knowledge_base_resources(tmp_path, monkeypatch):
+    resources_root = tmp_path / "resources"
+    custom_resource = resources_root / "knowledge_bases" / "keep-me" / "lesson.md"
+    index_dir = tmp_path / "indexes" / "default"
+    custom_resource.parent.mkdir(parents=True)
+    index_dir.mkdir(parents=True)
+    custom_resource.write_text("custom lesson", encoding="utf-8")
+    (resources_root / "default.pdf").write_text("default lesson", encoding="utf-8")
+    (resources_root / "default.xlsx").write_text("default questions", encoding="utf-8")
+    (index_dir / "index_meta.json").write_text("{}", encoding="utf-8")
+
     manager = KnowledgeBaseManager()
-    with pytest.raises(RuntimeError, match="不能删除"):
-        asyncio.run(manager.delete("default"))
+    manager._states["default"] = {
+        "id": "default", "state": "ready", "documents": 1, "chunks": 1,
+    }
+    monkeypatch.setattr(manager, "resource_dir", lambda _knowledge_base: resources_root)
+    monkeypatch.setattr(manager, "index_dir", lambda _knowledge_base: index_dir)
+
+    asyncio.run(manager.delete("default"))
+
+    assert resources_root.exists()
+    assert custom_resource.read_text(encoding="utf-8") == "custom lesson"
+    assert not (resources_root / "default.pdf").exists()
+    assert not (resources_root / "default.xlsx").exists()
+    assert not index_dir.exists()
+    assert manager.statuses() == []
 
 
 def test_inline_formula_regions_remain_text_evidence_only():

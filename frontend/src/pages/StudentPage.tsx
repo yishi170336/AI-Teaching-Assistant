@@ -1031,15 +1031,11 @@ function StudentPageContent() {
   const activeBuilds = statuses.filter((item) => item.state === 'building' || item.state === 'cancelling')
   const hasActiveBuilds = activeBuilds.length > 0
   const currentKbStatus = statuses.find((item) => item.id === knowledgeBase)
-  const deleteKbDisabledReason = knowledgeBase === 'default'
-    ? '系统 default 知识库不能删除'
-    : knowledgeBase === defaultKnowledgeBase
-      ? '请先将其他知识库设为默认课程知识库'
-      : !currentKbStatus
-        ? '该知识库尚未创建'
-        : currentKbStatus.state === 'building' || currentKbStatus.state === 'cancelling'
-          ? '请先取消正在进行的构建任务'
-          : ''
+  const deleteKbDisabledReason = !currentKbStatus
+    ? '该知识库尚未创建'
+    : currentKbStatus.state === 'building' || currentKbStatus.state === 'cancelling'
+      ? '请先取消正在进行的构建任务'
+      : ''
 
   const refreshStatuses = async () => {
     try {
@@ -1274,14 +1270,23 @@ function StudentPageContent() {
   }
 
   const removeKnowledgeBase = async () => {
-    if (knowledgeBase === defaultKnowledgeBase) {
-      toast.warning('请先选择另一个默认课程知识库，再删除当前知识库')
-      return
-    }
     try {
       const deleted = knowledgeBase
+      const replacement = statuses.find((item) => (
+        item.id !== deleted
+        && (item.state === 'ready' || item.available)
+      ))
+      const nextKnowledgeBase = replacement?.id || 'default'
       const result = await deleteKnowledgeBase(deleted)
-      setKnowledgeBase(defaultKnowledgeBase)
+      if (deleted === defaultKnowledgeBase) {
+        setDefaultKnowledgeBase(nextKnowledgeBase)
+      } else {
+        setKnowledgeBase(
+          statuses.some((item) => item.id === defaultKnowledgeBase && item.id !== deleted)
+            ? defaultKnowledgeBase
+            : nextKnowledgeBase,
+        )
+      }
       setKnowledgeGraph(undefined)
       await refreshStatuses()
       toast.success(result.message)
