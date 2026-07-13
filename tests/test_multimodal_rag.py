@@ -18,6 +18,7 @@ from backend.app.rag.multimodal import (
     _analyze_image,
     _formula_latex_from_pdf_geometry,
     _indexable_pdfkit_regions,
+    _is_full_page_scan,
     _normalize_circuit_result,
     _normalize_formula_result,
     _ocr_scanned_pages,
@@ -114,6 +115,22 @@ def test_scanned_page_ocr_recovers_text_hierarchy_concepts_and_cache(tmp_path):
     cached = _ocr_scanned_pages(pdf_path, docs, tmp_path, None, "doc-hash")
     assert cached[0].text == first[0].text
     assert cached[0].section == "1.1.3 PN结"
+
+
+def test_full_page_scan_is_not_reindexed_as_a_figure():
+    scanned = PageDocument(
+        "OCR 正文",
+        "scanned.pdf",
+        1,
+        "第一章",
+        "1.1 半导体",
+        extra={"ocr_processor": "qwen-vl:qwen3-vl-flash"},
+    )
+    native = PageDocument("原生正文", "native.pdf", 1, "第一章", "第一节")
+
+    assert _is_full_page_scan([0, 0, 500, 700], 500, 700, scanned) is True
+    assert _is_full_page_scan([50, 100, 300, 350], 500, 700, scanned) is False
+    assert _is_full_page_scan([0, 0, 500, 700], 500, 700, native) is False
 
 
 def test_multimodal_chunk_and_graph_keep_circuit_relationships():

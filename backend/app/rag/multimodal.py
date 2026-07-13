@@ -337,6 +337,24 @@ def _write_page_ocr_cache(path: Path, entries: dict[int, dict[str, Any]]) -> Non
     temporary.replace(path)
 
 
+def _is_full_page_scan(
+    bbox: list[float],
+    page_width: float,
+    page_height: float,
+    page_document: PageDocument,
+) -> bool:
+    if not (
+        isinstance(page_document.extra, dict)
+        and page_document.extra.get("ocr_processor")
+        and len(bbox) == 4
+    ):
+        return False
+    left, top, right, bottom = bbox
+    image_area = max(0.0, right - left) * max(0.0, bottom - top)
+    page_area = max(1.0, page_width * page_height)
+    return image_area / page_area >= 0.8
+
+
 def _ocr_scanned_pages(
     path: Path,
     pages: list[PageDocument],
@@ -1011,6 +1029,7 @@ def enhance_pdf(
     try:
         for page_no in sorted(allowed_pages):
             page = document[page_no - 1]
+            meta = page_meta[page_no]
             blocks = page.get_text(
                 "dict",
                 flags=fitz.TEXT_PRESERVE_LIGATURES | fitz.TEXT_PRESERVE_IMAGES,
@@ -1211,6 +1230,11 @@ def enhance_pdf(
                     break
                 if int(block.get("type", -1)) != 1 or not block.get("image"):
                     continue
+                bbox = [round(float(v), 2) for v in block.get("bbox", [0, 0, 0, 0])]
+                if _is_full_page_scan(
+                    bbox, float(page.rect.width), float(page.rect.height), meta
+                ):
+                    continue
                 image_counter += 1
                 if settings.multimodal_image_limit and image_counter > settings.multimodal_image_limit:
                     break
@@ -1223,9 +1247,7 @@ def enhance_pdf(
                 element_id, digest = _element_id(path.name, page_no, order, image_bytes)
                 image_path = artifacts_dir / f"p{page_no:04d}-{element_id[:10]}.{ext}"
                 image_path.write_bytes(image_bytes)
-                bbox = [round(float(v), 2) for v in block.get("bbox", [0, 0, 0, 0])]
                 nearby = "\n".join(text for _, text in text_blocks)[-3000:] or meta.text[-3000:]
-                meta = page_meta[page_no]
                 element = LayoutElement(
                     id=element_id, source=path.name, page=page_no, element_type="image",
                     bbox=bbox, image_path=str(image_path.relative_to(output_dir)).replace("\\", "/"),
