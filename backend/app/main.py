@@ -26,7 +26,7 @@ from backend.app.services.memory import ConversationMemory
 from backend.app.services.ollama_client import OllamaClient
 from backend.app.services.openai_compatible_client import OpenAICompatibleClient
 from backend.app.services.attachments import ALLOWED_ATTACHMENT_SUFFIXES, AttachmentStore
-from backend.app.services.mistake_book import MistakeBook, related_mistake_attachments
+from backend.app.services.mistake_book import MistakeBook, related_mistake_context
 from backend.app.services.model_catalog import (
     QWEN_MODELS,
     QWEN_MODEL_OPTIONS,
@@ -368,8 +368,9 @@ async def _extract_mistake_metadata(payload: MistakeCreateRequest) -> tuple[list
     should_close = False
     prompt = (
         "你是电路课程错题归档助手。只输出合法 JSON，字段 knowledge_points（1-8个准确知识点）"
-        "和 summary（不超过40字的题目摘要）。先识别真正考查内容，不要把‘计算’‘题目’当知识点。\n"
-        f"待归档内容：\n{payload.content[:12000]}"
+        "和 summary（不超过40字的题目摘要）。知识点必须来自题目本身，答案只用于消除题意歧义；"
+        "不要把‘计算’‘题目’当知识点。\n"
+        f"待归档题目：\n{payload.question[:12000]}\n\n参考答案：\n{payload.answer[:4000]}"
     )
     try:
         client, should_close = select_model_client(payload)
@@ -386,10 +387,10 @@ async def _extract_mistake_metadata(payload: MistakeCreateRequest) -> tuple[list
             points = []
         normalized = [str(point).strip() for point in points if str(point).strip()]
         summary = str(value.get("summary", "")).strip()
-        return normalized[:8] or _fallback_knowledge_points(payload.content), summary or payload.content[:40]
+        return normalized[:8] or _fallback_knowledge_points(payload.question), summary or payload.question[:40]
     except Exception:
         logger.warning("Mistake knowledge extraction fell back to local rules", exc_info=True)
-        return _fallback_knowledge_points(payload.content), payload.content.splitlines()[0][:40]
+        return _fallback_knowledge_points(payload.question), payload.question.splitlines()[0][:40]
     finally:
         if should_close and client is not None:
             await client.close()
@@ -404,7 +405,10 @@ async def list_mistakes(student_id: str) -> dict[str, Any]:
     restored_items: list[dict[str, Any]] = []
     for original in items:
         item = dict(original)
-        if item.get("attachments"):
+        item["question"] = str(item.get("question") or item.get("content", ""))
+        item["answer"] = str(item.get("answer", ""))
+        item["content"] = item["question"]
+        if item["question"] and item["answer"] and "attachments" in item:
             restored_items.append(item)
             continue
         session_id = str(item.get("session_id", ""))
@@ -416,13 +420,16 @@ async def list_mistakes(student_id: str) -> dict[str, Any]:
             history_cache[session_id] = await asyncio.to_thread(
                 attachments.enrich_history, session_id, history
             )
-        recovered = related_mistake_attachments(
+        recovered = related_mistake_context(
             history_cache[session_id],
-            str(item.get("content", "")),
+            str(item.get("question") or item.get("content", "")),
             str(item.get("agent", "")),
         )
-        if recovered:
-            item["attachments"] = recovered
+        item["question"] = recovered["question"] or str(item.get("question") or item.get("content", ""))
+        item["answer"] = recovered["answer"] or str(item.get("answer", ""))
+        item["content"] = item["question"]
+        if recovered["attachments"] and not item.get("attachments"):
+            item["attachments"] = recovered["attachments"]
         restored_items.append(item)
     return {"mistakes": restored_items}
 
@@ -436,7 +443,8 @@ async def add_mistake(payload: MistakeCreateRequest) -> dict[str, Any]:
     item = await mistake_book.add(
         student_id=payload.student_id,
         session_id=payload.session_id,
-        content=payload.content,
+        question=payload.question,
+        answer=payload.answer,
         agent=payload.agent,
         knowledge_points=knowledge_points,
         summary=summary,

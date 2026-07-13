@@ -356,28 +356,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
         {
           onStatus: (data) => set({ stage: data.message, stageAgent: data.agent }),
           onMeta: (data) => {
-            set((state) => ({
-              activeSources:
-                state.activeMessageId === assistantId
-                  ? data.sources || []
-                  : state.activeSources,
-              activeCitedSources:
-                state.activeMessageId === assistantId
-                  ? data.cited_sources || []
-                  : state.activeCitedSources,
-              messages: state.messages.map((item) =>
-                item.id === assistantId
-                  ? {
-                      ...item,
-                      agent: data.agent,
-                      provider: data.provider,
-                      model: data.model,
-                      sources: data.sources,
-                      citedSources: data.cited_sources,
-                    }
-                  : item,
-              ),
-            }))
+            set((state) => {
+              const sources = data.sources || []
+              const assistant = state.messages.find((item) => item.id === assistantId)
+              const citedSources = data.cited_sources?.length
+                ? data.cited_sources
+                : citedSourcesFromContent(assistant?.content || '', sources)
+              return {
+                activeSources:
+                  state.activeMessageId === assistantId
+                    ? sources
+                    : state.activeSources,
+                activeCitedSources:
+                  state.activeMessageId === assistantId
+                    ? citedSources
+                    : state.activeCitedSources,
+                messages: state.messages.map((item) =>
+                  item.id === assistantId
+                    ? {
+                        ...item,
+                        agent: data.agent,
+                        provider: data.provider,
+                        model: data.model,
+                        sources,
+                        citedSources,
+                      }
+                    : item,
+                ),
+              }
+            })
           },
           onDelta: (content) => {
             set((state) => ({

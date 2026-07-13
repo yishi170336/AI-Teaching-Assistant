@@ -863,7 +863,18 @@ class CircuitTutorEngine:
         response = "".join(parts).strip()
         if not response:
             raise RuntimeError("学习规划模型未返回最终方案")
-        return {"response": response, "agent": "学习规划 Agent"}
+        finalized_response, cited_sources = _finalize_answer_citations(
+            response, state.get("hits", [])
+        )
+        if delta_callback and finalized_response.startswith(response):
+            citation_suffix = finalized_response[len(response):]
+            if citation_suffix:
+                await delta_callback(citation_suffix)
+        return {
+            "response": finalized_response,
+            "cited_sources": cited_sources,
+            "agent": "学习规划 Agent",
+        }
 
     async def _rewrite_query(self, state: AgentState) -> AgentState:
         await _emit(state, "rewrite", "正在把口语问题改写为电路术语", "答疑 Agent")

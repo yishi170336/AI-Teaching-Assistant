@@ -73,7 +73,9 @@ class SourceInfo(BaseModel):
 class MistakeCreateRequest(BaseModel):
     student_id: str = Field(min_length=1, max_length=96)
     session_id: str = Field(min_length=1, max_length=96)
-    content: str = Field(min_length=1, max_length=16000)
+    question: str = Field(default="", max_length=16000)
+    answer: str = Field(default="", max_length=40000)
+    content: str = Field(default="", max_length=16000, exclude=True)
     agent: str = Field(default="学习 Agent", max_length=64)
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     model_provider: Literal["ollama", "deepseek", "qwen", "custom"] = "ollama"
@@ -97,13 +99,19 @@ class MistakeCreateRequest(BaseModel):
                 raise ValueError("附件标识不合法")
         return list(dict.fromkeys(values))
 
-    @field_validator("content", "agent", "model", "api_key", "base_url")
+    @field_validator("question", "answer", "content", "agent", "model", "api_key", "base_url")
     @classmethod
     def strip_mistake_fields(cls, value: str) -> str:
         return value.strip()
 
     @model_validator(mode="after")
     def validate_mistake_endpoint(self) -> "MistakeCreateRequest":
+        self.question = self.question or self.content
+        self.content = self.question
+        if not self.question:
+            raise ValueError("错题题目不能为空")
+        if not self.answer:
+            raise ValueError("错题答案不能为空")
         if self.base_url:
             parsed = urlparse(self.base_url)
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:

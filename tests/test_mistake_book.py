@@ -1,6 +1,10 @@
 import asyncio
 
-from backend.app.services.mistake_book import MistakeBook, related_mistake_attachments
+from backend.app.services.mistake_book import (
+    MistakeBook,
+    related_mistake_attachments,
+    related_mistake_context,
+)
 
 
 def test_mistake_book_is_durable_deduplicated_and_student_scoped(tmp_path):
@@ -9,7 +13,8 @@ def test_mistake_book_is_durable_deduplicated_and_student_scoped(tmp_path):
     first = asyncio.run(book.add(
         student_id="learner-a",
         session_id="student-session-a",
-        content="求二极管恒压降模型下的回路电流。",
+        question="求二极管恒压降模型下的回路电流。",
+        answer="回路电流为 2 mA。",
         agent="答疑 Agent",
         knowledge_points=["二极管", "恒压降模型", "二极管"],
         summary="二极管恒压降计算",
@@ -17,7 +22,8 @@ def test_mistake_book_is_durable_deduplicated_and_student_scoped(tmp_path):
     duplicate = asyncio.run(book.add(
         student_id="learner-a",
         session_id="student-session-b",
-        content="求二极管恒压降模型下的回路电流。",
+        question="求二极管恒压降模型下的回路电流。",
+        answer="回路电流为 2 mA。",
         agent="出题 Agent",
         knowledge_points=["二极管"],
         summary="重复题",
@@ -25,7 +31,8 @@ def test_mistake_book_is_durable_deduplicated_and_student_scoped(tmp_path):
     asyncio.run(book.add(
         student_id="learner-b",
         session_id="student-session-c",
-        content="分析晶体管静态工作点。",
+        question="分析晶体管静态工作点。",
+        answer="先画直流通路再计算。",
         agent="答疑 Agent",
         knowledge_points=["晶体管", "静态工作点"],
         summary="静态工作点",
@@ -53,7 +60,8 @@ def test_mistake_book_persists_attachments_and_upgrades_a_duplicate(tmp_path):
     first = asyncio.run(book.add(
         student_id="learner-a",
         session_id="student-session",
-        content="分析图中电路。",
+        question="分析图中电路。",
+        answer="",
         agent="学生原题",
         knowledge_points=["共射放大电路"],
         summary="电路分析",
@@ -61,14 +69,19 @@ def test_mistake_book_persists_attachments_and_upgrades_a_duplicate(tmp_path):
     upgraded = asyncio.run(book.add(
         student_id="learner-a",
         session_id="student-session",
-        content="分析图中电路。",
-        agent="学生原题",
-        knowledge_points=["共射放大电路"],
-        summary="电路分析",
+        question="分析图中电路。",
+        answer="该电路缺少直流偏置。",
+        agent="答疑 Agent",
+        knowledge_points=["晶体管", "静态工作点"],
+        summary="缺少偏置的共射电路",
         attachments=[attachment],
     ))
 
     assert first["id"] == upgraded["id"]
+    assert upgraded["question"] == "分析图中电路。"
+    assert upgraded["answer"] == "该电路缺少直流偏置。"
+    assert upgraded["knowledge_points"] == ["晶体管", "静态工作点"]
+    assert upgraded["summary"] == "缺少偏置的共射电路"
     assert upgraded["attachments"] == [attachment]
     assert asyncio.run(MistakeBook(path).list("learner-a"))[0]["attachments"] == [attachment]
 
@@ -93,3 +106,17 @@ def test_legacy_mistake_recovers_direct_and_answer_attachments_from_history():
     assert related_mistake_attachments(
         history, "该电路缺少直流偏置。", "答疑 Agent"
     ) == [attachment]
+    assert related_mistake_context(
+        history, "上述电路有什么问题", "学生原题"
+    ) == {
+        "question": "上述电路有什么问题",
+        "answer": "该电路缺少直流偏置。",
+        "attachments": [attachment],
+    }
+    assert related_mistake_context(
+        history, "该电路缺少直流偏置。", "答疑 Agent"
+    ) == {
+        "question": "上述电路有什么问题",
+        "answer": "该电路缺少直流偏置。",
+        "attachments": [attachment],
+    }

@@ -81,6 +81,12 @@ import { CHAT_MODEL, CHAT_MODEL_PROVIDER, ChatMessage, ChatMode, useChatStore } 
 
 const { TextArea } = Input
 type WorkspaceView = 'chat' | 'graph' | 'mistakes'
+type MistakeDraft = {
+  question: string
+  answer: string
+  agent: string
+  attachments: AttachmentInfo[]
+}
 
 const providerLabels: Record<ModelProviderId, string> = {
   ollama: '本地',
@@ -672,7 +678,32 @@ function mistakeAttachmentsForMessage(messages: ChatMessage[], index: number): A
   return []
 }
 
-function Conversation({ onAddMistake }: { onAddMistake: (content: string, agent: string, attachments: AttachmentInfo[]) => void }) {
+function mistakeDraftForAssistant(messages: ChatMessage[], index: number): MistakeDraft | null {
+  const message = messages[index]
+  if (message.role !== 'assistant' || !message.content) return null
+  const agent = message.agent || ''
+  if (agent !== '答疑 Agent' && agent !== '出题 Agent') return null
+  const previousUser = [...messages.slice(0, index)].reverse().find((item) => item.role === 'user')
+  if (!previousUser?.content) return null
+  let question = previousUser.content
+  let answer = message.content
+  if (agent === '出题 Agent') {
+    const questionMatch = message.content.match(
+      /(?:^|\n)###\s*题目\s*\n+([\s\S]*?)(?=\n+---|\n+###\s*(?:解题步骤|标准答案|易错点)|$)/,
+    )
+    const answerStart = message.content.search(/(?:^|\n)###\s*(?:解题步骤|标准答案)/)
+    if (questionMatch?.[1]?.trim()) question = questionMatch[1].trim()
+    if (answerStart >= 0) answer = message.content.slice(answerStart).trim()
+  }
+  return {
+    question,
+    answer,
+    agent,
+    attachments: mistakeAttachmentsForMessage(messages, index),
+  }
+}
+
+function Conversation({ onAddMistake }: { onAddMistake: (draft: MistakeDraft) => void }) {
   const messages = useChatStore((state) => state.messages)
   const streaming = useChatStore((state) => state.streaming)
   const stage = useChatStore((state) => state.stage)
@@ -763,15 +794,18 @@ function Conversation({ onAddMistake }: { onAddMistake: (content: string, agent:
                 <span>{stage || '正在准备…'}</span>
               </div>
             )}
-            {message.content && !(streaming && index === messages.length - 1) && (
+            {message.content
+              && message.role === 'assistant'
+              && !message.failed
+              && (message.agent === '答疑 Agent' || message.agent === '出题 Agent')
+              && !(streaming && index === messages.length - 1) && (
               <div className="message-tools">
                 <button
                   type="button"
-                  onClick={() => onAddMistake(
-                    message.content,
-                    message.role === 'assistant' ? message.agent || '答疑 Agent' : '学生原题',
-                    mistakeAttachmentsForMessage(messages, index),
-                  )}
+                  onClick={() => {
+                    const draft = mistakeDraftForAssistant(messages, index)
+                    if (draft) onAddMistake(draft)
+                  }}
                 >
                   <BookmarkPlus size={14} /> 加入错题本
                 </button>
@@ -987,6 +1021,7 @@ function MistakeBookView({
   onDelete: (id: string) => void
   onPlan: () => void
 }) {
+  const [selectedMistake, setSelectedMistake] = useState<MistakeItem | null>(null)
   const pointCounts = useMemo(() => {
     const counts = new Map<string, number>()
     mistakes.flatMap((item) => item.knowledge_points).forEach((point) => counts.set(point, (counts.get(point) || 0) + 1))
@@ -1017,14 +1052,54 @@ function MistakeBookView({
                   ))}
                 </div>
               ) : null}
-              <div className="mistake-content"><MathMarkdown content={item.content} /></div>
-              <Popconfirm title="从错题本删除？" okText="删除" cancelText="取消" onConfirm={() => onDelete(item.id)}>
-                <button className="mistake-delete"><Trash2 size={14} /> 删除</button>
-              </Popconfirm>
+              <div className="mistake-content"><MathMarkdown content={item.question || item.content} /></div>
+              <div className="mistake-actions">
+                <button className="mistake-open" onClick={() => setSelectedMistake(item)}>
+                  <BookOpen size={14} /> 查看题目与答案
+                </button>
+                <Popconfirm title="从错题本删除？" okText="删除" cancelText="取消" onConfirm={() => onDelete(item.id)}>
+                  <button className="mistake-delete"><Trash2 size={14} /> 删除</button>
+                </Popconfirm>
+              </div>
             </article>
           ))}
         </div>
       ) : <div className="workspace-empty"><Layers3 size={30} /><strong>错题本还是空的</strong><p>在答疑或出题结果旁点击“加入错题本”，系统会自动识别知识点。</p></div>}
+      <Modal
+        open={Boolean(selectedMistake)}
+        title={selectedMistake?.summary || '错题详情'}
+        width={860}
+        onCancel={() => setSelectedMistake(null)}
+        footer={<Button onClick={() => setSelectedMistake(null)}>关闭</Button>}
+      >
+        {selectedMistake && (
+          <div className="mistake-detail">
+            <section>
+              <span className="mistake-detail-label">题目</span>
+              {selectedMistake.attachments?.length ? (
+                <div className="mistake-attachments mistake-detail-attachments">
+                  {selectedMistake.attachments.map((attachment) => (
+                    <a key={attachment.id} href={attachment.url} target="_blank" rel="noreferrer">
+                      {attachment.kind === 'image'
+                        ? <img src={attachment.url} alt={attachment.name} />
+                        : <span><FileText size={16} />{attachment.name}</span>}
+                    </a>
+                  ))}
+                </div>
+              ) : null}
+              <div className="mistake-detail-content"><MathMarkdown content={selectedMistake.question || selectedMistake.content} /></div>
+            </section>
+            <section>
+              <span className="mistake-detail-label">答案</span>
+              <div className="mistake-detail-content answer">
+                {selectedMistake.answer
+                  ? <MathMarkdown content={selectedMistake.answer} />
+                  : <p>该历史错题没有可恢复的答案。</p>}
+              </div>
+            </section>
+          </div>
+        )}
+      </Modal>
     </section>
   )
 }
@@ -1389,9 +1464,9 @@ function StudentPageContent() {
     void send(prompt).then(() => refreshSessions())
   }
 
-  const saveMistake = async (content: string, agent: string, attachments: AttachmentInfo[]) => {
+  const saveMistake = async ({ question, answer, agent, attachments }: MistakeDraft) => {
     try {
-      const item = await addMistake(studentId, sessionId, content, agent, attachments, modelConfig)
+      const item = await addMistake(studentId, sessionId, question, answer, agent, attachments, modelConfig)
       setMistakes((current) => [item, ...current.filter((existing) => existing.id !== item.id)])
       toast.success(`已加入错题本，并识别知识点：${item.knowledge_points.join('、')}`)
     } catch (error) {
@@ -1624,7 +1699,7 @@ function StudentPageContent() {
           <section className="learning-grid">
             <div className="chat-column">
               <div className="chat-scroll">
-                {messages.length === 0 ? <Welcome onAsk={ask} /> : <Conversation onAddMistake={(content, agent, attachments) => void saveMistake(content, agent, attachments)} />}
+                {messages.length === 0 ? <Welcome onAsk={ask} /> : <Conversation onAddMistake={(draft) => void saveMistake(draft)} />}
               </div>
               <ChatComposer onSend={(value) => ask(value)} />
             </div>

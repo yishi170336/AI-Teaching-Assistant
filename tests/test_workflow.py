@@ -299,6 +299,37 @@ def test_learning_plan_graph_has_analysis_retrieval_and_generation_nodes():
     assert "generate_learning_plan" in graph.nodes
 
 
+def test_learning_plan_reports_the_sources_referenced_in_its_answer():
+    class FakePlanModel:
+        model = "test-plan-citations"
+
+        async def stream_chat(self, _messages, **_kwargs):
+            yield "先复习静态工作点[资料2]，再完成失真分析[资料4]。"
+
+    async def scenario():
+        deltas: list[str] = []
+
+        async def on_delta(content: str) -> None:
+            deltas.append(content)
+
+        engine = object.__new__(CircuitTutorEngine)
+        result = await engine._generate_learning_plan({
+            "message": "制定学习规划",
+            "llm": FakePlanModel(),
+            "hits": [_retrieval_hit(index) for index in range(1, 5)],
+            "plan_profile": {"schedule_guidance": {"calendar_required": False}},
+            "on_delta": on_delta,
+        })
+        return result, deltas
+
+    result, deltas = asyncio.run(scenario())
+
+    assert [source["citation_index"] for source in result["cited_sources"]] == [2, 4]
+    assert "[资料2] 教材.pdf" in result["response"]
+    assert "[资料4] 教材.pdf" in result["response"]
+    assert "### 检索依据" in "".join(deltas)
+
+
 def test_router_uses_model_to_select_learning_plan_intent():
     class FakeRouterModel:
         model = "test-router"

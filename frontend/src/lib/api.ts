@@ -108,6 +108,8 @@ export type MistakeItem = {
   id: string
   student_id: string
   session_id: string
+  question: string
+  answer: string
   content: string
   summary: string
   agent: string
@@ -286,7 +288,8 @@ export async function fetchMistakes(studentId: string): Promise<MistakeItem[]> {
 export async function addMistake(
   studentId: string,
   sessionId: string,
-  content: string,
+  question: string,
+  answer: string,
   agent: string,
   attachments: AttachmentInfo[],
   modelConfig: ModelConfig,
@@ -297,7 +300,8 @@ export async function addMistake(
     body: JSON.stringify({
       student_id: studentId,
       session_id: sessionId,
-      content,
+      question,
+      answer,
       agent,
       attachment_ids: attachments.map((attachment) => attachment.id),
       model_provider: modelConfig.provider,
