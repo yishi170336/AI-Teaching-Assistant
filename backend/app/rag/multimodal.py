@@ -802,9 +802,11 @@ def _analyze_image(
     nearby_lower = f"{element.caption}\n{element.nearby_text}".lower()
     chart_markers = ("波形", "曲线", "坐标", "频谱", "特性图")
     heuristic_circuit = likely and not any(marker in nearby_lower for marker in chart_markers)
-    is_circuit = bool(result.get("is_circuit")) or (
-        heuristic_circuit and not raw_vlm_result
-    )
+    # The local edge/line heuristic is deliberately not authoritative. Crystal
+    # lattices, device cross-sections and characteristic plots are visually
+    # similar to schematics and previously became false circuit nodes whenever
+    # the vision endpoint timed out.
+    is_circuit = bool(result.get("is_circuit"))
     if is_circuit:
         element.element_type = "circuit"
         element.components = result.get("components", [])
@@ -830,6 +832,14 @@ def _analyze_image(
         element.description = result.get("description") or element.nearby_text[:1200]
         element.caption = result.get("caption", "")
         element.confidence = float(result.get("confidence") or heuristic_score)
+        if heuristic_circuit and not raw_vlm_result:
+            heuristic_processor = "opencv-heuristic-unconfirmed"
+            element.processor = (
+                f"{element.processor}+{heuristic_processor}"
+                if element.processor.startswith("pdf-extract-kit")
+                else heuristic_processor
+            )
+            element.uncertain = True
 
 
 def _qwen_table(
@@ -1078,7 +1088,7 @@ def enhance_pdf(
                     )
                     image_path.write_bytes(crop_bytes)
                     meta = page_meta[page_no]
-                    nearby = _localized_nearby_text(bbox_points, text_blocks)
+                    nearby = _localized_nearby_text(bbox_points, text_blocks) or meta.text[-3000:]
                     element = LayoutElement(
                         id=element_id,
                         source=path.name,
@@ -1214,7 +1224,7 @@ def enhance_pdf(
                 image_path = artifacts_dir / f"p{page_no:04d}-{element_id[:10]}.{ext}"
                 image_path.write_bytes(image_bytes)
                 bbox = [round(float(v), 2) for v in block.get("bbox", [0, 0, 0, 0])]
-                nearby = "\n".join(text for _, text in text_blocks)[-3000:]
+                nearby = "\n".join(text for _, text in text_blocks)[-3000:] or meta.text[-3000:]
                 meta = page_meta[page_no]
                 element = LayoutElement(
                     id=element_id, source=path.name, page=page_no, element_type="image",
@@ -1274,7 +1284,10 @@ def enhance_pdf(
                     reading_order=order,
                     chapter=meta.chapter,
                     section=meta.section,
-                    nearby_text="\n".join(text for _, text in text_blocks)[-3000:],
+                    nearby_text=(
+                        "\n".join(text for _, text in text_blocks)[-3000:]
+                        or meta.text[-3000:]
+                    ),
                     content_hash=digest,
                     processor="pymupdf-vector-render",
                     source_page=meta.source_page or page_no,

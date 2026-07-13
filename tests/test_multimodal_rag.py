@@ -284,6 +284,33 @@ def test_waveform_figure_is_not_promoted_to_circuit_when_vision_fails(monkeypatc
     assert element.components == []
 
 
+def test_unconfirmed_line_art_is_not_promoted_to_circuit(monkeypatch):
+    class FailedVision:
+        model = "qwen3-vl-flash"
+
+        def complete_json(self, *_args, **_kwargs):
+            raise QwenMultimodalAPIError("temporary failure")
+
+    monkeypatch.setattr(
+        "backend.app.rag.multimodal._circuit_image_heuristic",
+        lambda _image: (True, 0.85),
+    )
+    element = LayoutElement(
+        id="crystal-lattice",
+        source="lesson.pdf",
+        page=2,
+        element_type="image",
+        bbox=[0, 0, 100, 100],
+        nearby_text="本征半导体中的共价键结构、自由电子和空穴",
+    )
+
+    _analyze_image(element, _diagram_png(), FailedVision())
+
+    assert element.element_type == "image"
+    assert element.uncertain is True
+    assert element.processor == "opencv-heuristic-unconfirmed"
+
+
 def test_index_activation_replaces_complete_directory(tmp_path):
     final = tmp_path / "default"
     staging = tmp_path / ".default.building-test"
