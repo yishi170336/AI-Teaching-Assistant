@@ -19,6 +19,7 @@ from backend.app.rag.multimodal import (
     _formula_latex_from_pdf_geometry,
     _indexable_pdfkit_regions,
     _is_full_page_scan,
+    _is_verified_circuit_result,
     _normalize_circuit_result,
     _normalize_formula_result,
     _ocr_scanned_pages,
@@ -269,6 +270,39 @@ def test_missing_netlist_is_synthesized_without_inventing_values():
 
     assert value["netlist"].startswith("* Generated from Qwen3-VL")
     assert "R1 n1 n2 UNKNOWN" in value["netlist"]
+
+
+def test_circuit_verification_rejects_disconnected_component_gallery():
+    assert _is_verified_circuit_result({
+        "components": [
+            {"id": "R1", "type": "resistor", "terminals": ["n1", "n2"]},
+            {"id": "D1", "type": "diode", "terminals": ["n3", "n4"]},
+        ],
+        "description": "各元件独立，无连接点。",
+        "confidence": 0.95,
+    }) is False
+
+
+def test_circuit_verification_accepts_connected_equivalent_model():
+    assert _is_verified_circuit_result({
+        "components": [
+            {"id": "R1", "type": "resistor", "terminals": ["n1", "n2"]},
+            {"id": "Q1", "type": "bjt", "terminals": ["n2", "n3", "n4"]},
+        ],
+        "caption": "共射放大电路的交流等效模型",
+        "confidence": 0.9,
+    }) is True
+
+
+def test_circuit_verification_rejects_system_block_diagram():
+    assert _is_verified_circuit_result({
+        "components": [
+            {"id": "mic", "type": "microphone", "terminals": ["n1", "n2"]},
+            {"id": "amp", "type": "black_box", "terminals": ["n2", "n3"]},
+        ],
+        "caption": "扩音机电路示意框图",
+        "confidence": 0.95,
+    }) is False
 
 
 def test_partial_cleaning_only_accepts_explicit_publishing_noise():

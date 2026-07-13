@@ -753,6 +753,79 @@ def _normalize_circuit_result(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_verified_circuit_result(value: dict[str, Any]) -> bool:
+    """Require auditable topology before promoting a figure to a circuit node."""
+
+    components = value.get("components") if isinstance(value.get("components"), list) else []
+    components = [item for item in components if isinstance(item, dict)]
+    if len(components) < 2:
+        return False
+
+    try:
+        if float(value.get("confidence", 0)) < 0.7:
+            return False
+    except (TypeError, ValueError):
+        return False
+
+    component_types = {
+        str(item.get("type", "")).strip().lower() for item in components
+    }
+    # These describe a system/block diagram, not an electrical schematic whose
+    # component connectivity can be audited.
+    if component_types & {"black_box", "microphone", "speaker"}:
+        return False
+
+    description = str(value.get("description", "")).lower()
+    explicit_non_circuit = (
+        "各元件独立，无连接点",
+        "未绘制实际电路元件",
+        "无spice可建模",
+        "未绘制具体电路元件",
+        "仅展示其特性曲线",
+        "示意框图",
+    )
+    if any(marker in description for marker in explicit_non_circuit):
+        return False
+
+    terminal_counts: dict[str, int] = {}
+    for component in components:
+        terminals = component.get("terminals", [])
+        if not isinstance(terminals, list):
+            continue
+        for terminal in terminals:
+            node = str(terminal).strip()
+            if node:
+                terminal_counts[node] = terminal_counts.get(node, 0) + 1
+    has_shared_node = any(count >= 2 for count in terminal_counts.values())
+
+    # A few valid composite textbook figures are described as a circuit even
+    # when the VLM omits a shared node from its structured output. Keep those
+    # only when the short caption/description explicitly says circuit/model.
+    summary = (
+        str(value.get("caption", "")) + "\n" + str(value.get("description", ""))[:180]
+    ).lower()
+    explicitly_circuit = "电路" in summary or "等效模型" in summary or "通路" in summary
+    return has_shared_node or explicitly_circuit
+
+
+def _enforce_verified_circuit(element: LayoutElement) -> None:
+    if element.element_type != "circuit":
+        return
+    if _is_verified_circuit_result({
+        "components": element.components,
+        "nets": element.nets,
+        "description": element.description,
+        "caption": element.caption,
+        "confidence": element.confidence,
+    }):
+        return
+    element.element_type = "image"
+    element.components = []
+    element.nets = []
+    element.netlist = ""
+    element.uncertain = False
+
+
 def _synthesize_netlist(components: list[dict[str, Any]]) -> str:
     """Create an auditable SPICE-like fallback without inventing values."""
 
@@ -799,7 +872,7 @@ def _analyze_image(
     client: QwenVisionClient | None,
 ) -> None:
     likely, heuristic_score = _circuit_image_heuristic(image_bytes)
-    prompt = f"""你是电路图结构化识别器。判断图片是否为电路图；若是，结合邻近教材正文识别所有元件、端口、节点和导线连接，输出可复核的 SPICE 风格 Netlist 和中文结构/功能描述。跨线但无连接点时不得当作连接。看不清的值写 null，不得猜测。components.terminals 必须直接填写网络 ID；BJT 顺序为 collector/base/emitter，MOS 顺序为 drain/gate/source/bulk，其它二端元件按图中方向列出。
+    prompt = """只有包含至少两个电气元件且存在可核验导线连接的原理图、等效电路或小信号模型才可令 is_circuit=true。器件实物/外形、单个器件符号、半导体物理结构、特性曲线、波形图和系统框图必须令 is_circuit=false，即使它们包含端子、箭头或直线。\n""" + f"""你是电路图结构化识别器。判断图片是否为电路图；若是，结合邻近教材正文识别所有元件、端口、节点和导线连接，输出可复核的 SPICE 风格 Netlist 和中文结构/功能描述。跨线但无连接点时不得当作连接。看不清的值写 null，不得猜测。components.terminals 必须直接填写网络 ID；BJT 顺序为 collector/base/emitter，MOS 顺序为 drain/gate/source/bulk，其它二端元件按图中方向列出。
 附近正文：{element.nearby_text[:1800]}
 返回 JSON：{{"is_circuit":true,"caption":"","components":[{{"id":"R1","type":"resistor","value":"4 ohm","terminals":["n1","n2"],"bbox":[]}}],"nets":[{{"id":"n1","terminals":["R1.1"]}}],"netlist":"R1 n1 n2 4","description":"...","confidence":0.0}}。"""
     try:
@@ -858,6 +931,7 @@ def _analyze_image(
                 else heuristic_processor
             )
             element.uncertain = True
+    _enforce_verified_circuit(element)
 
 
 def _qwen_table(
@@ -1146,6 +1220,7 @@ def enhance_pdf(
                                 element.netlist = _synthesize_netlist(element.components)
                         else:
                             _analyze_image(element, crop_bytes, vision_client)
+                        _enforce_verified_circuit(element)
                         pdfkit_figure_count += 1
                         page_image_count += 1
                     elif category == "table":
@@ -1272,6 +1347,7 @@ def enhance_pdf(
                         element.netlist = _synthesize_netlist(element.components)
                 else:
                     _analyze_image(element, image_bytes, vision_client)
+                _enforce_verified_circuit(element)
                 elements.append(element)
                 page_image_count += 1
                 order += 1
@@ -1331,6 +1407,7 @@ def enhance_pdf(
                         element.netlist = _synthesize_netlist(element.components)
                 else:
                     _analyze_image(element, image_bytes, vision_client)
+                _enforce_verified_circuit(element)
                 elements.append(element)
     finally:
         document.close()
