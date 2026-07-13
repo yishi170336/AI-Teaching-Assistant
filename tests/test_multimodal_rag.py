@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import io
+from dataclasses import replace
 
 import fitz
 from PIL import Image, ImageDraw
 
+from backend.app.rag import manager as manager_module
 from backend.app.rag.models import PageDocument, TextChunk
 from backend.app.rag.manager import KnowledgeBaseManager
 from backend.app.rag.pdf_extract_kit import DetectedRegion, PDFExtractKitAdapter
@@ -338,6 +340,53 @@ def test_system_default_delete_preserves_custom_knowledge_base_resources(tmp_pat
     assert not (resources_root / "default.xlsx").exists()
     assert not index_dir.exists()
     assert manager.statuses() == []
+
+
+def test_load_existing_does_not_recreate_deleted_default(tmp_path, monkeypatch):
+    resources_root = tmp_path / "resources"
+    indexes_root = tmp_path / "indexes"
+    custom_resource = resources_root / "knowledge_bases" / "keep-me" / "lesson.md"
+    custom_resource.parent.mkdir(parents=True)
+    indexes_root.mkdir(parents=True)
+    custom_resource.write_text("custom lesson", encoding="utf-8")
+    monkeypatch.setattr(manager_module, "settings", replace(
+        manager_module.settings,
+        resources_dir=resources_root,
+        vector_stores_dir=indexes_root,
+    ))
+
+    manager = KnowledgeBaseManager()
+    manager.load_existing()
+
+    assert [item["id"] for item in manager.statuses()] == ["keep-me"]
+
+
+def test_load_existing_keeps_default_when_source_files_remain(tmp_path, monkeypatch):
+    resources_root = tmp_path / "resources"
+    indexes_root = tmp_path / "indexes"
+    resources_root.mkdir(parents=True)
+    indexes_root.mkdir(parents=True)
+    (resources_root / "lesson.md").write_text("default lesson", encoding="utf-8")
+    monkeypatch.setattr(manager_module, "settings", replace(
+        manager_module.settings,
+        resources_dir=resources_root,
+        vector_stores_dir=indexes_root,
+    ))
+
+    manager = KnowledgeBaseManager()
+    manager.load_existing()
+
+    assert manager.statuses() == [{
+        "id": "default",
+        "state": "missing",
+        "documents": 1,
+        "chunks": 0,
+        "message": "资料已保留，尚未完成知识库构建",
+        "progress": 0,
+        "stage": "missing",
+        "cancellable": False,
+        "available": False,
+    }]
 
 
 def test_inline_formula_regions_remain_text_evidence_only():

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { AttachmentInfo, ModelConfig, ModelProviderId, SourceInfo, StoredMessage, streamChat, uploadChatAttachment } from '../lib/api'
+import { AttachmentInfo, KBStatus, ModelConfig, ModelProviderId, SourceInfo, StoredMessage, streamChat, uploadChatAttachment } from '../lib/api'
 
 export type ChatMode = 'auto' | 'answer' | 'quiz' | 'plan'
 
@@ -88,7 +88,7 @@ function getModelConfig(): ModelConfig {
 
 function getDefaultKnowledgeBase(): string {
   const stored = localStorage.getItem(defaultKnowledgeBaseKey)?.trim() || ''
-  return /^[A-Za-z0-9_-]{1,48}$/.test(stored) ? stored : 'default'
+  return /^[A-Za-z0-9_-]{1,48}$/.test(stored) ? stored : ''
 }
 
 const initialKnowledgeBase = getDefaultKnowledgeBase()
@@ -110,6 +110,7 @@ type ChatState = {
   setMode: (mode: ChatMode) => void
   setKnowledgeBase: (id: string) => void
   setDefaultKnowledgeBase: (id: string) => void
+  syncKnowledgeBases: (knowledgeBases: KBStatus[]) => void
   setModelConfig: (config: ModelConfig) => void
   addAttachments: (files: File[]) => Promise<void>
   removeAttachment: (localId: string) => void
@@ -135,9 +136,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setMode: (mode) => set({ mode }),
   setKnowledgeBase: (knowledgeBase) => set({ knowledgeBase }),
   setDefaultKnowledgeBase: (defaultKnowledgeBase) => {
+    if (!defaultKnowledgeBase) {
+      localStorage.removeItem(defaultKnowledgeBaseKey)
+      set({ defaultKnowledgeBase: '', knowledgeBase: '' })
+      return
+    }
     if (!/^[A-Za-z0-9_-]{1,48}$/.test(defaultKnowledgeBase)) return
     localStorage.setItem(defaultKnowledgeBaseKey, defaultKnowledgeBase)
     set({ defaultKnowledgeBase, knowledgeBase: defaultKnowledgeBase })
+  },
+  syncKnowledgeBases: (knowledgeBases) => {
+    const currentDefault = get().defaultKnowledgeBase
+    const available = knowledgeBases.filter((item) => item.state === 'ready' || item.available)
+    if (available.some((item) => item.id === currentDefault)) return
+
+    const replacement = available[0]?.id || ''
+    if (replacement) {
+      localStorage.setItem(defaultKnowledgeBaseKey, replacement)
+    } else {
+      localStorage.removeItem(defaultKnowledgeBaseKey)
+    }
+    set((state) => ({
+      defaultKnowledgeBase: replacement,
+      knowledgeBase:
+        !state.knowledgeBase || state.knowledgeBase === currentDefault
+          ? replacement
+          : state.knowledgeBase,
+    }))
   },
   setModelConfig: (modelConfig) => {
     const normalized = { ...modelConfig, model: canonicalModel(modelConfig.provider, modelConfig.model) }

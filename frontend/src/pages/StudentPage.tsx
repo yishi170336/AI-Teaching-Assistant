@@ -1090,6 +1090,7 @@ function StudentPageContent() {
   const defaultKnowledgeBase = useChatStore((state) => state.defaultKnowledgeBase)
   const setKnowledgeBase = useChatStore((state) => state.setKnowledgeBase)
   const setDefaultKnowledgeBase = useChatStore((state) => state.setDefaultKnowledgeBase)
+  const syncKnowledgeBases = useChatStore((state) => state.syncKnowledgeBases)
   const modelConfig = useChatStore((state) => state.modelConfig)
   const setModelConfig = useChatStore((state) => state.setModelConfig)
   const loadSession = useChatStore((state) => state.loadSession)
@@ -1107,9 +1108,11 @@ function StudentPageContent() {
 
   const refreshStatuses = async () => {
     try {
-      setStatuses(await fetchKnowledgeBases())
+      const nextStatuses = await fetchKnowledgeBases()
+      setStatuses(nextStatuses)
+      syncKnowledgeBases(nextStatuses)
     } catch {
-      setStatuses([{ id: 'default', state: 'missing', documents: 0, chunks: 0, message: '后端未连接' }])
+      // Keep the last successful list and selection during a transient backend outage.
     }
   }
 
@@ -1208,7 +1211,7 @@ function StudentPageContent() {
       value: item.id,
       label: item.id === defaultKnowledgeBase ? `${item.id}（默认课程）` : item.id,
     }))
-    if (!base.some((item) => item.value === knowledgeBase)) {
+    if (knowledgeBase && !base.some((item) => item.value === knowledgeBase)) {
       base.push({
         value: knowledgeBase,
         label: knowledgeBase === defaultKnowledgeBase ? `${knowledgeBase}（默认课程）` : knowledgeBase,
@@ -1344,7 +1347,7 @@ function StudentPageContent() {
         item.id !== deleted
         && (item.state === 'ready' || item.available)
       ))
-      const nextKnowledgeBase = replacement?.id || 'default'
+      const nextKnowledgeBase = replacement?.id || ''
       const result = await deleteKnowledgeBase(deleted)
       if (deleted === defaultKnowledgeBase) {
         setDefaultKnowledgeBase(nextKnowledgeBase)
@@ -1484,7 +1487,7 @@ function StudentPageContent() {
         <div className="modal-section">
           <label>默认课程知识库</label>
           <Select
-            value={defaultKnowledgeBase}
+            value={defaultKnowledgeBase || undefined}
             options={defaultKbOptions}
             onChange={chooseDefaultKnowledgeBase}
             placeholder="选择默认课程知识库"
@@ -1497,9 +1500,10 @@ function StudentPageContent() {
           <label>当前目标知识库</label>
           <div className="kb-target-row">
             <Select
-              value={knowledgeBase}
+              value={knowledgeBase || undefined}
               options={kbOptions}
               onChange={setKnowledgeBase}
+              placeholder="选择或新建目标知识库"
               aria-label="选择当前目标知识库"
               style={{ width: '100%' }}
             />

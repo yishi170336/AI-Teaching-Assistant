@@ -132,14 +132,19 @@ class KnowledgeBaseManager:
                     "stage": "missing",
                     "cancellable": False,
                 })
-        self._states.setdefault(
-            "default",
-            {
-                "id": "default", "state": "missing", "documents": 0,
-                "chunks": 0, "message": "请先构建默认知识库", "progress": 0,
-                "stage": "missing", "cancellable": False, "available": False,
-            },
-        )
+        default_resources = [
+            path for path in settings.resources_dir.iterdir() if path.is_file()
+        ] if settings.resources_dir.exists() else []
+        if default_resources:
+            self._states.setdefault(
+                "default",
+                {
+                    "id": "default", "state": "missing",
+                    "documents": len(default_resources), "chunks": 0,
+                    "message": "资料已保留，尚未完成知识库构建", "progress": 0,
+                    "stage": "missing", "cancellable": False, "available": False,
+                },
+            )
 
     def get(self, knowledge_base: str) -> HybridRetriever:
         knowledge_base = self.validate_id(knowledge_base)
