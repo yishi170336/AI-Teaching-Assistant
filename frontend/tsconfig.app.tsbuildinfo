@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/components/mathmarkdown.tsx","./src/lib/api.ts","./src/pages/studentpage.tsx","./src/pages/teacherpage.tsx","./src/store/chatstore.ts"],"version":"5.7.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/components/mathmarkdown.tsx","./src/lib/api.ts","./src/lib/latex.ts","./src/pages/studentpage.tsx","./src/pages/teacherpage.tsx","./src/store/chatstore.ts"],"version":"5.7.3"}

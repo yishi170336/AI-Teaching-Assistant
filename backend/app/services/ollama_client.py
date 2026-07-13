@@ -43,7 +43,12 @@ class OllamaClient:
     async def health(self) -> dict[str, Any]:
         try:
             models = await self.list_models()
-            return {"ok": self.model in models, "model": self.model, "models": models}
+            return {
+                "ok": True,
+                "model": self.model,
+                "model_available": self.model in models,
+                "models": models,
+            }
         except Exception as exc:  # pragma: no cover - depends on local service
             return {"ok": False, "model": self.model, "error": str(exc)}
 

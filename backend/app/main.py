@@ -20,11 +20,20 @@ from fastapi.staticfiles import StaticFiles
 from backend.app.agents.workflow import CircuitTutorEngine
 from backend.app.config import settings
 from backend.app.rag.manager import KnowledgeBaseManager
-from backend.app.schemas import ChatRequest
+from backend.app.rag.multimodal import BuildModelConfig
+from backend.app.schemas import ChatRequest, KnowledgeBaseRebuildRequest, MistakeCreateRequest
 from backend.app.services.memory import ConversationMemory
 from backend.app.services.ollama_client import OllamaClient
 from backend.app.services.openai_compatible_client import OpenAICompatibleClient
 from backend.app.services.attachments import ALLOWED_ATTACHMENT_SUFFIXES, AttachmentStore
+from backend.app.services.mistake_book import MistakeBook
+from backend.app.services.model_catalog import (
+    QWEN_MODELS,
+    QWEN_MODEL_OPTIONS,
+    canonical_model_id,
+    chat_model_unavailable_reason,
+    choose_default_model,
+)
 
 
 def configure_logging() -> None:
@@ -54,7 +63,7 @@ memory = ConversationMemory()
 knowledge_bases = KnowledgeBaseManager()
 engine = CircuitTutorEngine(ollama, knowledge_bases)
 attachments = AttachmentStore()
-
+mistake_book = MistakeBook()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -63,6 +72,7 @@ async def lifespan(_: FastAPI):
     yield
     await ollama.close()
     await memory.close()
+    knowledge_bases.close_all()
 
 
 app = FastAPI(
@@ -126,8 +136,12 @@ def response_chunks(content: str) -> list[str]:
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
     model_health = await ollama.health()
+    remote_configured = bool(settings.qwen_api_key or settings.deepseek_api_key)
     return {
-        "status": "ok" if model_health.get("ok") else "degraded",
+        # Ollama is optional: the web/API service itself remains healthy and a
+        # configured compatible API can be used while the local daemon is down.
+        "status": "ok",
+        "model_ready": bool(model_health.get("ok") or remote_configured),
         "ollama": model_health,
         "memory": memory.backend,
         "knowledge_bases": knowledge_bases.statuses(),
@@ -138,6 +152,82 @@ async def health() -> dict[str, Any]:
 @app.get("/api/kb/status")
 async def knowledge_base_status() -> dict[str, Any]:
     return {"knowledge_bases": knowledge_bases.statuses()}
+
+
+@app.get("/api/kb/{knowledge_base}/graph")
+async def knowledge_graph(knowledge_base: str) -> dict[str, Any]:
+    try:
+        return knowledge_bases.graph(knowledge_base)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/kb/rebuild")
+async def rebuild_knowledge_base(payload: KnowledgeBaseRebuildRequest) -> dict[str, Any]:
+    api_key = payload.api_key
+    base_url = payload.base_url
+    if payload.model_provider == "deepseek":
+        api_key = api_key or settings.deepseek_api_key
+        base_url = (base_url or settings.deepseek_base_url) if payload.api_key else settings.deepseek_base_url
+    elif payload.model_provider == "qwen":
+        api_key = api_key or settings.qwen_api_key
+        base_url = (base_url or settings.qwen_base_url) if payload.api_key else settings.qwen_base_url
+    config = BuildModelConfig(
+        provider=payload.model_provider,
+        model=canonical_model_id(payload.model_provider, payload.model),
+        api_key=api_key,
+        base_url=base_url,
+    )
+    try:
+        build_state = knowledge_bases.start_build(
+            payload.knowledge_base,
+            chapter_limit=payload.chapter_limit,
+            model_config=config if config.enabled else None,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "knowledge_base": payload.knowledge_base,
+        "state": "building",
+        "build": build_state,
+        "message": "多模态知识库已开始后台重建",
+    }
+
+
+@app.delete("/api/kb/{knowledge_base}/build")
+async def cancel_knowledge_base_build(knowledge_base: str) -> dict[str, Any]:
+    try:
+        state = knowledge_bases.cancel_build(knowledge_base)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "knowledge_base": knowledge_base,
+        "state": state,
+        "message": "取消请求已提交，正在清理未完成缓存",
+    }
+
+
+@app.delete("/api/kb/{knowledge_base}")
+async def delete_knowledge_base(knowledge_base: str) -> dict[str, Any]:
+    try:
+        await knowledge_bases.delete(knowledge_base)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "knowledge_base": knowledge_base,
+        "message": f"知识库 {knowledge_base} 已删除",
+    }
 
 
 @app.get("/api/sessions")
@@ -170,11 +260,20 @@ async def delete_conversation_session(session_id: str) -> dict[str, Any]:
 @app.get("/api/models")
 async def available_models() -> dict[str, Any]:
     model_health = await ollama.health()
-    local_models = model_health.get("models", []) if model_health.get("ok") else model_health.get("models", [])
+    local_models = model_health.get("models", [])
     if settings.ollama_model not in local_models:
         local_models = [settings.ollama_model, *local_models]
+    default_provider, default_model = choose_default_model(
+        model_health,
+        ollama_model=settings.ollama_model,
+        qwen_model=settings.qwen_vision_model,
+        deepseek_model=settings.deepseek_model,
+        qwen_configured=bool(settings.qwen_api_key),
+        deepseek_configured=bool(settings.deepseek_api_key),
+    )
     return {
-        "default": {"provider": "ollama", "model": settings.ollama_model},
+        "default": {"provider": default_provider, "model": default_model},
+        "ollama_available": bool(model_health.get("ok")),
         "providers": [
             {
                 "id": "ollama",
@@ -185,6 +284,7 @@ async def available_models() -> dict[str, Any]:
                 "base_url": settings.ollama_base_url,
                 "requires_api_key": False,
                 "configured": bool(model_health.get("ok")),
+                "status_message": "Ollama 已连接" if model_health.get("ok") else "Ollama 未启动，可稍后重试",
             },
             {
                 "id": "deepseek",
@@ -199,9 +299,10 @@ async def available_models() -> dict[str, Any]:
             {
                 "id": "qwen",
                 "label": "通义千问 API",
-                "description": "阿里云百炼 OpenAI 兼容接口",
-                "models": ["qwen-plus", "qwen-max", "qwen-turbo"],
-                "default_model": "qwen-plus",
+                "description": "阿里云百炼文本与多模态 OpenAI 兼容接口",
+                "models": list(dict.fromkeys([*QWEN_MODELS, settings.qwen_vision_model])),
+                "model_options": QWEN_MODEL_OPTIONS,
+                "default_model": settings.qwen_vision_model,
                 "base_url": settings.qwen_base_url,
                 "requires_api_key": True,
                 "configured": bool(settings.qwen_api_key),
@@ -220,18 +321,94 @@ async def available_models() -> dict[str, Any]:
     }
 
 
+def _fallback_knowledge_points(content: str) -> list[str]:
+    candidates = (
+        "PN结", "二极管", "稳压二极管", "晶体管", "三极管", "场效应管", "静态工作点",
+        "共射放大电路", "相量", "复阻抗", "功率因数", "有功功率", "无功功率", "RLC",
+        "谐振", "KCL", "KVL", "戴维南定理", "诺顿定理",
+    )
+    matched = [point for point in candidates if point.lower() in content.lower()]
+    return matched[:8] or ["电路基础"]
+
+
+async def _extract_mistake_metadata(payload: MistakeCreateRequest) -> tuple[list[str], str]:
+    client: Any | None = None
+    should_close = False
+    prompt = (
+        "你是电路课程错题归档助手。只输出合法 JSON，字段 knowledge_points（1-8个准确知识点）"
+        "和 summary（不超过40字的题目摘要）。先识别真正考查内容，不要把‘计算’‘题目’当知识点。\n"
+        f"待归档内容：\n{payload.content[:12000]}"
+    )
+    try:
+        client, should_close = select_model_client(payload)
+        result_text = await client.chat(
+            [{"role": "user", "content": prompt}],
+            temperature=0.0,
+            json_mode=True,
+            reasoning_budget=96,
+        )
+        match = re.search(r"\{.*\}", result_text, re.S)
+        value = json.loads(match.group(0) if match else result_text)
+        points = value.get("knowledge_points", [])
+        if not isinstance(points, list):
+            points = []
+        normalized = [str(point).strip() for point in points if str(point).strip()]
+        summary = str(value.get("summary", "")).strip()
+        return normalized[:8] or _fallback_knowledge_points(payload.content), summary or payload.content[:40]
+    except Exception:
+        logger.warning("Mistake knowledge extraction fell back to local rules", exc_info=True)
+        return _fallback_knowledge_points(payload.content), payload.content.splitlines()[0][:40]
+    finally:
+        if should_close and client is not None:
+            await client.close()
+
+
+@app.get("/api/mistakes")
+async def list_mistakes(student_id: str) -> dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", student_id):
+        raise HTTPException(status_code=400, detail="学生标识不合法")
+    return {"mistakes": await mistake_book.list(student_id)}
+
+
+@app.post("/api/mistakes")
+async def add_mistake(payload: MistakeCreateRequest) -> dict[str, Any]:
+    knowledge_points, summary = await _extract_mistake_metadata(payload)
+    item = await mistake_book.add(
+        student_id=payload.student_id,
+        session_id=payload.session_id,
+        content=payload.content,
+        agent=payload.agent,
+        knowledge_points=knowledge_points,
+        summary=summary,
+    )
+    return {"ok": True, "mistake": item}
+
+
+@app.delete("/api/mistakes/{mistake_id}")
+async def delete_mistake(mistake_id: str, student_id: str) -> dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", student_id) or not re.fullmatch(r"[a-f0-9]{32}", mistake_id):
+        raise HTTPException(status_code=400, detail="错题标识不合法")
+    if not await mistake_book.delete(student_id, mistake_id):
+        raise HTTPException(status_code=404, detail="错题不存在")
+    return {"ok": True}
+
+
 def select_model_client(payload: ChatRequest) -> tuple[Any, bool]:
+    model = canonical_model_id(payload.model_provider, payload.model)
+    unavailable_reason = chat_model_unavailable_reason(payload.model_provider, model)
+    if unavailable_reason:
+        raise ValueError(f"模型 {model} 不能用于对话：{unavailable_reason}")
     if payload.model_provider == "ollama":
-        if payload.model == settings.ollama_model:
+        if model == settings.ollama_model:
             return ollama, False
-        return OllamaClient(model=payload.model), True
+        return OllamaClient(model=model), True
 
     if payload.model_provider == "deepseek":
         api_key = payload.api_key or settings.deepseek_api_key
-        base_url = payload.base_url or settings.deepseek_base_url
+        base_url = (payload.base_url or settings.deepseek_base_url) if payload.api_key else settings.deepseek_base_url
     elif payload.model_provider == "qwen":
         api_key = payload.api_key or settings.qwen_api_key
-        base_url = payload.base_url or settings.qwen_base_url
+        base_url = (payload.base_url or settings.qwen_base_url) if payload.api_key else settings.qwen_base_url
     else:
         api_key = payload.api_key
         base_url = payload.base_url
@@ -243,7 +420,7 @@ def select_model_client(payload: ChatRequest) -> tuple[Any, bool]:
     return (
         OpenAICompatibleClient(
             provider=payload.model_provider,
-            model=payload.model,
+            model=model,
             api_key=api_key,
             base_url=base_url,
         ),
@@ -412,6 +589,10 @@ async def upload(
     file: UploadFile = File(...),
     knowledge_base: str = Form("default"),
     rebuild: bool = Form(True),
+    model_provider: str = Form("deepseek"),
+    model: str = Form(""),
+    api_key: str = Form(""),
+    base_url: str = Form(""),
 ) -> dict[str, Any]:
     try:
         knowledge_base = knowledge_bases.validate_id(knowledge_base)
@@ -436,10 +617,28 @@ async def upload(
             handle.write(chunk)
     await file.close()
 
-    indexable = suffix in {".pdf", ".md", ".txt", ".docx", ".xlsx", ".json"}
+    indexable = suffix in {".pdf", ".md", ".txt", ".docx"}
+    build_state: dict[str, Any] | None = None
     if rebuild and indexable:
+        provided_api_key = bool(api_key.strip())
+        if model_provider == "deepseek":
+            api_key = api_key or settings.deepseek_api_key
+            base_url = (base_url or settings.deepseek_base_url) if provided_api_key else settings.deepseek_base_url
+        elif model_provider == "qwen":
+            api_key = api_key or settings.qwen_api_key
+            base_url = (base_url or settings.qwen_base_url) if provided_api_key else settings.qwen_base_url
+        build_model = BuildModelConfig(
+            provider=model_provider,
+            model=canonical_model_id(model_provider, model),
+            api_key=api_key.strip(),
+            base_url=base_url.strip(),
+        )
         try:
-            knowledge_bases.start_build(knowledge_base, chapter_limit=None)
+            build_state = knowledge_bases.start_build(
+                knowledge_base,
+                chapter_limit=None,
+                model_config=build_model if build_model.enabled else None,
+            )
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
@@ -449,6 +648,8 @@ async def upload(
         "content_type": file.content_type or mimetypes.guess_type(original_name)[0],
         "knowledge_base": knowledge_base,
         "indexing": bool(rebuild and indexable),
+        "build": build_state,
+        "multimodal_model": f"{model_provider}/{model}" if model else "未配置，使用安全降级",
         "message": "文件已保存，知识库正在后台更新" if rebuild and indexable else "文件已保存",
     }
 

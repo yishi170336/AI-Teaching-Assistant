@@ -13,3 +13,6 @@ data/uploads/
 data/session_memory/
 tmp/
 logs/
+third_party/
+data/vector_stores/pdfkit_smoke/
+data/neo4j/

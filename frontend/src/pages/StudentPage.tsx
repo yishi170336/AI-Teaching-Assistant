@@ -6,8 +6,10 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Progress,
   Segmented,
   Select,
+  Slider,
   Tag,
   Tooltip,
   Upload,
@@ -18,6 +20,7 @@ import {
   BookOpen,
   Bot,
   BrainCircuit,
+  BookmarkPlus,
   Check,
   ChevronDown,
   ChevronRight,
@@ -30,6 +33,7 @@ import {
   GraduationCap,
   HelpCircle,
   Layers3,
+  Network,
   LoaderCircle,
   Menu,
   MessageSquareText,
@@ -48,22 +52,32 @@ import {
 } from 'lucide-react'
 import MathMarkdown from '../components/MathMarkdown'
 import {
+  addMistake,
+  cancelKnowledgeBaseBuild,
+  deleteKnowledgeBase,
+  deleteMistake,
   deleteSession,
+  fetchKnowledgeGraph,
   fetchKnowledgeBases,
+  fetchMistakes,
   fetchModels,
   fetchSession,
   fetchSessions,
   KBStatus,
+  KnowledgeGraph,
   ModelCatalog,
   ModelConfig,
   ModelProviderId,
+  MistakeItem,
   SessionSummary,
   SourceInfo,
   uploadKnowledgeFile,
+  rebuildKnowledgeBase,
 } from '../lib/api'
 import { ChatMode, useChatStore } from '../store/chatStore'
 
 const { TextArea } = Input
+type WorkspaceView = 'chat' | 'graph' | 'mistakes'
 
 const providerLabels: Record<ModelProviderId, string> = {
   ollama: '本地',
@@ -98,9 +112,18 @@ const fallbackModelCatalog: ModelCatalog = {
     {
       id: 'qwen',
       label: '通义千问 API',
-      description: '阿里云百炼 OpenAI 兼容接口',
-      models: ['qwen-plus', 'qwen-max', 'qwen-turbo'],
-      default_model: 'qwen-plus',
+      description: '阿里云百炼文本与多模态 OpenAI 兼容接口',
+      models: ['qwen3.7-plus', 'qwen3.7-max', 'qwen-vl-max', 'qwen3-vl-plus', 'qwen3-vl-flash'],
+      model_options: [
+        { value: 'qwen3.7-plus', label: 'Qwen3.7-Plus' },
+        { value: 'qwen3.7-max', label: 'Qwen3.7-Max' },
+        { value: 'qwen-vl-max', label: 'qwen-vl-max' },
+        { value: 'qwen3-vl-8b-instruct', label: 'qwen3-vl-8b-instruct', disabled: true, description: '当前账号未开放' },
+        { value: 'qwen3-vl-plus', label: 'qwen3-vl-plus' },
+        { value: 'qwen3-vl-flash', label: 'qwen3-vl-flash' },
+        { value: 'qwen3-vl-embedding', label: 'qwen3-vl-embedding', disabled: true, description: '仅用于向量化' },
+      ],
+      default_model: 'qwen3-vl-flash',
       base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       requires_api_key: true,
       configured: false,
@@ -170,6 +193,8 @@ function Sidebar({
   onSelectSession,
   onDeleteSession,
   onNewSession,
+  activeView,
+  onView,
 }: {
   open: boolean
   onClose: () => void
@@ -178,6 +203,8 @@ function Sidebar({
   onSelectSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string, title: string) => void
   onNewSession: () => void
+  activeView: WorkspaceView
+  onView: (view: WorkspaceView) => void
 }) {
   const modelProvider = useChatStore((state) => state.modelConfig.provider)
   return (
@@ -201,20 +228,18 @@ function Sidebar({
 
         <nav className="main-nav" aria-label="学生端主导航">
           <div className="nav-label">学习空间</div>
-          <button className="nav-item active">
+          <button className={`nav-item ${activeView === 'chat' ? 'active' : ''}`} onClick={() => onView('chat')}>
             <MessageSquareText size={17} />
             <span>智能学习台</span>
             <span className="nav-live-dot" />
           </button>
-          <button className="nav-item">
+          <button className={`nav-item ${activeView === 'graph' ? 'active' : ''}`} onClick={() => onView('graph')}>
             <BookOpen size={17} />
             <span>知识图谱</span>
-            <span className="soon-label">即将开放</span>
           </button>
-          <button className="nav-item">
+          <button className={`nav-item ${activeView === 'mistakes' ? 'active' : ''}`} onClick={() => onView('mistakes')}>
             <Layers3 size={17} />
             <span>错题本</span>
-            <span className="soon-label">即将开放</span>
           </button>
         </nav>
 
@@ -335,6 +360,22 @@ function SourceCard({ source, index }: { source: SourceInfo; index: number }) {
       </div>
       <strong>{source.section || source.chapter || source.source}</strong>
       <p>{source.source}</p>
+      {source.excerpt && <p className="source-excerpt">{source.excerpt}</p>}
+      {source.knowledge_tags?.length ? (
+        <div className="source-tags">{source.knowledge_tags.slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)}</div>
+      ) : null}
+      <div className="source-score-grid" aria-label="检索评分组成">
+        {[
+          ['向量', source.vector_score],
+          ['关键词', source.bm25_score],
+          ['图谱', source.graph_score],
+        ].map(([label, score]) => (
+          <div key={String(label)}>
+            <span>{label}</span>
+            <i><b style={{ width: `${Math.max(0, Math.min(100, Number(score || 0) * 100))}%` }} /></i>
+          </div>
+        ))}
+      </div>
       <div className="source-meta"><span>{page}</span><span>已重排</span></div>
     </article>
   )
@@ -343,6 +384,7 @@ function SourceCard({ source, index }: { source: SourceInfo; index: number }) {
 function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate: () => void }) {
   const activeSources = useChatStore((state) => state.activeSources)
   const knowledgeBase = useChatStore((state) => state.knowledgeBase)
+  const defaultKnowledgeBase = useChatStore((state) => state.defaultKnowledgeBase)
   const modelProvider = useChatStore((state) => state.modelConfig.provider)
   const mode = useChatStore((state) => state.mode)
   const messages = useChatStore((state) => state.messages)
@@ -364,11 +406,21 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
       <div className="kb-summary-card">
         <span className="kb-icon">{quizContext ? <BrainCircuit size={18} /> : <Database size={18} />}</span>
         <div>
-          <strong>{quizContext ? '原题驱动出题' : knowledgeBase === 'default' ? '默认课程知识库' : knowledgeBase}</strong>
+          <strong>{quizContext ? '原题驱动出题' : knowledgeBase === defaultKnowledgeBase ? '默认课程知识库' : knowledgeBase}</strong>
           <span>{quizContext ? '会话上下文 · 不检索知识库' : `${current?.chunks || 0} 个文本块 · ${current?.documents || 0} 份资料`}</span>
         </div>
         <span className={`kb-state ${quizContext ? 'ready' : current?.state || 'missing'}`}>
-          {quizContext ? '已锁定' : current?.state === 'building' ? '构建中' : current?.state === 'ready' ? '就绪' : '待构建'}
+          {quizContext
+            ? '已锁定'
+            : current?.state === 'building'
+              ? '构建中'
+              : current?.state === 'cancelling'
+                ? '取消中'
+                : current?.state === 'cancelled'
+                  ? '已取消'
+                  : current?.validation?.status === 'passed'
+                    ? '已校验'
+                    : current?.state === 'ready' ? '就绪' : '待构建'}
         </span>
       </div>
 
@@ -443,6 +495,7 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
               { label: '智能路由', value: 'auto' },
               { label: 'AI 答疑', value: 'answer' },
               { label: '同类出题', value: 'quiz' },
+              { label: '学习规划', value: 'plan' },
             ]}
           />
           <span className="composer-tip">Shift + Enter 换行</span>
@@ -504,7 +557,7 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
               }
             }}
             autoSize={{ minRows: 1, maxRows: 5 }}
-            placeholder={mode === 'quiz' ? '粘贴原题，或描述想练习的知识点…' : '输入电路问题，支持 LaTeX 公式…'}
+            placeholder={mode === 'quiz' ? '粘贴原题，或描述想练习的知识点…' : mode === 'plan' ? '描述学习目标、薄弱点和可用时间…' : '输入电路问题，支持 LaTeX 公式…'}
             variant="borderless"
             aria-label="输入电路问题"
           />
@@ -538,7 +591,7 @@ function normalizeQuizTitle(content: string) {
   )
 }
 
-function Conversation() {
+function Conversation({ onAddMistake }: { onAddMistake: (content: string, agent: string) => void }) {
   const messages = useChatStore((state) => state.messages)
   const streaming = useChatStore((state) => state.streaming)
   const stage = useChatStore((state) => state.stage)
@@ -592,6 +645,16 @@ function Conversation() {
                 <span>{stage || '正在准备…'}</span>
               </div>
             )}
+            {message.content && !(streaming && index === messages.length - 1) && (
+              <div className="message-tools">
+                <button
+                  type="button"
+                  onClick={() => onAddMistake(message.content, message.role === 'assistant' ? message.agent || '答疑 Agent' : '学生原题')}
+                >
+                  <BookmarkPlus size={14} /> 加入错题本
+                </button>
+              </div>
+            )}
           </div>
         </div>
       ))}
@@ -600,6 +663,223 @@ function Conversation() {
       )}
       <div ref={endRef} />
     </div>
+  )
+}
+
+function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loading: boolean }) {
+  const [selectedId, setSelectedId] = useState('')
+  const [rangeMode, setRangeMode] = useState<'core' | 'extended' | 'all' | 'custom'>('core')
+  const [limits, setLimits] = useState({ concepts: 18, pages: 10, structures: 26 })
+  const totals = useMemo(() => ({
+    concepts: graph?.nodes.filter((node) => node.type === 'concept').length || 0,
+    pages: graph?.nodes.filter((node) => node.type === 'page').length || 0,
+    structures: graph?.nodes.filter((node) => node.type === 'circuit' || node.type === 'component').length || 0,
+  }), [graph])
+
+  const presetLimits = (mode: 'core' | 'extended' | 'all') => ({
+    concepts: mode === 'all' ? totals.concepts : Math.min(totals.concepts, mode === 'core' ? 18 : 36),
+    pages: mode === 'all' ? totals.pages : Math.min(totals.pages, mode === 'core' ? 10 : 30),
+    structures: mode === 'all' ? totals.structures : Math.min(totals.structures, mode === 'core' ? 26 : 48),
+  })
+
+  useEffect(() => {
+    setRangeMode('core')
+    setLimits({
+      concepts: Math.min(totals.concepts, 18),
+      pages: Math.min(totals.pages, 10),
+      structures: Math.min(totals.structures, 26),
+    })
+    setSelectedId('')
+  }, [graph?.knowledge_base])
+
+  const chooseRangeMode = (value: string | number) => {
+    const mode = String(value) as 'core' | 'extended' | 'all' | 'custom'
+    setRangeMode(mode)
+    if (mode !== 'custom') setLimits(presetLimits(mode))
+  }
+
+  const changeRange = (key: keyof typeof limits, value: number) => {
+    setRangeMode('custom')
+    setLimits((current) => ({ ...current, [key]: value }))
+  }
+
+  const visual = useMemo(() => {
+    if (!graph) return { nodes: [], edges: [] }
+    const degree = new Map<string, number>()
+    graph.edges.forEach((edge) => {
+      degree.set(edge.source, (degree.get(edge.source) || 0) + 1)
+      degree.set(edge.target, (degree.get(edge.target) || 0) + 1)
+    })
+    const documents = graph.nodes.filter((node) => node.type === 'document').slice(0, 3)
+    const pages = graph.nodes
+      .filter((node) => node.type === 'page')
+      .sort((a, b) => (degree.get(b.id) || 0) - (degree.get(a.id) || 0))
+      .slice(0, limits.pages)
+    const concepts = graph.nodes
+      .filter((node) => node.type === 'concept')
+      .sort((a, b) => (degree.get(b.id) || 0) - (degree.get(a.id) || 0))
+      .slice(0, limits.concepts)
+    const structures = graph.nodes
+      .filter((node) => node.type === 'circuit' || node.type === 'component')
+      .sort((a, b) => (degree.get(b.id) || 0) - (degree.get(a.id) || 0))
+      .slice(0, limits.structures)
+    const groups = [
+      { nodes: documents, radius: 0, ringGap: 34, capacity: 1 },
+      { nodes: pages, radius: 80, ringGap: 35, capacity: 24 },
+      { nodes: concepts, radius: 210, ringGap: 38, capacity: 24 },
+      { nodes: structures, radius: 305, ringGap: 32, capacity: 28 },
+    ]
+    const positioned = groups.flatMap((group) => group.nodes.map((node, index) => {
+      const ringIndex = Math.floor(index / group.capacity)
+      const ringStart = ringIndex * group.capacity
+      const ringSize = Math.min(group.capacity, group.nodes.length - ringStart)
+      const ringPosition = index - ringStart
+      const angle = (Math.PI * 2 * ringPosition) / Math.max(1, ringSize) - Math.PI / 2
+      const radius = group.radius + ringIndex * group.ringGap
+      return {
+        ...node,
+        x: 400 + Math.cos(angle) * radius,
+        y: 380 + Math.sin(angle) * radius,
+        degree: degree.get(node.id) || 0,
+      }
+    }))
+    const ids = new Set(positioned.map((node) => node.id))
+    return {
+      nodes: positioned,
+      edges: graph.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target)),
+    }
+  }, [graph, limits])
+  const positions = new Map(visual.nodes.map((node) => [node.id, node]))
+  const selected = graph?.nodes.find((node) => node.id === selectedId)
+  const neighbors = selectedId && graph
+    ? graph.edges.filter((edge) => edge.source === selectedId || edge.target === selectedId).length
+    : 0
+  const typeLabel: Record<string, string> = {
+    document: '教材',
+    page: '教材页面',
+    concept: '知识点',
+    circuit: '电路图',
+    component: '电路元件',
+  }
+  const selectedPages = selected?.pages?.length
+    ? selected.pages
+    : selected?.page
+      ? [selected.page]
+      : []
+
+  if (loading) return <div className="workspace-empty"><LoaderCircle className="spin" /><strong>正在整理知识图谱…</strong></div>
+  if (!graph?.nodes.length) return <div className="workspace-empty"><Network /><strong>当前知识库还没有图谱数据</strong><p>重建知识库后会自动提取知识点与资料关系。</p></div>
+  return (
+    <section className="feature-view graph-view">
+      <div className="feature-heading">
+        <div><span>KNOWLEDGE MAP</span><h1>课程知识图谱</h1><p>展示教材、页面、知识点与电路结构；公式和文本片段作为证据收纳在节点详情中。</p></div>
+        <div className="feature-stats"><strong>{graph.stats.concepts}</strong><span>知识点</span><strong>{graph.stats.pages || 0}</strong><span>页面</span><strong>{graph.stats.edges}</strong><span>关系</span></div>
+      </div>
+      <div className="graph-scope-panel">
+        <div className="graph-scope-heading">
+          <div><strong>图谱显示范围</strong><span>当前显示 {visual.nodes.length} 个节点、{visual.edges.length} 条关系</span></div>
+          <Segmented
+            value={rangeMode}
+            onChange={chooseRangeMode}
+            options={[
+              { label: '核心', value: 'core' },
+              { label: '扩展', value: 'extended' },
+              { label: '全部', value: 'all' },
+              { label: '自定义', value: 'custom' },
+            ]}
+          />
+        </div>
+        <div className="graph-range-grid">
+          <label>
+            <span>知识点 <b>{limits.concepts}/{totals.concepts}</b></span>
+            <Slider min={0} max={Math.max(1, totals.concepts)} value={limits.concepts} disabled={!totals.concepts} onChange={(value) => changeRange('concepts', value)} />
+          </label>
+          <label>
+            <span>教材页面 <b>{limits.pages}/{totals.pages}</b></span>
+            <Slider min={0} max={Math.max(1, totals.pages)} value={limits.pages} disabled={!totals.pages} onChange={(value) => changeRange('pages', value)} />
+          </label>
+          <label>
+            <span>电路与元件 <b>{limits.structures}/{totals.structures}</b></span>
+            <Slider min={0} max={Math.max(1, totals.structures)} value={limits.structures} disabled={!totals.structures} onChange={(value) => changeRange('structures', value)} />
+          </label>
+        </div>
+      </div>
+      <div className="graph-layout">
+        <div className="graph-canvas">
+          <svg viewBox="0 0 800 760" role="img" aria-label="课程知识关系图">
+            <g className="graph-edges">
+              {visual.edges.map((edge, index) => {
+                const from = positions.get(edge.source)
+                const to = positions.get(edge.target)
+                return from && to ? <line className={`relation-${edge.type.toLowerCase()}`} key={`${edge.source}-${edge.target}-${index}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} /> : null
+              })}
+            </g>
+            <g>
+              {visual.nodes.map((node) => (
+                <g
+                  key={node.id}
+                  className={`graph-node ${node.type} ${selectedId === node.id ? 'selected' : ''}`}
+                  transform={`translate(${node.x} ${node.y})`}
+                  onClick={() => setSelectedId(node.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') setSelectedId(node.id)
+                  }}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <circle r={node.type === 'document' ? 25 : node.type === 'page' ? 16 : node.type === 'concept' ? Math.min(22, 12 + node.degree) : node.type === 'circuit' ? 12 : 9} />
+                  <text y={node.type === 'document' ? 40 : node.type === 'page' || node.type === 'concept' ? 32 : 23}>{node.name?.replace(/^电路图\s*[·•]\s*/, '').slice(0, 18) || typeLabel[node.type] || '资料'}</text>
+                </g>
+              ))}
+            </g>
+          </svg>
+          <div className="graph-legend"><span><i className="document" />教材</span><span><i className="page" />页面</span><span><i className="concept" />知识点</span><span><i className="circuit" />电路图</span><span><i className="component" />元件</span></div>
+        </div>
+        <aside className="graph-detail">
+          {selected ? <><span>{typeLabel[selected.type] || '知识节点'}</span><h2>{selected.name || '未命名节点'}</h2><p>连接 {neighbors} 个语义节点{selected.evidence_count ? `，由 ${selected.evidence_count} 条教材证据支持` : ''}。公式与正文片段不会单独铺在图中，但仍参与检索和答案引用。</p>{selectedPages.length > 0 && <div className="graph-page-list">来源页码：{selectedPages.map((page) => `第 ${page} 页`).join('、')}</div>}</> : <><Network size={28} /><h2>探索知识关系</h2><p>中心是教材与页面，绿色节点是知识点，外围仅保留电路图和去重后的关键元件。</p></>}
+        </aside>
+      </div>
+    </section>
+  )
+}
+
+function MistakeBookView({
+  mistakes,
+  onDelete,
+  onPlan,
+}: {
+  mistakes: MistakeItem[]
+  onDelete: (id: string) => void
+  onPlan: () => void
+}) {
+  const pointCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    mistakes.flatMap((item) => item.knowledge_points).forEach((point) => counts.set(point, (counts.get(point) || 0) + 1))
+    return [...counts.entries()].sort((a, b) => b[1] - a[1])
+  }, [mistakes])
+  return (
+    <section className="feature-view mistakes-view">
+      <div className="feature-heading">
+        <div><span>MISTAKE REVIEW</span><h1>错题本</h1><p>归档时已自动提取知识点，用于查漏补缺和巩固规划。</p></div>
+        <Button type="primary" icon={<BrainCircuit size={16} />} onClick={onPlan} disabled={!mistakes.length}>生成知识补全规划</Button>
+      </div>
+      {pointCounts.length > 0 && <div className="weakness-strip"><strong>高频薄弱点</strong>{pointCounts.slice(0, 8).map(([point, count]) => <Tag key={point}>{point} · {count}</Tag>)}</div>}
+      {mistakes.length ? (
+        <div className="mistake-grid">
+          {mistakes.map((item) => (
+            <article className="mistake-card" key={item.id}>
+              <div className="mistake-card-head"><span>{item.agent}</span><small>{new Date(item.created_at).toLocaleDateString('zh-CN')}</small></div>
+              <h2>{item.summary}</h2>
+              <div className="mistake-points">{item.knowledge_points.map((point) => <Tag key={point}>{point}</Tag>)}</div>
+              <div className="mistake-content"><MathMarkdown content={item.content} /></div>
+              <Popconfirm title="从错题本删除？" okText="删除" cancelText="取消" onConfirm={() => onDelete(item.id)}>
+                <button className="mistake-delete"><Trash2 size={14} /> 删除</button>
+              </Popconfirm>
+            </article>
+          ))}
+        </div>
+      ) : <div className="workspace-empty"><Layers3 size={30} /><strong>错题本还是空的</strong><p>在答疑或出题结果旁点击“加入错题本”，系统会自动识别知识点。</p></div>}
+    </section>
   )
 }
 
@@ -623,6 +903,12 @@ function ModelSettingsModal({
 
   const provider = catalog.providers.find((item) => item.id === draft.provider)
     || fallbackModelCatalog.providers[0]
+  const selectableModels = provider.model_options || provider.models.map((model) => ({
+    value: model,
+    label: model,
+    disabled: false,
+    description: '',
+  }))
 
   const chooseProvider = (id: ModelProviderId) => {
     const next = catalog.providers.find((item) => item.id === id)
@@ -646,6 +932,11 @@ function ModelSettingsModal({
     }
     if (provider.requires_api_key && !provider.configured && !draft.apiKey.trim()) {
       toast.warning('请填写 API Key，或在后端环境变量中配置')
+      return
+    }
+    const selectedOption = provider.model_options?.find((option) => option.value === draft.model)
+    if (selectedOption?.disabled) {
+      toast.warning(selectedOption.description || '该模型不能用于当前对话')
       return
     }
     setModelConfig({ ...draft, model: draft.model.trim(), baseUrl: draft.baseUrl.trim() })
@@ -679,7 +970,7 @@ function ModelSettingsModal({
         <span className="modal-icon"><ServerCog size={22} /></span>
         <div>
           <h2>选择与配置模型</h2>
-          <p>本地模型从 Ollama 自动读取；云端模型通过 OpenAI 兼容接口接入。</p>
+          <p>Ollama 可稍后启动；未连接时仍可配置并使用云端 OpenAI 兼容模型。</p>
         </div>
       </div>
 
@@ -706,34 +997,28 @@ function ModelSettingsModal({
       <div className="model-config-panel">
         <div className="model-field">
           <label>模型名称</label>
-          {draft.provider === 'ollama' ? (
+          {draft.provider !== 'custom' ? (
             <Select
               value={draft.model}
-              options={provider.models.map((model) => ({ value: model, label: model }))}
+              options={selectableModels.map((option) => ({
+                value: option.value,
+                label: option.description ? `${option.label} · ${option.description}` : option.label,
+                disabled: option.disabled,
+              }))}
               onChange={(model) => setDraft((value) => ({ ...value, model }))}
               style={{ width: '100%' }}
               showSearch
-              aria-label="选择本地模型"
+              aria-label="选择模型"
             />
           ) : (
-            <>
-              <Input
-                value={draft.model}
-                onChange={(event) => setDraft((value) => ({ ...value, model: event.target.value }))}
-                placeholder="输入模型名称"
-                prefix={<Bot size={15} />}
-              />
-              {provider.models.length > 0 && (
-                <div className="suggested-models">
-                  {provider.models.map((model) => (
-                    <button type="button" key={model} onClick={() => setDraft((value) => ({ ...value, model }))}>
-                      {model}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </>
+            <Input
+              value={draft.model}
+              onChange={(event) => setDraft((value) => ({ ...value, model: event.target.value }))}
+              placeholder="输入模型名称"
+              prefix={<Bot size={15} />}
+            />
           )}
+          {draft.provider === 'ollama' && provider.status_message && <small className="model-status-hint">{provider.status_message}</small>}
         </div>
 
         {draft.provider !== 'ollama' && (
@@ -784,6 +1069,7 @@ function ModelSettingsModal({
 }
 
 function StudentPageContent() {
+  const [activeView, setActiveView] = useState<WorkspaceView>('chat')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [kbModalOpen, setKbModalOpen] = useState(false)
   const [modelModalOpen, setModelModalOpen] = useState(false)
@@ -791,23 +1077,42 @@ function StudentPageContent() {
   const [statuses, setStatuses] = useState<KBStatus[]>([])
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog>(fallbackModelCatalog)
+  const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraph>()
+  const [graphLoading, setGraphLoading] = useState(false)
+  const [mistakes, setMistakes] = useState<MistakeItem[]>([])
+  const studentId = useChatStore((state) => state.studentId)
   const messages = useChatStore((state) => state.messages)
   const sessionId = useChatStore((state) => state.sessionId)
   const mode = useChatStore((state) => state.mode)
   const setMode = useChatStore((state) => state.setMode)
   const send = useChatStore((state) => state.send)
   const knowledgeBase = useChatStore((state) => state.knowledgeBase)
+  const defaultKnowledgeBase = useChatStore((state) => state.defaultKnowledgeBase)
   const setKnowledgeBase = useChatStore((state) => state.setKnowledgeBase)
+  const setDefaultKnowledgeBase = useChatStore((state) => state.setDefaultKnowledgeBase)
+  const syncKnowledgeBases = useChatStore((state) => state.syncKnowledgeBases)
   const modelConfig = useChatStore((state) => state.modelConfig)
+  const setModelConfig = useChatStore((state) => state.setModelConfig)
   const loadSession = useChatStore((state) => state.loadSession)
   const clear = useChatStore((state) => state.clear)
   const { message: toast } = AntApp.useApp()
+  const previousBuildStates = useRef<Record<string, KBStatus['state']>>({})
+  const activeBuilds = statuses.filter((item) => item.state === 'building' || item.state === 'cancelling')
+  const hasActiveBuilds = activeBuilds.length > 0
+  const currentKbStatus = statuses.find((item) => item.id === knowledgeBase)
+  const deleteKbDisabledReason = !currentKbStatus
+    ? '该知识库尚未创建'
+    : currentKbStatus.state === 'building' || currentKbStatus.state === 'cancelling'
+      ? '请先取消正在进行的构建任务'
+      : ''
 
   const refreshStatuses = async () => {
     try {
-      setStatuses(await fetchKnowledgeBases())
+      const nextStatuses = await fetchKnowledgeBases()
+      setStatuses(nextStatuses)
+      syncKnowledgeBases(nextStatuses)
     } catch {
-      setStatuses([{ id: 'default', state: 'missing', documents: 0, chunks: 0, message: '后端未连接' }])
+      // Keep the last successful list and selection during a transient backend outage.
     }
   }
 
@@ -819,40 +1124,159 @@ function StudentPageContent() {
     }
   }
 
+  const refreshMistakes = async () => {
+    try {
+      setMistakes(await fetchMistakes(studentId))
+    } catch {
+      setMistakes([])
+    }
+  }
+
+  const upsertBuildStatus = (state?: KBStatus) => {
+    if (!state?.id) return
+    setStatuses((current) => (
+      current.some((item) => item.id === state.id)
+        ? current.map((item) => item.id === state.id ? { ...item, ...state } : item)
+        : [...current, state]
+    ))
+  }
+
+  const refreshModels = async (allowAutoSwitch = false) => {
+    try {
+      const catalog = await fetchModels()
+      setModelCatalog(catalog)
+      const local = catalog.providers.find((item) => item.id === 'ollama')
+      const preferred = catalog.providers.find((item) => item.id === catalog.default.provider)
+      if (allowAutoSwitch && modelConfig.provider === 'ollama' && !local?.configured && preferred?.configured && preferred.id !== 'ollama') {
+        setModelConfig({ provider: preferred.id, model: catalog.default.model, apiKey: '', baseUrl: preferred.base_url })
+        toast.info(`Ollama 未启动，已使用已配置的 ${preferred.label}`)
+      }
+    } catch {
+      setModelCatalog(fallbackModelCatalog)
+    }
+  }
+
   useEffect(() => {
     void refreshStatuses()
     void fetchSession(sessionId).then((stored) => {
       if (stored.length) loadSession(sessionId, stored)
     }).catch(() => undefined)
     void refreshSessions()
-    void fetchModels().then(setModelCatalog).catch(() => setModelCatalog(fallbackModelCatalog))
+    void refreshMistakes()
+    void refreshModels(true)
     const timer = window.setInterval(() => {
       void refreshStatuses()
       void refreshSessions()
+      void refreshModels()
     }, 5000)
     return () => window.clearInterval(timer)
   }, [])
 
+  useEffect(() => {
+    if (modelModalOpen) void refreshModels()
+  }, [modelModalOpen])
+
+  useEffect(() => {
+    if (!hasActiveBuilds) return
+    const timer = window.setInterval(() => void refreshStatuses(), 1200)
+    return () => window.clearInterval(timer)
+  }, [hasActiveBuilds])
+
+  useEffect(() => {
+    const previous = previousBuildStates.current
+    statuses.forEach((item) => {
+      const prior = previous[item.id]
+      if (prior === 'building' || prior === 'cancelling') {
+        if (item.state === 'ready') toast.success(`知识库 ${item.id} 构建完成`)
+        if (item.state === 'cancelled') toast.info(`知识库 ${item.id} 构建已取消，缓存已清理`)
+        if (item.state === 'error') toast.error(`知识库 ${item.id} 构建失败：${item.message}`)
+      }
+    })
+    previousBuildStates.current = Object.fromEntries(
+      statuses.map((item) => [item.id, item.state]),
+    )
+  }, [statuses])
+
+  useEffect(() => {
+    if (activeView !== 'graph') return
+    setGraphLoading(true)
+    void fetchKnowledgeGraph(knowledgeBase)
+      .then(setKnowledgeGraph)
+      .catch(() => setKnowledgeGraph(undefined))
+      .finally(() => setGraphLoading(false))
+  }, [activeView, knowledgeBase])
+
   const kbOptions = useMemo(() => {
     const base = statuses.map((item) => ({
       value: item.id,
-      label: item.id === 'default' ? '默认课程知识库' : item.id,
+      label: item.id === defaultKnowledgeBase ? `${item.id}（默认课程）` : item.id,
     }))
-    if (!base.some((item) => item.value === knowledgeBase)) {
-      base.push({ value: knowledgeBase, label: knowledgeBase })
+    if (knowledgeBase && !base.some((item) => item.value === knowledgeBase)) {
+      base.push({
+        value: knowledgeBase,
+        label: knowledgeBase === defaultKnowledgeBase ? `${knowledgeBase}（默认课程）` : knowledgeBase,
+      })
     }
     return base
-  }, [statuses, knowledgeBase])
+  }, [statuses, knowledgeBase, defaultKnowledgeBase])
+
+  const defaultKbOptions = useMemo(() => statuses.map((item) => ({
+    value: item.id,
+    label: item.id === defaultKnowledgeBase ? `${item.id}（当前默认）` : item.id,
+    disabled: item.state !== 'ready' && !item.available,
+  })), [statuses, defaultKnowledgeBase])
+
+  const chooseDefaultKnowledgeBase = (id: string) => {
+    const target = statuses.find((item) => item.id === id)
+    if (!target || (target.state !== 'ready' && !target.available)) {
+      toast.warning('只有存在可用索引的知识库可以设为默认课程知识库')
+      return
+    }
+    setDefaultKnowledgeBase(id)
+    toast.success(`已将 ${id} 设为默认课程知识库`)
+  }
 
   const ask = (prompt: string, preferredMode?: ChatMode) => {
     if (preferredMode) setMode(preferredMode)
     void send(prompt).then(() => refreshSessions())
   }
 
+  const saveMistake = async (content: string, agent: string) => {
+    try {
+      const item = await addMistake(studentId, sessionId, content, agent, modelConfig)
+      setMistakes((current) => [item, ...current.filter((existing) => existing.id !== item.id)])
+      toast.success(`已加入错题本，并识别知识点：${item.knowledge_points.join('、')}`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '加入错题本失败')
+    }
+  }
+
+  const removeMistake = async (id: string) => {
+    try {
+      await deleteMistake(studentId, id)
+      setMistakes((current) => current.filter((item) => item.id !== id))
+      toast.success('已从错题本删除')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '删除错题失败')
+    }
+  }
+
+  const planFromMistakes = () => {
+    const points = [...new Set(mistakes.flatMap((item) => item.knowledge_points))]
+    const summaries = mistakes.slice(0, 12).map((item, index) => `${index + 1}. ${item.summary}（${item.knowledge_points.join('、')}）`)
+    setActiveView('chat')
+    setMode('plan')
+    ask(
+      `请依据我的错题本制定知识补全与巩固学习规划。\n薄弱知识点：${points.join('、')}\n错题摘要：\n${summaries.join('\n')}`,
+      'plan',
+    )
+  }
+
   const selectHistorySession = async (selectedSessionId: string) => {
     try {
       const stored = await fetchSession(selectedSessionId)
       loadSession(selectedSessionId, stored)
+      setActiveView('chat')
       setSidebarOpen(false)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '历史会话恢复失败')
@@ -861,6 +1285,7 @@ function StudentPageContent() {
 
   const startNewSession = () => {
     clear()
+    setActiveView('chat')
     setSidebarOpen(false)
   }
 
@@ -880,14 +1305,64 @@ function StudentPageContent() {
 
   const uploadRequest: NonNullable<UploadProps['customRequest']> = async (options) => {
     try {
-      const result = await uploadKnowledgeFile(options.file as File, knowledgeBase)
+      const result = await uploadKnowledgeFile(options.file as File, knowledgeBase, modelConfig)
       options.onSuccess?.(result)
+      upsertBuildStatus(result.build)
       toast.success(result.message)
       void refreshStatuses()
     } catch (error) {
       const detail = error instanceof Error ? error.message : '上传失败'
       options.onError?.(new Error(detail))
       toast.error(detail)
+    }
+  }
+
+  const rebuildCurrentKnowledgeBase = async () => {
+    try {
+      const result = await rebuildKnowledgeBase(knowledgeBase, modelConfig)
+      upsertBuildStatus(result.build)
+      toast.success(result.message)
+      void refreshStatuses()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '知识库重建失败')
+    }
+  }
+
+  const cancelBuild = async (id: string) => {
+    try {
+      const result = await cancelKnowledgeBaseBuild(id)
+      setStatuses((current) => current.map((item) => (
+        item.id === id ? { ...item, ...result.state } : item
+      )))
+      toast.info(result.message)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '取消构建失败')
+    }
+  }
+
+  const removeKnowledgeBase = async () => {
+    try {
+      const deleted = knowledgeBase
+      const replacement = statuses.find((item) => (
+        item.id !== deleted
+        && (item.state === 'ready' || item.available)
+      ))
+      const nextKnowledgeBase = replacement?.id || ''
+      const result = await deleteKnowledgeBase(deleted)
+      if (deleted === defaultKnowledgeBase) {
+        setDefaultKnowledgeBase(nextKnowledgeBase)
+      } else {
+        setKnowledgeBase(
+          statuses.some((item) => item.id === defaultKnowledgeBase && item.id !== deleted)
+            ? defaultKnowledgeBase
+            : nextKnowledgeBase,
+        )
+      }
+      setKnowledgeGraph(undefined)
+      await refreshStatuses()
+      toast.success(result.message)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '删除知识库失败')
     }
   }
 
@@ -912,6 +1387,8 @@ function StudentPageContent() {
         onSelectSession={(selectedSessionId) => void selectHistorySession(selectedSessionId)}
         onDeleteSession={(deletedSessionId, title) => void deleteHistorySession(deletedSessionId, title)}
         onNewSession={startNewSession}
+        activeView={activeView}
+        onView={(view) => { setActiveView(view); setSidebarOpen(false) }}
       />
       <main className="main-workspace">
         <header className="topbar">
@@ -919,7 +1396,7 @@ function StudentPageContent() {
             <button className="menu-button" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu size={19} /></button>
             <div>
               <span className="breadcrumb">学生工作台 /</span>
-              <strong>{mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : '智能学习'}</strong>
+              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'mistakes' ? '错题本' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
             </div>
           </div>
           <div className="topbar-actions">
@@ -945,15 +1422,45 @@ function StudentPageContent() {
           </div>
         </header>
 
-        <section className="learning-grid">
-          <div className="chat-column">
-            <div className="chat-scroll">
-              {messages.length === 0 ? <Welcome onAsk={ask} /> : <Conversation />}
+        {activeBuilds.length > 0 && (
+          <section className="build-task-stack" aria-label="知识库构建任务">
+            {activeBuilds.map((item) => (
+              <div className="build-task-banner" key={item.id}>
+                <span className="build-task-icon"><LoaderCircle className="spin" size={18} /></span>
+                <div className="build-task-copy">
+                  <strong>{item.state === 'cancelling' ? `正在取消 ${item.id}` : `正在构建知识库 ${item.id}`}</strong>
+                  <span>{item.message}</span>
+                  <Progress percent={item.progress || 0} size="small" showInfo={false} />
+                </div>
+                <div className="build-task-progress">{item.progress || 0}%</div>
+                <Button
+                  danger
+                  size="small"
+                  disabled={!item.cancellable}
+                  onClick={() => void cancelBuild(item.id)}
+                >
+                  {item.state === 'cancelling' ? '清理中' : '取消构建'}
+                </Button>
+              </div>
+            ))}
+          </section>
+        )}
+
+        {activeView === 'chat' ? (
+          <section className="learning-grid">
+            <div className="chat-column">
+              <div className="chat-scroll">
+                {messages.length === 0 ? <Welcome onAsk={ask} /> : <Conversation onAddMistake={(content, agent) => void saveMistake(content, agent)} />}
+              </div>
+              <ChatComposer onSend={(value) => ask(value)} />
             </div>
-            <ChatComposer onSend={(value) => ask(value)} />
-          </div>
-          <KnowledgePanel statuses={statuses} onCreate={() => setKbModalOpen(true)} />
-        </section>
+            <KnowledgePanel statuses={statuses} onCreate={() => setKbModalOpen(true)} />
+          </section>
+        ) : activeView === 'graph' ? (
+          <KnowledgeGraphView graph={knowledgeGraph} loading={graphLoading} />
+        ) : (
+          <MistakeBookView mistakes={mistakes} onDelete={(id) => void removeMistake(id)} onPlan={planFromMistakes} />
+        )}
       </main>
 
       <ModelSettingsModal
@@ -978,8 +1485,52 @@ function StudentPageContent() {
           </div>
         </div>
         <div className="modal-section">
+          <label>默认课程知识库</label>
+          <Select
+            value={defaultKnowledgeBase || undefined}
+            options={defaultKbOptions}
+            onChange={chooseDefaultKnowledgeBase}
+            placeholder="选择默认课程知识库"
+            aria-label="选择默认课程知识库"
+            style={{ width: '100%' }}
+          />
+          <p className="modal-field-help">重新打开学生端或开始新会话时优先使用；该设置保存在当前浏览器中。</p>
+        </div>
+        <div className="modal-section">
           <label>当前目标知识库</label>
-          <Select value={knowledgeBase} options={kbOptions} onChange={setKnowledgeBase} style={{ width: '100%' }} />
+          <div className="kb-target-row">
+            <Select
+              value={knowledgeBase || undefined}
+              options={kbOptions}
+              onChange={setKnowledgeBase}
+              placeholder="选择或新建目标知识库"
+              aria-label="选择当前目标知识库"
+              style={{ width: '100%' }}
+            />
+            <Tooltip title={deleteKbDisabledReason || `删除知识库 ${knowledgeBase}`}>
+              <span>
+                <Popconfirm
+                  title={`确认删除知识库 ${knowledgeBase}？`}
+                  description="索引、知识图谱及已上传资料都会被永久删除。"
+                  okText="确认删除"
+                  cancelText="取消"
+                  okButtonProps={{ danger: true }}
+                  disabled={Boolean(deleteKbDisabledReason)}
+                  onConfirm={() => void removeKnowledgeBase()}
+                >
+                  <Button
+                    danger
+                    icon={<Trash2 size={15} />}
+                    disabled={Boolean(deleteKbDisabledReason)}
+                    aria-label={`删除知识库 ${knowledgeBase}`}
+                  >
+                    删除
+                  </Button>
+                </Popconfirm>
+              </span>
+            </Tooltip>
+          </div>
+          <p className="modal-field-help">上传与重建仅作用于这里选择的知识库，不会改变上面的默认设置。</p>
         </div>
         <div className="new-kb-row">
           <Input
@@ -992,15 +1543,45 @@ function StudentPageContent() {
         </div>
         <Upload.Dragger
           multiple={false}
-          accept=".pdf,.md,.txt,.docx,.xlsx,.json"
+          accept=".pdf,.md,.txt,.docx"
           customRequest={uploadRequest}
           showUploadList
           className="kb-dragger"
+          disabled={currentKbStatus?.state === 'building' || currentKbStatus?.state === 'cancelling'}
         >
           <p className="ant-upload-drag-icon"><UploadCloud size={28} /></p>
           <p className="ant-upload-text">拖入教材或题库，或点击选择文件</p>
-          <p className="ant-upload-hint">支持 PDF、Word、Markdown、Excel、JSON，单文件最大 80 MB</p>
+          <p className="ant-upload-hint">支持 PDF、Word、Markdown、文本；Excel/JSON 题库与知识库隔离</p>
         </Upload.Dragger>
+        {(currentKbStatus?.state === 'building' || currentKbStatus?.state === 'cancelling') && (
+          <div className="modal-build-progress" aria-label={`${knowledgeBase} 构建进度`}>
+            <div>
+              <strong>{currentKbStatus.state === 'cancelling' ? '正在取消并清理缓存' : currentKbStatus.message}</strong>
+              <span>{currentKbStatus.progress || 0}%</span>
+            </div>
+            <Progress
+              percent={currentKbStatus.progress || 0}
+              status={currentKbStatus.state === 'cancelling' ? 'exception' : 'active'}
+              showInfo={false}
+            />
+            <Button
+              danger
+              block
+              disabled={!currentKbStatus.cancellable}
+              onClick={() => void cancelBuild(knowledgeBase)}
+            >
+              {currentKbStatus.state === 'cancelling' ? '正在清理未完成缓存…' : '取消本次构建'}
+            </Button>
+          </div>
+        )}
+        <Button
+          block
+          icon={<Database size={16} />}
+          onClick={() => void rebuildCurrentKnowledgeBase()}
+          disabled={currentKbStatus?.state === 'building' || currentKbStatus?.state === 'cancelling'}
+        >
+          使用当前模型重新构建已有资料
+        </Button>
         <div className="modal-note">
           <Check size={15} /> 新知识库构建期间可继续使用其他已就绪知识库
         </div>

@@ -6,7 +6,7 @@ python-multipart>=0.0.20,<1
 redis>=5,<7
 langgraph==0.2.76
 langchain-core>=0.3.34,<0.4
-sentence-transformers>=3,<6
+sentence-transformers>=2.7,<6
 huggingface-hub>=0.26,<1
 faiss-cpu>=1.9,<2
 rank-bm25==0.2.2
@@ -17,4 +17,11 @@ openpyxl>=3.1,<4
 sympy>=1.13,<2
 numpy>=1.26,<3
 Pillow>=10,<13
+qdrant-client>=1.14,<2
+neo4j>=5.27,<7
+transformers>=4.46,<5
+torch>=2.2,<3
+opencv-python>=4.10,<4.12
+ultralytics==8.2.85
+omegaconf>=2.3,<3
 pytest>=8,<10

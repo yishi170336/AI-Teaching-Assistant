@@ -35,9 +35,30 @@ class Settings:
     ollama_model: str = os.getenv("OLLAMA_MODEL", "qwen3.5:2b")
     deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
     deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
     qwen_api_key: str = os.getenv("QWEN_API_KEY", os.getenv("DASHSCOPE_API_KEY", ""))
     qwen_base_url: str = os.getenv(
         "QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    )
+    qwen_vision_model: str = os.getenv("QWEN_VISION_MODEL", "qwen3-vl-flash")
+    qwen_circuit_vision_model: str = os.getenv(
+        "QWEN_CIRCUIT_VISION_MODEL", "qwen3-vl-flash"
+    )
+    qwen_cleaning_model: str = os.getenv("QWEN_CLEANING_MODEL", "qwen3.7-plus")
+    qwen_vision_max_tokens: int = int(os.getenv("QWEN_VISION_MAX_TOKENS", "8192"))
+    qwen_multimodal_embedding_model: str = os.getenv(
+        "QWEN_MULTIMODAL_EMBEDDING_MODEL", "qwen3-vl-embedding"
+    )
+    qwen_multimodal_embedding_url: str = os.getenv(
+        "QWEN_MULTIMODAL_EMBEDDING_URL",
+        "https://dashscope.aliyuncs.com/api/v1/services/embeddings/"
+        "multimodal-embedding/multimodal-embedding",
+    )
+    qwen_multimodal_embedding_dimension: int = int(
+        os.getenv("QWEN_MULTIMODAL_EMBEDDING_DIMENSION", "1024")
+    )
+    qwen_multimodal_timeout_seconds: float = float(
+        os.getenv("QWEN_MULTIMODAL_TIMEOUT_SECONDS", "180")
     )
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     memory_turns: int = int(os.getenv("MEMORY_TURNS", "8"))
@@ -49,6 +70,19 @@ class Settings:
     max_upload_mb: int = int(os.getenv("MAX_UPLOAD_MB", "80"))
     max_attachment_mb: int = int(os.getenv("MAX_ATTACHMENT_MB", "20"))
     max_chat_attachments: int = int(os.getenv("MAX_CHAT_ATTACHMENTS", "5"))
+    qdrant_url: str = os.getenv("QDRANT_URL", "")
+    qdrant_api_key: str = os.getenv("QDRANT_API_KEY", "")
+    neo4j_uri: str = os.getenv("NEO4J_URI", "")
+    neo4j_http_url: str = os.getenv("NEO4J_HTTP_URL", "http://127.0.0.1:7474")
+    neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")
+    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "")
+    neo4j_database: str = os.getenv("NEO4J_DATABASE", "neo4j")
+    pdf_extract_kit_output_dir: str = os.getenv("PDF_EXTRACT_KIT_OUTPUT_DIR", "")
+    pdf_extract_kit_dir: str = os.getenv("PDF_EXTRACT_KIT_DIR", "third_party/PDF-Extract-Kit")
+    pdf_extract_kit_page_limit: int = int(os.getenv("PDF_EXTRACT_KIT_PAGE_LIMIT", "0"))
+    rerank_model_path: str = os.getenv("RERANK_MODEL_PATH", "")
+    multimodal_image_limit: int = int(os.getenv("MULTIMODAL_IMAGE_LIMIT", "0"))
+    multimodal_min_image_area: int = int(os.getenv("MULTIMODAL_MIN_IMAGE_AREA", "12000"))
     frontend_origins: tuple[str, ...] = tuple(
         value.strip()
         for value in os.getenv(

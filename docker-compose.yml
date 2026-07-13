@@ -4,11 +4,36 @@ services:
     container_name: circuitmind-redis
     command: redis-server --appendonly yes
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - circuitmind_redis:/data
+    restart: unless-stopped
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    container_name: circuitmind-qdrant
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - circuitmind_qdrant:/qdrant/storage
+    restart: unless-stopped
+  neo4j:
+    image: neo4j:5.26.28
+    container_name: circuitmind-neo4j
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1g
+      NEO4J_server_memory_pagecache_size: 512m
+    volumes:
+      - circuitmind_neo4j:/data
     restart: unless-stopped
 
 volumes:
   circuitmind_redis:
+  circuitmind_qdrant:
+  circuitmind_neo4j:
 

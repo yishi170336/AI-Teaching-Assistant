@@ -7,14 +7,31 @@ export type SourceInfo = {
   page_end: number | null
   score: number
   doc_type: 'textbook' | 'question' | string
+  excerpt?: string
+  knowledge_tags?: string[]
+  element_type?: string
+  vector_score?: number
+  bm25_score?: number
+  graph_score?: number
+  image_score?: number
+  rerank_score?: number
 }
 
 export type KBStatus = {
   id: string
-  state: 'ready' | 'building' | 'error' | 'missing'
+  state: 'ready' | 'building' | 'cancelling' | 'cancelled' | 'error' | 'missing'
   documents: number
   chunks: number
   message: string
+  available?: boolean
+  progress?: number
+  stage?: string
+  cancellable?: boolean
+  started_at?: string
+  updated_at?: string
+  completed_at?: string
+  validation?: { status?: string; question_chunks?: number }
+  pipeline_layers?: Record<string, { status?: string }>
 }
 
 export type AttachmentInfo = {
@@ -44,11 +61,55 @@ export type ModelProviderInfo = {
   base_url: string
   requires_api_key: boolean
   configured: boolean
+  status_message?: string
+  model_options?: Array<{
+    value: string
+    label: string
+    disabled?: boolean
+    description?: string
+  }>
 }
 
 export type ModelCatalog = {
   default: { provider: ModelProviderId; model: string }
   providers: ModelProviderInfo[]
+  ollama_available?: boolean
+}
+
+export type KnowledgeGraphNode = {
+  id: string
+  type: 'concept' | 'component' | 'circuit' | 'document' | 'page' | string
+  name: string
+  chunk_id?: string
+  page?: number
+  pages?: number[]
+  evidence_count?: number
+  component_type?: string
+}
+
+export type KnowledgeGraphEdge = {
+  source: string
+  target: string
+  type: string
+  evidence_count?: number
+}
+
+export type KnowledgeGraph = {
+  knowledge_base: string
+  nodes: KnowledgeGraphNode[]
+  edges: KnowledgeGraphEdge[]
+  stats: { nodes: number; edges: number; concepts: number; documents?: number; pages?: number; circuits?: number; components?: number }
+}
+
+export type MistakeItem = {
+  id: string
+  student_id: string
+  session_id: string
+  content: string
+  summary: string
+  agent: string
+  knowledge_points: string[]
+  created_at: string
 }
 
 export type SessionSummary = {
@@ -191,13 +252,107 @@ export async function fetchKnowledgeBases(): Promise<KBStatus[]> {
   return (await response.json()).knowledge_bases || []
 }
 
-export async function uploadKnowledgeFile(file: File, knowledgeBase: string) {
+export async function fetchKnowledgeGraph(knowledgeBase: string): Promise<KnowledgeGraph> {
+  const response = await fetch(`/api/kb/${encodeURIComponent(knowledgeBase)}/graph`)
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.detail || '知识图谱读取失败')
+  return result
+}
+
+export async function fetchMistakes(studentId: string): Promise<MistakeItem[]> {
+  const response = await fetch(`/api/mistakes?student_id=${encodeURIComponent(studentId)}`)
+  if (!response.ok) throw new Error('错题本读取失败')
+  return (await response.json()).mistakes || []
+}
+
+export async function addMistake(
+  studentId: string,
+  sessionId: string,
+  content: string,
+  agent: string,
+  modelConfig: ModelConfig,
+): Promise<MistakeItem> {
+  const response = await fetch('/api/mistakes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      student_id: studentId,
+      session_id: sessionId,
+      content,
+      agent,
+      model_provider: modelConfig.provider,
+      model: modelConfig.model,
+      api_key: modelConfig.apiKey,
+      base_url: modelConfig.baseUrl,
+    }),
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.detail || result.error || '加入错题本失败')
+  return result.mistake
+}
+
+export async function deleteMistake(studentId: string, mistakeId: string): Promise<void> {
+  const response = await fetch(
+    `/api/mistakes/${encodeURIComponent(mistakeId)}?student_id=${encodeURIComponent(studentId)}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) throw new Error('删除错题失败')
+}
+
+export async function uploadKnowledgeFile(
+  file: File,
+  knowledgeBase: string,
+  modelConfig: ModelConfig,
+) {
   const data = new FormData()
   data.append('file', file)
   data.append('knowledge_base', knowledgeBase)
   data.append('rebuild', 'true')
+  data.append('model_provider', modelConfig.provider)
+  data.append('model', modelConfig.model)
+  data.append('api_key', modelConfig.apiKey)
+  data.append('base_url', modelConfig.baseUrl)
   const response = await fetch('/api/upload', { method: 'POST', body: data })
   const result = await response.json()
   if (!response.ok) throw new Error(result.detail || result.error || '上传失败')
+  return result
+}
+
+export async function rebuildKnowledgeBase(
+  knowledgeBase: string,
+  modelConfig: ModelConfig,
+) {
+  const response = await fetch('/api/kb/rebuild', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      knowledge_base: knowledgeBase,
+      model_provider: modelConfig.provider,
+      model: modelConfig.model,
+      api_key: modelConfig.apiKey,
+      base_url: modelConfig.baseUrl,
+      chapter_limit: null,
+    }),
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.detail || result.error || '重建失败')
+  return result
+}
+
+export async function cancelKnowledgeBaseBuild(knowledgeBase: string) {
+  const response = await fetch(`/api/kb/${encodeURIComponent(knowledgeBase)}/build`, {
+    method: 'DELETE',
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.detail || result.error || '取消构建失败')
+  return result
+}
+
+export async function deleteKnowledgeBase(knowledgeBase: string) {
+  const response = await fetch(`/api/kb/${encodeURIComponent(knowledgeBase)}`, {
+    method: 'DELETE',
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.detail || result.error || '删除知识库失败')
   return result
 }
