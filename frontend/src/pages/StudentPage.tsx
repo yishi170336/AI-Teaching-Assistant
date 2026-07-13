@@ -123,7 +123,7 @@ const fallbackModelCatalog: ModelCatalog = {
         { value: 'qwen3-vl-flash', label: 'qwen3-vl-flash' },
         { value: 'qwen3-vl-embedding', label: 'qwen3-vl-embedding', disabled: true, description: '仅用于向量化' },
       ],
-      default_model: 'qwen3-vl-plus',
+      default_model: 'qwen3-vl-flash',
       base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       requires_api_key: true,
       configured: false,

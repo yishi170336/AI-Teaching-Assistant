@@ -39,7 +39,7 @@ def test_qwen_vision_requests_non_thinking_high_resolution_json() -> None:
         client.close()
 
     assert result == {"is_circuit": True}
-    assert captured["model"] == "qwen3-vl-plus"
+    assert captured["model"] == "qwen3-vl-flash"
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["enable_thinking"] is False
     assert captured["vl_high_resolution_images"] is True

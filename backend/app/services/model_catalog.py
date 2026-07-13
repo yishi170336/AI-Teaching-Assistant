@@ -35,12 +35,21 @@ QWEN_CHAT_DISABLED_REASONS = {
     if option.get("disabled")
 }
 
+QWEN_VL_FALLBACK_MODEL = "qwen3-vl-flash"
+QWEN_VL_FALLBACK_ALIASES = {
+    "qwen3-vl-8b-instruct",
+    "qwen3-vl-embedding",
+}
+
 
 def canonical_model_id(provider: str, model: str) -> str:
     """Translate UI display aliases and legacy saved values to exact API IDs."""
     normalized = model.strip()
     if provider == "qwen" and normalized.lower().startswith("qwen"):
-        return normalized.lower()
+        canonical = normalized.lower()
+        if canonical in QWEN_VL_FALLBACK_ALIASES:
+            return QWEN_VL_FALLBACK_MODEL
+        return canonical
     return normalized
 
 

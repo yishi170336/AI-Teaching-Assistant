@@ -103,7 +103,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start.ps1
 
 - 本地 Ollama：自动显示 `ollama list` 中已经安装的模型。
 - DeepSeek API：默认提供 `deepseek-v4-flash` 和 `deepseek-v4-pro`。
-- 通义千问 API：界面显示 `Qwen3.7-Plus`、`Qwen3.7-Max` 等易读名称，请求时使用百炼要求的精确小写 ID（如 `qwen3.7-plus`、`qwen3.7-max`）。`qwen3-vl-8b-instruct` 在当前账号未开放，`qwen3-vl-embedding` 仅用于知识库向量化，因此会在聊天模型下拉表中禁用；Base URL 可按百炼工作空间修改。
+- 通义千问 API：界面显示 `Qwen3.7-Plus`、`Qwen3.7-Max` 等易读名称，请求时使用百炼要求的精确小写 ID（如 `qwen3.7-plus`、`qwen3.7-max`）。`qwen3-vl-8b-instruct` 在当前账号未开放，`qwen3-vl-embedding` 仅用于知识库向量化，因此会在聊天模型下拉表中禁用；旧配置若传入这两个模型，会自动回退到 `qwen3-vl-flash`。Base URL 可按百炼工作空间修改。
 - 自定义 API：填写任意兼容 OpenAI Chat Completions 的模型名称、API Key 和 Base URL。
 
 页面输入的模型配置和 API Key 会写入当前浏览器的 `localStorage`，不会写入项目文件；配置弹窗提供清除已保存密钥的入口。公用电脑不建议保存云端密钥。也可以在 `.env` 配置 `DEEPSEEK_API_KEY`、`QWEN_API_KEY` 及对应 Base URL。使用云端多模态模型时，题目、最近对话、检索上下文和必要的电路图会发送到所选服务。

@@ -150,9 +150,10 @@ def test_qwen_display_alias_is_canonicalized_to_exact_api_id():
     assert canonical_model_id("custom", "My-Qwen-Proxy") == "My-Qwen-Proxy"
 
 
-def test_embedding_model_is_rejected_for_chat_completions():
-    reason = chat_model_unavailable_reason("qwen", "qwen3-vl-embedding")
-    assert "Chat Completions" in reason
+def test_unavailable_qwen_vl_models_fall_back_to_flash():
+    assert canonical_model_id("qwen", "qwen3-vl-embedding") == "qwen3-vl-flash"
+    assert canonical_model_id("qwen", "qwen3-vl-8b-instruct") == "qwen3-vl-flash"
+    assert chat_model_unavailable_reason("qwen", "qwen3-vl-embedding") == ""
 
 
 def test_nested_provider_error_returns_readable_message():

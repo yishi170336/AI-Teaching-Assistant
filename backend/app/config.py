@@ -40,7 +40,7 @@ class Settings:
     qwen_base_url: str = os.getenv(
         "QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
     )
-    qwen_vision_model: str = os.getenv("QWEN_VISION_MODEL", "qwen3-vl-plus")
+    qwen_vision_model: str = os.getenv("QWEN_VISION_MODEL", "qwen3-vl-flash")
     qwen_circuit_vision_model: str = os.getenv(
         "QWEN_CIRCUIT_VISION_MODEL", "qwen3-vl-flash"
     )

@@ -52,7 +52,7 @@ function canonicalModel(provider: ModelProviderId, model: string) {
   if (provider !== 'qwen') return normalized
   const canonical = normalized.toLowerCase()
   if (canonical === 'qwen3-vl-embedding' || canonical === 'qwen3-vl-8b-instruct') {
-    return 'qwen3-vl-plus'
+    return 'qwen3-vl-flash'
   }
   return canonical
 }
