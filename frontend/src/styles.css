@@ -319,7 +319,7 @@ button { color: inherit; }
 .math-markdown .katex-display { margin: 14px 0; padding: 9px; overflow-x: auto; overflow-y: hidden; color: #173f42; background: #f5f9f7; border-radius: 8px; }
 .math-markdown .katex { font-size: 1.03em; }
 
-.kb-modal .ant-modal-content { padding: 25px; border-radius: 17px; }
+.kb-modal .ant-modal-content { max-height: calc(100vh - 48px); padding: 25px; overflow-y: auto; border-radius: 17px; }
 .modal-heading { display: flex; align-items: flex-start; gap: 12px; }
 .modal-icon { display: grid; place-items: center; width: 42px; min-width: 42px; height: 42px; color: #fff; background: linear-gradient(135deg, #0f766e, #159080); border-radius: 12px; }
 .modal-heading h2 { margin: 1px 0 5px; color: #173f42; font-size: 18px; }
@@ -329,12 +329,32 @@ button { color: inherit; }
 .modal-section label { display: block; margin-bottom: 7px; color: #42615f; font-size: 10px; font-weight: 800; }
 .modal-field-help { margin: 6px 2px 0; color: #7b918e; font-size: 10px; line-height: 1.55; }
 .kb-target-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
-.new-kb-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: 10px; }
+.new-kb-builder { padding: 15px; background: #f5faf8; border: 1px solid #d4e7e2; border-radius: 13px; }
+.modal-section-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.modal-section-title strong { color: #214f4c; font-size: 12px; }
+.modal-section-title span { color: #839793; font-size: 9px; }
+.new-kb-builder label { display: flex; align-items: center; gap: 6px; margin-top: 13px; }
+.new-kb-builder .modal-section-title + label { margin-top: 0; }
+.step-number { display: inline-grid; place-items: center; width: 18px; height: 18px; color: #fff; font-size: 9px; font-weight: 800; background: #278c80; border-radius: 50%; }
+.button-step-number { width: 17px; height: 17px; color: #16776e; background: #fff; }
 .kb-dragger { display: block; margin-top: 17px; }
+.kb-create-dragger, .existing-kb-upload .kb-dragger { margin-top: 0; }
 .kb-dragger .ant-upload-drag { padding: 9px; background: #f6faf8; border-color: #bcd9d3; }
 .kb-dragger .ant-upload-drag-icon { display: flex; justify-content: center; margin: 4px 0 7px !important; color: #399587; }
 .kb-dragger .ant-upload-text { color: #315754 !important; font-size: 12px !important; font-weight: 700; }
 .kb-dragger .ant-upload-hint { color: #8ba09d !important; font-size: 9px !important; }
+.kb-selected-file { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; margin-top: 9px; padding: 9px 10px; background: #fff; border: 1px solid #d7e7e3; border-radius: 10px; }
+.kb-selected-file-icon { display: grid; place-items: center; width: 30px; height: 30px; color: #21877b; background: #e8f4f1; border-radius: 8px; }
+.kb-selected-file > span:nth-child(2) { min-width: 0; }
+.kb-selected-file strong, .kb-selected-file small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-selected-file strong { color: #315a57; font-size: 10px; }
+.kb-selected-file small { margin-top: 2px; color: #849895; font-size: 9px; }
+.kb-selected-file button { display: grid; place-items: center; width: 25px; height: 25px; padding: 0; color: #849895; cursor: pointer; background: transparent; border: 0; border-radius: 7px; }
+.kb-selected-file button:hover { color: #ad544b; background: #f9e9e6; }
+.kb-selected-file button:disabled { cursor: not-allowed; opacity: .45; }
+.new-kb-builder > .ant-btn { margin-top: 13px; }
+.kb-modal-divider { display: flex; align-items: center; gap: 10px; margin: 21px 0 3px; color: #879a97; font-size: 9px; }
+.kb-modal-divider::before, .kb-modal-divider::after { height: 1px; content: ''; background: #e0ebe8; flex: 1; }
 .modal-build-progress { margin: 12px 0; padding: 11px; background: #f3f8f6; border: 1px solid #d4e8e2; border-radius: 11px; }
 .modal-build-progress > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .modal-build-progress strong { color: #315d59; font-size: 10px; }
@@ -520,7 +540,6 @@ button { color: inherit; }
   .composer-card .ant-segmented-item-label { padding: 0 7px; }
   .future-grid { grid-template-columns: 1fr; }
   .teacher-main { padding-top: 55px; }
-  .new-kb-row { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1129,7 +1129,9 @@ function StudentPageContent() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [kbModalOpen, setKbModalOpen] = useState(false)
   const [modelModalOpen, setModelModalOpen] = useState(false)
+  const [newKbFile, setNewKbFile] = useState<File | null>(null)
   const [newKbName, setNewKbName] = useState('')
+  const [creatingKnowledgeBase, setCreatingKnowledgeBase] = useState(false)
   const [statuses, setStatuses] = useState<KBStatus[]>([])
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog>(fallbackModelCatalog)
@@ -1422,15 +1424,41 @@ function StudentPageContent() {
     }
   }
 
-  const createKnowledgeBase = () => {
+  const createKnowledgeBase = async () => {
+    if (!newKbFile) {
+      toast.warning('请先选择需要上传的教材文件')
+      return
+    }
     const normalized = newKbName.trim().replace(/\s+/g, '-')
     if (!/^[A-Za-z0-9_-]{1,48}$/.test(normalized)) {
       toast.warning('名称仅支持字母、数字、连字符和下划线')
       return
     }
-    setKnowledgeBase(normalized)
+    if (statuses.some((item) => item.id === normalized)) {
+      toast.warning(`知识库 ${normalized} 已存在，请在下方选择后追加资料`)
+      return
+    }
+    setCreatingKnowledgeBase(true)
+    try {
+      const result = await uploadKnowledgeFile(newKbFile, normalized, modelConfig)
+      setKnowledgeBase(normalized)
+      upsertBuildStatus(result.build)
+      setNewKbFile(null)
+      setNewKbName('')
+      toast.success(`知识库 ${normalized} 已创建，正在构建索引`)
+      void refreshStatuses()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '知识库创建失败')
+    } finally {
+      setCreatingKnowledgeBase(false)
+    }
+  }
+
+  const closeKnowledgeBaseModal = () => {
+    if (creatingKnowledgeBase) return
+    setKbModalOpen(false)
+    setNewKbFile(null)
     setNewKbName('')
-    toast.success(`已切换到新知识库 ${normalized}，请上传第一份资料`)
   }
 
   return (
@@ -1527,7 +1555,9 @@ function StudentPageContent() {
 
       <Modal
         open={kbModalOpen}
-        onCancel={() => setKbModalOpen(false)}
+        onCancel={closeKnowledgeBaseModal}
+        maskClosable={!creatingKnowledgeBase}
+        closable={!creatingKnowledgeBase}
         footer={null}
         title={null}
         width={560}
@@ -1536,10 +1566,74 @@ function StudentPageContent() {
         <div className="modal-heading">
           <span className="modal-icon"><Database size={22} /></span>
           <div>
-            <h2>扩充课程知识库</h2>
-            <p>上传教材、讲义或题库后，系统会自动清洗、分块、嵌入并重建索引。</p>
+            <h2>添加教材 / 新建知识库</h2>
+            <p>先选择首份资料，再命名并确认创建；系统随后自动构建索引。</p>
           </div>
         </div>
+        <div className="modal-section new-kb-builder">
+          <div className="modal-section-title">
+            <strong>新建知识库</strong>
+            <span>按顺序完成以下步骤</span>
+          </div>
+          <label><span className="step-number">1</span> 选择首份资料</label>
+          <Upload.Dragger
+            multiple={false}
+            maxCount={1}
+            accept=".pdf,.md,.txt,.docx"
+            beforeUpload={(file) => {
+              setNewKbFile(file)
+              return Upload.LIST_IGNORE
+            }}
+            showUploadList={false}
+            className="kb-dragger kb-create-dragger"
+            disabled={creatingKnowledgeBase}
+          >
+            <p className="ant-upload-drag-icon"><UploadCloud size={28} /></p>
+            <p className="ant-upload-text">
+              {newKbFile ? '重新选择首份资料' : '拖入教材，或点击选择文件'}
+            </p>
+            <p className="ant-upload-hint">支持 PDF、Word、Markdown 和文本</p>
+          </Upload.Dragger>
+          {newKbFile && (
+            <div className="kb-selected-file" aria-label={`已选择 ${newKbFile.name}`}>
+              <span className="kb-selected-file-icon"><FileText size={17} /></span>
+              <span>
+                <strong>{newKbFile.name}</strong>
+                <small>{Math.max(1, Math.round(newKbFile.size / 1024))} KB · 等待创建</small>
+              </span>
+              <button
+                type="button"
+                onClick={() => setNewKbFile(null)}
+                disabled={creatingKnowledgeBase}
+                aria-label={`移除 ${newKbFile.name}`}
+              >
+                <X size={15} />
+              </button>
+            </div>
+          )}
+          <label className="new-kb-name-label"><span className="step-number">2</span> 输入新知识库名称</label>
+          <Input
+            value={newKbName}
+            onChange={(event) => setNewKbName(event.target.value)}
+            placeholder="英文标识，如 analog-circuits"
+            prefix={<Plus size={15} />}
+            disabled={!newKbFile || creatingKnowledgeBase}
+            onPressEnter={() => void createKnowledgeBase()}
+          />
+          <p className="modal-field-help">支持字母、数字、连字符和下划线，创建后不可直接改名。</p>
+          <Button
+            type="primary"
+            block
+            loading={creatingKnowledgeBase}
+            disabled={!newKbFile || !newKbName.trim()}
+            icon={<Database size={16} />}
+            onClick={() => void createKnowledgeBase()}
+          >
+            <span className="step-number button-step-number">3</span>
+            确认建立知识库
+          </Button>
+        </div>
+        <div className="kb-modal-divider"><span>管理已有知识库</span></div>
         <div className="modal-section">
           <label>默认课程知识库</label>
           <Select
@@ -1588,27 +1682,21 @@ function StudentPageContent() {
           </div>
           <p className="modal-field-help">上传与重建仅作用于这里选择的知识库，不会改变上面的默认设置。</p>
         </div>
-        <div className="new-kb-row">
-          <Input
-            value={newKbName}
-            onChange={(event) => setNewKbName(event.target.value)}
-            placeholder="新知识库英文标识，如 analog-circuits"
-            prefix={<Plus size={15} />}
-          />
-          <Button onClick={createKnowledgeBase}>新建并切换</Button>
+        <div className="modal-section existing-kb-upload">
+          <label>向当前知识库追加资料</label>
+          <Upload.Dragger
+            multiple={false}
+            accept=".pdf,.md,.txt,.docx"
+            customRequest={uploadRequest}
+            showUploadList
+            className="kb-dragger"
+            disabled={!currentKbStatus || currentKbStatus.state === 'building' || currentKbStatus.state === 'cancelling'}
+          >
+            <p className="ant-upload-drag-icon"><UploadCloud size={28} /></p>
+            <p className="ant-upload-text">拖入新资料，或点击选择文件</p>
+            <p className="ant-upload-hint">文件将追加到 {knowledgeBase || '当前知识库'} 并触发重建</p>
+          </Upload.Dragger>
         </div>
-        <Upload.Dragger
-          multiple={false}
-          accept=".pdf,.md,.txt,.docx"
-          customRequest={uploadRequest}
-          showUploadList
-          className="kb-dragger"
-          disabled={currentKbStatus?.state === 'building' || currentKbStatus?.state === 'cancelling'}
-        >
-          <p className="ant-upload-drag-icon"><UploadCloud size={28} /></p>
-          <p className="ant-upload-text">拖入教材或题库，或点击选择文件</p>
-          <p className="ant-upload-hint">支持 PDF、Word、Markdown、文本；Excel/JSON 题库与知识库隔离</p>
-        </Upload.Dragger>
         {(currentKbStatus?.state === 'building' || currentKbStatus?.state === 'cancelling') && (
           <div className="modal-build-progress" aria-label={`${knowledgeBase} 构建进度`}>
             <div>
@@ -1634,7 +1722,7 @@ function StudentPageContent() {
           block
           icon={<Database size={16} />}
           onClick={() => void rebuildCurrentKnowledgeBase()}
-          disabled={currentKbStatus?.state === 'building' || currentKbStatus?.state === 'cancelling'}
+          disabled={!currentKbStatus || currentKbStatus.state === 'building' || currentKbStatus.state === 'cancelling'}
         >
           使用 qwen3-vl-flash 重新构建已有资料
         </Button>

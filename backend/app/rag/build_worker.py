@@ -3,17 +3,67 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from backend.app.rag.multimodal import BuildModelConfig
 from backend.app.rag.pipeline import build_knowledge_base
 
 
-def _write_json(path: Path, value: dict[str, Any]) -> None:
-    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
-    temporary.replace(path)
+def _write_json(
+    path: Path,
+    value: dict[str, Any],
+    *,
+    best_effort: bool = False,
+) -> None:
+    """Write worker state without letting transient Windows locks abort a build."""
+
+    payload = json.dumps(value, ensure_ascii=False)
+    temporary = path.with_name(
+        f"{path.name}.{os.getpid()}.{uuid4().hex}.tmp"
+    )
+    replace_error: OSError | None = None
+    try:
+        try:
+            temporary.write_text(payload, encoding="utf-8")
+        except OSError:
+            if best_effort:
+                return
+            raise
+
+        for delay in (0.0, 0.01, 0.025, 0.05, 0.1, 0.2, 0.4):
+            if delay:
+                time.sleep(delay)
+            try:
+                os.replace(temporary, path)
+                return
+            except OSError as exc:
+                replace_error = exc
+                if (
+                    not isinstance(exc, PermissionError)
+                    and getattr(exc, "winerror", None) not in {5, 32}
+                ):
+                    raise
+
+        # Antivirus/indexers may keep the destination open longer than the
+        # retry window. A direct overwrite is not atomic, but the manager
+        # already ignores incomplete JSON and reads again on the next poll.
+        try:
+            path.write_text(payload, encoding="utf-8")
+            return
+        except OSError as direct_error:
+            if best_effort:
+                return
+            raise direct_error from replace_error
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            # A stale uniquely named temp file is harmless and can be removed
+            # after the external scanner releases it.
+            pass
 
 
 def run(job_path: Path) -> int:
@@ -30,7 +80,7 @@ def run(job_path: Path) -> int:
             "progress": progress,
             "stage": stage,
             "message": message,
-        })
+        }, best_effort=True)
 
     try:
         build_knowledge_base(

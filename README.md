@@ -143,12 +143,12 @@ docker compose up -d redis
 
 学生端右侧点击“添加教材 / 新建知识库”即可：
 
-1. 选择默认知识库，或输入英文标识创建独立知识库。
-2. 上传 PDF、Word、Markdown 或文本；Excel/JSON 题库只保存，不触发知识库构建。
+1. 先选择首份 PDF、Word、Markdown 或文本资料。
+2. 输入新知识库的英文标识，再点击“确认建立知识库”。
 3. 后端使用 `qwen3-vl-flash` 执行语义清洗、版面解析、电路图理解、Chunking、Embedding 和索引重载；API Key 不写入知识库产物。
-4. `/api/kb/status` 返回 `building`、`ready` 或 `error`。
+4. `/api/kb/status` 返回 `building`、`ready` 或 `error`；Windows 下的短暂进度文件占用会自动重试，不会中断实际构建。
 
-已有资料无需重新上传：在同一弹窗点击“使用 qwen3-vl-flash 重新构建已有资料”即可启动 v2 多模态重建。
+默认知识库、当前目标知识库和追加资料仍在同一弹窗的“管理已有知识库”区域维护。已有资料无需重新上传：点击“使用 qwen3-vl-flash 重新构建已有资料”即可启动 v2 多模态重建。
 
 Excel/JSON 题库不会进入 RAG 知识库，也不会参与检索或图谱构建。出题 Agent 只依据学生原题和会话历史生成同构变式。
 
