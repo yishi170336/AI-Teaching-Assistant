@@ -565,6 +565,7 @@ def validate_build_artifacts(
 
 def _formula_pipeline_stats(output_dir: Path, elements: list[LayoutElement]) -> dict[str, Any]:
     categories: Counter[str] = Counter()
+    audit_counts: Counter[str] = Counter()
     for path in output_dir.glob("*.pdf_extract_kit.json"):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -579,17 +580,34 @@ def _formula_pipeline_stats(output_dir: Path, elements: list[LayoutElement]) -> 
                 "isolate_formula", "isolated", "isolated_formula"
             }:
                 categories[category] += 1
+    for path in output_dir.glob("*.formula_audit.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for name in ("detected", "recognized", "fallback", "uncertain"):
+            try:
+                audit_counts[name] += int(payload.get(name, 0))
+            except (TypeError, ValueError):
+                continue
     formulas = [element for element in elements if element.element_type == "formula"]
+    display_candidates = audit_counts["detected"] or sum(
+        categories.get(name, 0)
+        for name in ("isolate_formula", "isolated", "isolated_formula")
+    )
     return {
         "detected_regions": sum(categories.values()),
         "inline_regions_kept_in_text": categories.get("inline", 0),
-        "display_candidates": sum(
-            categories.get(name, 0)
-            for name in ("isolate_formula", "isolated", "isolated_formula")
-        ),
+        "display_candidates": display_candidates,
+        "recognized_formulas": audit_counts["recognized"],
+        "fallback_formulas": audit_counts["fallback"],
         "indexed_formulas": len(formulas),
-        "rejected_or_merged_regions": max(0, sum(categories.values()) - len(formulas)),
-        "uncertain_formulas": sum(element.uncertain for element in formulas),
+        "rejected_or_merged_regions": max(0, display_candidates - len(formulas)),
+        "uncertain_formulas": (
+            audit_counts["uncertain"]
+            if audit_counts["detected"]
+            else sum(element.uncertain for element in formulas)
+        ),
         "recognition": (
             "PDF-Extract-Kit localization + native PDF geometry LaTeX + "
             f"qwen/{settings.qwen_circuit_vision_model} scan fallback"
@@ -763,7 +781,7 @@ def build_knowledge_base(
     formula_processing = _formula_pipeline_stats(output_dir, elements)
     metadata = {
         "state": "populated",
-        "schema_version": "2.2-layered-multimodal-ocr",
+        "schema_version": "2.3-circuit-image-retrieval",
         "resource_dir": str(resources_dir),
         "embedding_model": str(embedding_model_path),
         "dimension": int(embeddings.shape[1]),
@@ -830,14 +848,26 @@ def build_knowledge_base(
             "status": "ready",
             "vector_store": qdrant_status.get("mode", "faiss") if qdrant_status.get("enabled") else "faiss",
             "vector_points": len(chunks),
+            "circuit_vector_points": qdrant_status.get("circuit_points", 0),
+            "circuit_vector_store": (
+                "qdrant+faiss"
+                if qdrant_status.get("multimodal_qdrant_enabled")
+                else "faiss"
+                if qdrant_status.get("local_faiss_enabled")
+                else "disabled"
+            ),
             "graph_nodes": len(graph["nodes"]),
             "graph_edges": len(graph["edges"]),
             "graph_store": "neo4j" if neo4j_status.get("enabled") else "local-json",
         },
         "retrieval_service": {
             "status": "ready",
-            "strategies": ["vector", "BM25", "knowledge-graph", "rerank"],
+            "strategies": [
+                "vector", "BM25", "knowledge-graph", "rerank", "circuit-image"
+            ],
             "question_bank_search": False,
+            "circuit_image_min_score": settings.circuit_image_retrieval_min_score,
+            "circuit_image_max_references": settings.circuit_image_retrieval_max_references,
         },
         "application": {
             "status": "ready",

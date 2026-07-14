@@ -145,6 +145,30 @@ def test_dashscope_native_embedding_accepts_text_and_image_data_uri() -> None:
     }
 
 
+def test_dashscope_embedding_sends_circuit_retrieval_instruction() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"output": {"embeddings": [{"embedding": [1.0] * 1024}]}},
+        )
+
+    client = QwenMultimodalEmbeddingClient(
+        api_key="test-key", transport=httpx.MockTransport(handler)
+    )
+    try:
+        client.embed_image(b"image", instruct="Focus on circuit topology")
+    finally:
+        client.close()
+
+    assert captured["parameters"] == {
+        "dimension": 1024,
+        "instruct": "Focus on circuit topology",
+    }
+
+
 def test_embedding_rejects_non_1024_response() -> None:
     transport = httpx.MockTransport(
         lambda _request: httpx.Response(

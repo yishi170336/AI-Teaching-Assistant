@@ -132,6 +132,61 @@ def test_contextual_followup_reuses_latest_attachment_and_history_for_retrieval(
     assert "当前追问：上述电路属于什么类型" in rewritten["rewritten_query"]
 
 
+def test_answer_prompt_labels_student_and_retrieved_circuit_images(tmp_path):
+    index_dir = tmp_path / "index"
+    image_path = index_dir / "artifacts" / "reference.png"
+    image_path.parent.mkdir(parents=True)
+    image_path.write_bytes(b"reference-image")
+    hit = RetrievalHit(
+        chunk=TextChunk(
+            id="circuit-1",
+            text="图 2.2.1 基本共射放大电路",
+            source="模拟电子技术基础.pdf",
+            chapter="第二章 基本放大电路",
+            section="2.2 基本共射放大电路",
+            page_start=72,
+            page_end=72,
+            doc_type="multimodal",
+            knowledge_tags=["共射放大电路"],
+            element_type="circuit",
+            image_path="artifacts/reference.png",
+        ),
+        score=0.8,
+        vector_score=0.2,
+        bm25_score=0.1,
+        rerank_score=0.8,
+        image_score=0.86,
+    )
+
+    class FakeRetriever:
+        def __init__(self):
+            self.index_dir = index_dir
+
+    class FakeKnowledgeBases:
+        def get(self, _knowledge_base):
+            return FakeRetriever()
+
+    engine = object.__new__(CircuitTutorEngine)
+    engine.knowledge_bases = FakeKnowledgeBases()
+
+    result = asyncio.run(engine._compose_answer_prompt({
+        "message": "这个电路有什么问题？",
+        "rewritten_query": "模拟电子技术 共射放大电路故障分析",
+        "knowledge_base": "default",
+        "history": [],
+        "attachment_context": "识别为共射放大电路",
+        "attachment_images": ["student-image"],
+        "hits": [hit],
+    }))
+
+    user_message = result["answer_messages"][1]
+    assert user_message["images"] == ["student-image", "cmVmZXJlbmNlLWltYWdl"]
+    assert "图片1：学生上传" in user_message["content"]
+    assert "图片2：教材参考图片，对应[资料1]" in user_message["content"]
+    assert "第 72 页" in user_message["content"]
+    assert "图 2.2.1" in user_message["content"]
+
+
 def test_sympy_verification_rejects_identifiers():
     result = CircuitTutorEngine._verify_expression("__import__('os')", "1")
     assert result["passed"] is False

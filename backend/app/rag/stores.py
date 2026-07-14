@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import logging
 import hashlib
 import json
+import mimetypes
 import re
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,9 @@ from backend.app.services.qwen_multimodal_client import (
 
 logger = logging.getLogger(__name__)
 
+CIRCUIT_VECTOR_INDEX = "circuit_vectors.faiss"
+CIRCUIT_VECTOR_ITEMS = "circuit_vector_items.jsonl"
+
 
 def _collection_prefix(index_dir: Path) -> str:
     value = re.sub(r"[^a-zA-Z0-9_]", "_", index_dir.name).lower()
@@ -32,13 +37,22 @@ def build_qdrant_indexes(
     chunks: list[TextChunk],
     text_embeddings: np.ndarray,
 ) -> dict[str, Any]:
-    """Persist the dense index in Qdrant, with embedded local mode as default."""
+    """Persist text vectors in Qdrant and always build a local circuit fallback."""
+
+    circuit_status, circuit_vectors, circuit_items = _build_local_circuit_index(
+        index_dir, chunks
+    )
 
     try:
         from qdrant_client import QdrantClient, models
     except ImportError:
         logger.warning("qdrant-client is not installed; FAISS remains available as fallback")
-        return {"enabled": False, "reason": "qdrant-client not installed"}
+        return {
+            "enabled": False,
+            "mode": "faiss-fallback",
+            "reason": "qdrant-client not installed",
+            **circuit_status,
+        }
 
     location = settings.qdrant_url.strip()
     client = None
@@ -79,18 +93,25 @@ def build_qdrant_indexes(
             client.upsert(text_collection, points=points, wait=True)
 
         image_result = _build_qwen_multimodal_collection(
-            client, prefix, index_dir, chunks, models
+            client, prefix, circuit_vectors, circuit_items, models
         )
         return {
             "enabled": True,
             "mode": "server" if location else "embedded",
             "text_collection": text_collection,
             "text_points": len(chunks),
+            **circuit_status,
             **image_result,
         }
     except Exception as exc:
         logger.warning("Qdrant indexing failed; populated FAISS index remains active: %s", exc)
-        return {"enabled": False, "mode": "faiss-fallback", "reason": str(exc)}
+        return {
+            "enabled": False,
+            "mode": "faiss-fallback",
+            "reason": str(exc),
+            **circuit_status,
+            "multimodal_qdrant_enabled": False,
+        }
     finally:
         if client is not None:
             client.close()
@@ -141,15 +162,122 @@ def delete_qdrant_indexes(index_dir: Path, *, timeout: int = 5) -> None:
             pass
 
 
+def _build_local_circuit_index(
+    index_dir: Path,
+    chunks: list[TextChunk],
+) -> tuple[dict[str, Any], np.ndarray | None, list[dict[str, Any]]]:
+    """Embed verified circuit crops once and persist a Unicode-safe FAISS index."""
+
+    index_path = index_dir / CIRCUIT_VECTOR_INDEX
+    items_path = index_dir / CIRCUIT_VECTOR_ITEMS
+    for stale in (index_path, items_path):
+        stale.unlink(missing_ok=True)
+
+    base_status: dict[str, Any] = {
+        "qwen_multimodal_enabled": False,
+        "multimodal_qdrant_enabled": False,
+        "multimodal_points": 0,
+        "circuit_points": 0,
+        "local_faiss_enabled": False,
+        "multimodal_model": settings.qwen_multimodal_embedding_model,
+        "multimodal_dimension": settings.qwen_multimodal_embedding_dimension,
+        "circuit_image_min_score": settings.circuit_image_retrieval_min_score,
+        "circuit_image_max_references": settings.circuit_image_retrieval_max_references,
+    }
+    if not settings.qwen_api_key:
+        return ({**base_status, "multimodal_reason": "QWEN_API_KEY 未配置"}, None, [])
+
+    pending: list[tuple[dict[str, Any], dict[str, str]]] = []
+    for chunk_index, chunk in enumerate(chunks):
+        if chunk.element_type != "circuit" or not chunk.image_path:
+            continue
+        image_path = index_dir / chunk.image_path
+        if not image_path.is_file() or image_path.stat().st_size > 5 * 1024 * 1024:
+            continue
+        mime = mimetypes.guess_type(image_path.name)[0] or "image/png"
+        data_url = (
+            f"data:{mime};base64,"
+            + base64.b64encode(image_path.read_bytes()).decode("ascii")
+        )
+        pending.append((
+            {
+                "vector_index": len(pending),
+                "chunk_index": chunk_index,
+                "chunk_id": chunk.id,
+                "source": chunk.source,
+                "page": chunk.page_start,
+                "section": chunk.section,
+                "element_type": chunk.element_type,
+                "image_path": chunk.image_path,
+            },
+            {"image": data_url},
+        ))
+    if not pending:
+        return ({**base_status, "multimodal_reason": "没有已验证的电路图可向量化"}, None, [])
+
+    try:
+        vectors: list[list[float]] = []
+        with QwenMultimodalEmbeddingClient(
+            api_key=settings.qwen_api_key,
+            model=settings.qwen_multimodal_embedding_model,
+            endpoint=settings.qwen_multimodal_embedding_url,
+            dimension=settings.qwen_multimodal_embedding_dimension,
+        ) as embedding_client:
+            # qwen3-vl-embedding accepts at most five images per request.
+            for start in range(0, len(pending), 5):
+                vectors.extend(embedding_client.embed_contents(
+                    [item[1] for item in pending[start : start + 5]],
+                    instruct=settings.circuit_image_embedding_instruct,
+                ))
+        matrix = np.asarray(vectors, dtype=np.float32)
+        if matrix.shape != (
+            len(pending), settings.qwen_multimodal_embedding_dimension
+        ):
+            raise ValueError(
+                f"电路向量矩阵维度异常：{matrix.shape}"
+            )
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        matrix = matrix / np.maximum(norms, 1e-12)
+
+        import faiss
+
+        index = faiss.IndexFlatIP(matrix.shape[1])
+        index.add(matrix)
+        index_path.write_bytes(faiss.serialize_index(index).tobytes())
+        items = [item[0] for item in pending]
+        items_path.write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False) for item in items),
+            encoding="utf-8",
+        )
+        return ({
+            **base_status,
+            "qwen_multimodal_enabled": True,
+            "multimodal_points": len(items),
+            "circuit_points": len(items),
+            "local_faiss_enabled": True,
+            "local_faiss_index": CIRCUIT_VECTOR_INDEX,
+            "local_faiss_items": CIRCUIT_VECTOR_ITEMS,
+        }, matrix, items)
+    except (QwenMultimodalAPIError, OSError, ValueError, ImportError) as exc:
+        logger.warning(
+            "Qwen circuit embedding unavailable; text retrieval remains active: %s", exc
+        )
+        index_path.unlink(missing_ok=True)
+        items_path.unlink(missing_ok=True)
+        return ({**base_status, "multimodal_reason": str(exc)}, None, [])
+
+
 def _build_qwen_multimodal_collection(
     client: Any,
     prefix: str,
-    index_dir: Path,
-    chunks: list[TextChunk],
+    vectors: np.ndarray | None,
+    items: list[dict[str, Any]],
     qmodels: Any,
 ) -> dict[str, Any]:
-    if not settings.qwen_api_key:
-        return {"multimodal_points": 0, "qwen_multimodal_enabled": False, "reason": "QWEN_API_KEY 未配置"}
+    """Mirror the already-built circuit vectors into Qdrant when available."""
+
+    if vectors is None or not items:
+        return {"multimodal_qdrant_enabled": False}
     collection = f"{prefix}_multimodal"
     if client.collection_exists(collection):
         client.delete_collection(collection)
@@ -160,65 +288,35 @@ def _build_qwen_multimodal_collection(
             distance=qmodels.Distance.COSINE,
         ),
     )
-    items: list[tuple[int, TextChunk, dict[str, str]]] = []
-    for index, chunk in enumerate(chunks):
-        if chunk.image_path:
-            image_path = index_dir / chunk.image_path
-            if image_path.is_file() and image_path.stat().st_size <= 5 * 1024 * 1024:
-                import base64
-                import mimetypes
-
-                mime = mimetypes.guess_type(image_path.name)[0] or "image/png"
-                data_url = f"data:{mime};base64,{base64.b64encode(image_path.read_bytes()).decode('ascii')}"
-                items.append((index, chunk, {"image": data_url}))
-    if not items:
-        client.delete_collection(collection)
-        return {
-            "multimodal_points": 0,
-            "qwen_multimodal_enabled": False,
-            "reason": "没有可向量化的图片文件",
-        }
-    points: list[Any] = []
     try:
-        with QwenMultimodalEmbeddingClient(
-            api_key=settings.qwen_api_key,
-            model=settings.qwen_multimodal_embedding_model,
-            endpoint=settings.qwen_multimodal_embedding_url,
-            dimension=settings.qwen_multimodal_embedding_dimension,
-        ) as embedding_client:
-            # qwen3-vl-embedding accepts at most five images per request.
-            for start in range(0, len(items), 5):
-                batch = items[start : start + 5]
-                vectors = embedding_client.embed_contents([item[2] for item in batch])
-                for (chunk_index, chunk, _), vector in zip(batch, vectors):
-                    points.append(qmodels.PointStruct(
-                        id=str(uuid5(NAMESPACE_URL, f"{prefix}:image:{chunk.id}")),
-                        vector=vector,
-                        payload={
-                            "chunk_index": chunk_index,
-                            "chunk_id": chunk.id,
-                            "modality": "image",
-                            "image_path": chunk.image_path,
-                        },
-                    ))
-                if len(points) >= 100:
-                    client.upsert(collection, points=points, wait=True)
-                    points = []
-        if points:
+        for start in range(0, len(items), 100):
+            points = []
+            for item, vector in zip(items[start : start + 100], vectors[start : start + 100]):
+                points.append(qmodels.PointStruct(
+                    id=str(uuid5(NAMESPACE_URL, f"{prefix}:image:{item['chunk_id']}")),
+                    vector=vector.tolist(),
+                    payload={
+                        **item,
+                        "modality": "image",
+                    },
+                ))
             client.upsert(collection, points=points, wait=True)
         return {
             "multimodal_collection": collection,
-            "multimodal_points": len(items),
-            "qwen_multimodal_enabled": True,
-            "multimodal_dimension": settings.qwen_multimodal_embedding_dimension,
+            "multimodal_qdrant_enabled": True,
         }
-    except (QwenMultimodalAPIError, OSError, ValueError) as exc:
-        logger.warning("Qwen multimodal embedding unavailable; text vectors remain active: %s", exc)
-        client.delete_collection(collection)
+    except Exception as exc:
+        logger.warning(
+            "Qdrant circuit collection unavailable; local circuit FAISS remains active: %s",
+            exc,
+        )
+        try:
+            client.delete_collection(collection)
+        except Exception:
+            pass
         return {
-            "multimodal_points": 0,
-            "qwen_multimodal_enabled": False,
-            "reason": str(exc),
+            "multimodal_qdrant_enabled": False,
+            "multimodal_qdrant_reason": str(exc),
         }
 
 

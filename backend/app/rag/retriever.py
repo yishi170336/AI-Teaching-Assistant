@@ -45,6 +45,7 @@ class HybridRetriever:
             (index_dir / "vectors.faiss").read_bytes(), dtype=np.uint8
         )
         self.index = faiss.deserialize_index(serialized_index)
+        self._circuit_index, self._circuit_items = self._open_local_circuit_index(faiss)
         self._tokenized = [tokenize(self._search_text(chunk)) for chunk in self.chunks]
         self._bm25 = BM25Okapi(self._tokenized)
         self._cross_encoder = None
@@ -130,7 +131,13 @@ class HybridRetriever:
         if not (
             settings.qwen_api_key
             and qdrant_meta.get("qwen_multimodal_enabled")
-            and qdrant_meta.get("multimodal_collection")
+            and (
+                qdrant_meta.get("local_faiss_enabled")
+                or (
+                    qdrant_meta.get("multimodal_qdrant_enabled")
+                    and qdrant_meta.get("multimodal_collection")
+                )
+            )
         ):
             return None
         try:
@@ -142,6 +149,30 @@ class HybridRetriever:
             )
         except ValueError:
             return None
+
+    def _open_local_circuit_index(self, faiss_module: Any) -> tuple[Any | None, list[dict[str, Any]]]:
+        qdrant_meta = self.meta.get("qdrant", {})
+        if not qdrant_meta.get("local_faiss_enabled"):
+            return None, []
+        index_name = str(qdrant_meta.get("local_faiss_index", "circuit_vectors.faiss"))
+        items_name = str(qdrant_meta.get("local_faiss_items", "circuit_vector_items.jsonl"))
+        index_path = self.index_dir / index_name
+        items_path = self.index_dir / items_name
+        if not index_path.is_file() or not items_path.is_file():
+            return None, []
+        try:
+            serialized = np.frombuffer(index_path.read_bytes(), dtype=np.uint8)
+            index = faiss_module.deserialize_index(serialized)
+            items = [
+                json.loads(line)
+                for line in items_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            if index.ntotal != len(items):
+                return None, []
+            return index, items
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None, []
 
     def _neo4j_http_chunk_ids(self, tokens: list[str]) -> set[str]:
         if not (settings.neo4j_http_url.strip() and settings.neo4j_password and tokens):
@@ -282,28 +313,63 @@ class HybridRetriever:
         except Exception:
             return {}
 
+    def _local_circuit_scores(self, vector: list[float], count: int) -> dict[int, float]:
+        if self._circuit_index is None or not self._circuit_items:
+            return {}
+        query = np.asarray([vector], dtype=np.float32)
+        norms = np.linalg.norm(query, axis=1, keepdims=True)
+        query = query / np.maximum(norms, 1e-12)
+        scores, indices = self._circuit_index.search(
+            query, min(count, len(self._circuit_items))
+        )
+        values: dict[int, float] = {}
+        for score, vector_index in zip(scores[0], indices[0]):
+            if vector_index < 0 or vector_index >= len(self._circuit_items):
+                continue
+            item = self._circuit_items[int(vector_index)]
+            chunk_index = int(item.get("chunk_index", -1))
+            if 0 <= chunk_index < len(self.chunks):
+                values[chunk_index] = float(score)
+        return values
+
+    def _circuit_vector_scores(self, vector: list[float], count: int) -> dict[int, float]:
+        qdrant_meta = self.meta.get("qdrant", {})
+        if (
+            qdrant_meta.get("multimodal_qdrant_enabled")
+            and qdrant_meta.get("multimodal_collection")
+            and self._has_qdrant_query_backend()
+        ):
+            try:
+                points = self._qdrant_query(
+                    qdrant_meta["multimodal_collection"], vector, count
+                )
+                values = {
+                    int(point["payload"]["chunk_index"]): float(point["score"])
+                    for point in points
+                    if point.get("payload")
+                    and point["payload"].get("element_type") == "circuit"
+                    and "chunk_index" in point["payload"]
+                    and 0 <= int(point["payload"]["chunk_index"]) < len(self.chunks)
+                }
+                if values:
+                    return values
+            except Exception:
+                pass
+        return self._local_circuit_scores(vector, count)
+
     def _qwen_multimodal_scores(self, query: str, count: int) -> dict[int, float]:
         qdrant_meta = self.meta.get("qdrant", {})
         if not (
             qdrant_meta.get("qwen_multimodal_enabled")
-            and qdrant_meta.get("multimodal_collection")
-            and self._has_qdrant_query_backend()
             and self._qwen_multimodal_client is not None
         ):
             return {}
         try:
             with self._qwen_multimodal_lock:
-                vector = self._qwen_multimodal_client.embed_text(query)
-                points = self._qdrant_query(
-                    qdrant_meta["multimodal_collection"], vector, count
+                vector = self._qwen_multimodal_client.embed_text(
+                    query, instruct=settings.circuit_image_embedding_instruct
                 )
-            return {
-                int(point["payload"]["chunk_index"]): float(point["score"])
-                for point in points
-                if point.get("payload")
-                and "chunk_index" in point["payload"]
-                and 0 <= int(point["payload"]["chunk_index"]) < len(self.chunks)
-            }
+                return self._circuit_vector_scores(vector, count)
         except Exception:
             return {}
 
@@ -314,30 +380,24 @@ class HybridRetriever:
         if not (
             images
             and qdrant_meta.get("qwen_multimodal_enabled")
-            and qdrant_meta.get("multimodal_collection")
-            and self._has_qdrant_query_backend()
             and self._qwen_multimodal_client is not None
         ):
             return {}
         scores: dict[int, float] = {}
         try:
             with self._qwen_multimodal_lock:
-                for encoded in images[:3]:
+                for encoded in images[:5]:
                     raw = base64.b64decode(encoded, validate=False)
                     mime = "image/png" if raw.startswith(b"\x89PNG") else "image/jpeg"
-                    vector = self._qwen_multimodal_client.embed_image(raw, mime_type=mime)
-                    points = self._qdrant_query(
-                        qdrant_meta["multimodal_collection"], vector, count
+                    vector = self._qwen_multimodal_client.embed_image(
+                        raw,
+                        mime_type=mime,
+                        instruct=settings.circuit_image_embedding_instruct,
                     )
-                    for point in points:
-                        payload = point.get("payload") or {}
-                        if "chunk_index" not in payload:
+                    for index, score in self._circuit_vector_scores(vector, count).items():
+                        if score < settings.circuit_image_retrieval_min_score:
                             continue
-                        index = int(payload["chunk_index"])
-                        if 0 <= index < len(self.chunks):
-                            scores[index] = max(
-                                scores.get(index, -1.0), float(point["score"])
-                            )
+                        scores[index] = max(scores.get(index, -1.0), score)
             return scores
         except Exception:
             return {}
@@ -383,41 +443,80 @@ class HybridRetriever:
         bm25_norm = self._normalize(bm25_map)
         graph_map = self._graph_scores(query)
         image_map = self._qwen_multimodal_scores(query, candidate_count)
-        visual_query_map = self._qwen_image_query_scores(query_images, candidate_count)
+        visual_candidate_count = max(
+            candidate_count, settings.circuit_image_retrieval_candidates
+        )
+        visual_query_map = self._qwen_image_query_scores(
+            query_images, visual_candidate_count
+        )
+        combined_image_map = dict(image_map)
         for index, score in visual_query_map.items():
-            image_map[index] = max(image_map.get(index, -1.0), score)
+            combined_image_map[index] = max(combined_image_map.get(index, -1.0), score)
         image_norm = self._normalize(image_map)
+        visual_norm = self._normalize(visual_query_map)
         candidates = (
-            set(vector_map) | set(bm25_map) | set(graph_map) | set(image_map)
+            set(vector_map) | set(bm25_map) | set(graph_map) | set(combined_image_map)
         ) & searchable
         query_tokens = set(tokenize(query))
         cross_map = self._cross_encoder_scores(query, list(candidates))
-        hits: list[RetrievalHit] = []
+        hits_by_index: dict[int, RetrievalHit] = {}
         for index in candidates:
             chunk = self.chunks[index]
             chunk_tokens = set(self._tokenized[index])
             overlap = len(query_tokens & chunk_tokens) / max(1, len(query_tokens))
             tag_overlap = len(query_tokens & set(tokenize(" ".join(chunk.knowledge_tags)))) / max(1, len(query_tokens))
-            rerank = (
-                0.34 * vector_norm.get(index, 0.0)
-                + 0.24 * bm25_norm.get(index, 0.0)
-                + 0.08 * overlap
-                + 0.08 * tag_overlap
-                + 0.10 * graph_map.get(index, 0.0)
-                + 0.10 * cross_map.get(index, 0.0)
-                + 0.06 * image_norm.get(index, 0.0)
-            )
-            hits.append(
-                RetrievalHit(
-                    chunk=chunk,
-                    score=rerank,
-                    vector_score=vector_map.get(index, 0.0),
-                    bm25_score=bm25_map.get(index, 0.0),
-                    rerank_score=rerank,
-                    graph_score=graph_map.get(index, 0.0),
-                    cross_encoder_score=cross_map.get(index, 0.0),
-                    image_score=image_map.get(index, 0.0),
+            if visual_query_map:
+                rerank = (
+                    0.24 * vector_norm.get(index, 0.0)
+                    + 0.16 * bm25_norm.get(index, 0.0)
+                    + 0.06 * overlap
+                    + 0.06 * tag_overlap
+                    + 0.08 * graph_map.get(index, 0.0)
+                    + 0.10 * cross_map.get(index, 0.0)
+                    + 0.30 * visual_norm.get(index, 0.0)
                 )
+            else:
+                rerank = (
+                    0.34 * vector_norm.get(index, 0.0)
+                    + 0.24 * bm25_norm.get(index, 0.0)
+                    + 0.08 * overlap
+                    + 0.08 * tag_overlap
+                    + 0.10 * graph_map.get(index, 0.0)
+                    + 0.10 * cross_map.get(index, 0.0)
+                    + 0.06 * image_norm.get(index, 0.0)
+                )
+            hits_by_index[index] = RetrievalHit(
+                chunk=chunk,
+                score=rerank,
+                vector_score=vector_map.get(index, 0.0),
+                bm25_score=bm25_map.get(index, 0.0),
+                rerank_score=rerank,
+                graph_score=graph_map.get(index, 0.0),
+                cross_encoder_score=cross_map.get(index, 0.0),
+                image_score=(
+                    visual_query_map.get(index, 0.0)
+                    if query_images
+                    else combined_image_map.get(index, 0.0)
+                ),
             )
-        hits.sort(key=lambda hit: hit.rerank_score, reverse=True)
-        return hits[:k]
+        ranked = sorted(
+            hits_by_index.items(), key=lambda item: item[1].rerank_score, reverse=True
+        )
+        if not visual_query_map:
+            return [hit for _, hit in ranked[:k]]
+
+        # Keep the strongest high-confidence visual references in the result set
+        # before filling the remaining slots with the normal hybrid ranking.
+        visual_indices = [
+            index
+            for index, _score in sorted(
+                visual_query_map.items(), key=lambda item: item[1], reverse=True
+            )
+            if index in hits_by_index
+        ][: settings.circuit_image_retrieval_max_references]
+        visual_index_set = set(visual_indices)
+        selected = [hits_by_index[index] for index in visual_indices]
+        selected.extend(
+            hit for index, hit in ranked if index not in visual_index_set
+        )
+        return selected[:k]

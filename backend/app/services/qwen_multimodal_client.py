@@ -235,20 +235,28 @@ class QwenMultimodalEmbeddingClient:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
-    def embed_text(self, text: str) -> list[float]:
+    def embed_text(self, text: str, *, instruct: str = "") -> list[float]:
         if not text.strip():
             raise ValueError("待向量化文本不能为空")
-        return self.embed_contents([{"text": text}])[0]
+        return self.embed_contents([{"text": text}], instruct=instruct)[0]
 
     def embed_image(
         self,
         image: bytes | str,
         *,
         mime_type: str = "image/png",
+        instruct: str = "",
     ) -> list[float]:
-        return self.embed_contents([{"image": _data_url(image, mime_type)}])[0]
+        return self.embed_contents(
+            [{"image": _data_url(image, mime_type)}], instruct=instruct
+        )[0]
 
-    def embed_contents(self, contents: Iterable[dict[str, str]]) -> list[list[float]]:
+    def embed_contents(
+        self,
+        contents: Iterable[dict[str, str]],
+        *,
+        instruct: str = "",
+    ) -> list[list[float]]:
         normalized: list[dict[str, str]] = []
         for item in contents:
             if set(item) == {"text"} and str(item["text"]).strip():
@@ -263,6 +271,8 @@ class QwenMultimodalEmbeddingClient:
         parameters: dict[str, Any] = {}
         if self.model != "multimodal-embedding-v1":
             parameters["dimension"] = self.dimension
+            if instruct.strip():
+                parameters["instruct"] = instruct.strip()
         payload: dict[str, Any] = {
             "model": self.model,
             "input": {"contents": normalized},

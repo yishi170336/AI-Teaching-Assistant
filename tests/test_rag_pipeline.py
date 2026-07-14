@@ -5,7 +5,9 @@ import numpy as np
 import pytest
 
 from backend.app.rag.models import PageDocument
+from backend.app.rag.multimodal import LayoutElement
 from backend.app.rag.pipeline import (
+    _formula_pipeline_stats,
     build_knowledge_base,
     chunk_documents,
     clean_page_text,
@@ -112,4 +114,37 @@ def test_build_excludes_question_bank_files(tmp_path, monkeypatch):
     assert metadata["excluded_sources"][0]["source"] == "questions.xlsx"
     assert all(chunk["doc_type"] != "question" for chunk in chunks)
     assert metadata["validation"]["question_chunks"] == 0
+
+
+def test_formula_pipeline_stats_use_formula_audit_counts(tmp_path):
+    (tmp_path / "lesson.formula_audit.json").write_text(
+        json.dumps({
+            "detected": 3,
+            "recognized": 1,
+            "fallback": 2,
+            "uncertain": 2,
+        }),
+        encoding="utf-8",
+    )
+    formulas = [
+        LayoutElement(
+            id=f"formula-{index}",
+            source="lesson.pdf",
+            page=72,
+            element_type="formula",
+            bbox=[0, 0, 10, 10],
+            text=f"formula {index}",
+            uncertain=index > 0,
+        )
+        for index in range(3)
+    ]
+
+    stats = _formula_pipeline_stats(tmp_path, formulas)
+
+    assert stats["display_candidates"] == 3
+    assert stats["recognized_formulas"] == 1
+    assert stats["fallback_formulas"] == 2
+    assert stats["indexed_formulas"] == 3
+    assert stats["uncertain_formulas"] == 2
+    assert stats["rejected_or_merged_regions"] == 0
 

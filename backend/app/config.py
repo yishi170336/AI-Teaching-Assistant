@@ -60,6 +60,23 @@ class Settings:
     qwen_multimodal_timeout_seconds: float = float(
         os.getenv("QWEN_MULTIMODAL_TIMEOUT_SECONDS", "180")
     )
+    circuit_image_embedding_instruct: str = os.getenv(
+        "CIRCUIT_IMAGE_EMBEDDING_INSTRUCT",
+        (
+            "Represent this analog circuit diagram for retrieval. Focus on topology, "
+            "components, terminal connections, signal direction, and biasing; ignore "
+            "typography, scan quality, and page layout."
+        ),
+    )
+    circuit_image_retrieval_min_score: float = float(
+        os.getenv("CIRCUIT_IMAGE_RETRIEVAL_MIN_SCORE", "0.70")
+    )
+    circuit_image_retrieval_max_references: int = int(
+        os.getenv("CIRCUIT_IMAGE_RETRIEVAL_MAX_REFERENCES", "2")
+    )
+    circuit_image_retrieval_candidates: int = int(
+        os.getenv("CIRCUIT_IMAGE_RETRIEVAL_CANDIDATES", "12")
+    )
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     memory_turns: int = int(os.getenv("MEMORY_TURNS", "8"))
     session_history_messages: int = int(os.getenv("SESSION_HISTORY_MESSAGES", "100"))
@@ -84,6 +101,7 @@ class Settings:
     rerank_model_path: str = os.getenv("RERANK_MODEL_PATH", "")
     multimodal_image_limit: int = int(os.getenv("MULTIMODAL_IMAGE_LIMIT", "0"))
     multimodal_min_image_area: int = int(os.getenv("MULTIMODAL_MIN_IMAGE_AREA", "12000"))
+    formula_vl_retry_count: int = int(os.getenv("FORMULA_VL_RETRY_COUNT", "1"))
     frontend_origins: tuple[str, ...] = tuple(
         value.strip()
         for value in os.getenv(

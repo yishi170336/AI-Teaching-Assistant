@@ -604,6 +604,56 @@ def _formula_latex_from_pdf_geometry(page: fitz.Page, bbox: list[float]) -> str:
     return latex if re.search(r"[=+\-\\]", latex) else ""
 
 
+_FORMULA_NUMBER_PATTERN = re.compile(
+    r"[（(]\s*((?:\d+\.)+\d+[A-Za-z]?)\s*[)）]\s*$"
+)
+
+
+def _formula_latex_from_ocr_text(text: str) -> str:
+    """Convert a conservative OCR equation subset into searchable LaTeX."""
+
+    value = _FORMULA_NUMBER_PATTERN.sub("", text).strip().strip("$；;，,")
+    if "=" not in value:
+        return ""
+    value = value.replace("−", "-").replace("×", r"\cdot ").replace("*", " ")
+    value = value.replace("β", r"\beta ").replace("α", r"\alpha ")
+    value = value.replace("γ", r"\gamma ").replace("Δ", r"\Delta ")
+    value = re.sub(r"\b([A-Za-z])_([A-Za-z0-9]+)\b", r"\1_{\2}", value)
+    left, right = (part.strip() for part in value.split("=", 1))
+    fraction = re.fullmatch(r"\(?\s*(.+?)\s*\)?\s*/\s*([^/]+)", right)
+    if fraction:
+        numerator = fraction.group(1).strip()
+        denominator = fraction.group(2).strip()
+        right = rf"\frac{{{numerator}}}{{{denominator}}}"
+    latex = re.sub(r"\s+", " ", f"{left} = {right}").strip()
+    return latex if re.search(r"[A-Za-z0-9]", latex) else ""
+
+
+def _formula_candidates_from_page_text(text: str) -> list[dict[str, str]]:
+    """Recover display equations and their printed numbers from page OCR order."""
+
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
+    candidates: list[dict[str, str]] = []
+    for index, line in enumerate(lines):
+        if "=" not in line or len(line) > 240:
+            continue
+        # Prose can contain assignments such as “令 ui = 0”; display equations on
+        # these textbooks are overwhelmingly Latin/Greek mathematical lines.
+        if len(re.findall(r"[\u4e00-\u9fff]", line)) > 3:
+            continue
+        number_match = _FORMULA_NUMBER_PATTERN.search(line)
+        if number_match is None and index + 1 < len(lines):
+            number_match = _FORMULA_NUMBER_PATTERN.fullmatch(lines[index + 1])
+        caption = f"({number_match.group(1)})" if number_match else ""
+        plain_text = _FORMULA_NUMBER_PATTERN.sub("", line).strip()
+        latex = _formula_latex_from_ocr_text(plain_text)
+        if latex:
+            candidates.append(
+                {"plain_text": plain_text, "latex": latex, "caption": caption}
+            )
+    return candidates
+
+
 def _normalize_formula_result(value: dict[str, Any], fallback_text: str) -> dict[str, Any]:
     raw_is_formula = value.get("is_formula", bool(value.get("latex") or fallback_text))
     is_formula = (
@@ -631,6 +681,34 @@ def _normalize_formula_result(value: dict[str, Any], fallback_text: str) -> dict
     }
 
 
+def _formula_symbol_skeleton(latex: str) -> str:
+    """Return a conservative symbol-order signature for OCR/VL reconciliation."""
+
+    value = re.sub(r"\\(?:bar|overline)\s*", "", latex)
+    value = re.sub(r"\\(?:frac|left|right|cdot|times)\b", "", value)
+    value = value.replace(r"\beta", "beta")
+    value = value.replace(r"\alpha", "alpha").replace(r"\gamma", "gamma")
+    return re.sub(r"[^A-Za-z0-9]", "", value).casefold()
+
+
+def _reconcile_formula_with_page_ocr(
+    result: dict[str, Any], ocr_formula: dict[str, str]
+) -> tuple[dict[str, Any], str]:
+    """Correct VL typography when page OCR independently confirms the symbols."""
+
+    vl_latex = str(result.get("latex", "")).strip()
+    ocr_latex = str(ocr_formula.get("latex", "")).strip()
+    if not vl_latex or not ocr_latex or vl_latex == ocr_latex:
+        return result, ""
+    if _formula_symbol_skeleton(vl_latex) != _formula_symbol_skeleton(ocr_latex):
+        return result, ""
+    reconciled = dict(result)
+    reconciled["latex"] = ocr_latex
+    if ocr_formula.get("plain_text"):
+        reconciled["plain_text"] = ocr_formula["plain_text"]
+    return reconciled, "matching-symbol-skeleton"
+
+
 def _recognize_formula(
     client: QwenVisionClient | None,
     image_bytes: bytes,
@@ -640,17 +718,53 @@ def _recognize_formula(
     """Recognize one display formula; inline math stays embedded in prose."""
 
     if client is None:
-        return _normalize_formula_result({}, fallback_text)
+        normalized = _normalize_formula_result({}, fallback_text)
+        normalized.update({
+            "model_accepted": False,
+            "raw_result": {},
+            "recognition_error": "vision-client-unavailable",
+        })
+        return normalized
     prompt = f"""你是电子电路教材公式识别器。图片只包含一个独立公式。
 输出严格 JSON：{{"is_formula":true,"latex":"不含外层美元符号的 LaTeX","plain_text":"便于全文检索的线性文本","variables":[{{"symbol":"I_BQ","meaning":"静态基极电流"}}],"confidence":0.0}}。
 要求：准确恢复上下标、希腊字母、分数、绝对值、单位与公式编号；不得把邻近正文补进公式，不清楚的字符使用 ?，不得猜造数值。
 邻近正文仅用于消歧：{nearby_text[:800]}"""
+    error = ""
     try:
         result = client.complete_json(prompt, image_bytes=image_bytes, image_mime="image/png")
     except QwenMultimodalAPIError as exc:
         logger.warning("Qwen3-VL formula recognition failed; using PDF text fallback: %s", exc)
         result = {}
-    return _normalize_formula_result(result, fallback_text)
+        error = str(exc)
+    normalized = _normalize_formula_result(result, fallback_text)
+    normalized.update({
+        "model_accepted": bool(result) and bool(normalized["is_formula"]),
+        "raw_result": result,
+        "recognition_error": error,
+    })
+    return normalized
+
+
+def _nearest_formula_caption_region(
+    formula_region: DetectedRegion,
+    caption_regions: list[DetectedRegion],
+) -> DetectedRegion | None:
+    if not caption_regions:
+        return None
+    left, top, right, bottom = formula_region.bbox_pixels
+    center_y = (top + bottom) / 2
+    height = max(1.0, bottom - top)
+    eligible: list[tuple[float, DetectedRegion]] = []
+    for caption in caption_regions:
+        cap_left, cap_top, _cap_right, cap_bottom = caption.bbox_pixels
+        cap_center_y = (cap_top + cap_bottom) / 2
+        cap_height = max(1.0, cap_bottom - cap_top)
+        vertical_gap = abs(center_y - cap_center_y)
+        if vertical_gap > max(24.0, 1.5 * max(height, cap_height)):
+            continue
+        horizontal_gap = max(0.0, cap_left - right, left - cap_left)
+        eligible.append((vertical_gap + 0.05 * horizontal_gap, caption))
+    return min(eligible, key=lambda item: item[0])[1] if eligible else None
 
 
 def _indexable_pdfkit_regions(regions: list[DetectedRegion]) -> list[DetectedRegion]:
@@ -718,6 +832,32 @@ def _crop_png(image_bgr: Any, bbox: list[float]) -> bytes:
     if not ok:
         return b""
     return encoded.tobytes()
+
+
+def _formula_retry_crop(image_bgr: Any, bbox: list[float]) -> bytes:
+    """Add context padding and upscale a formula crop for one recognition retry."""
+
+    import cv2
+
+    width = max(1.0, bbox[2] - bbox[0])
+    height = max(1.0, bbox[3] - bbox[1])
+    padded = [
+        bbox[0] - max(12.0, width * 0.08),
+        bbox[1] - max(8.0, height * 0.35),
+        bbox[2] + max(12.0, width * 0.08),
+        bbox[3] + max(8.0, height * 0.35),
+    ]
+    raw = _crop_png(image_bgr, padded)
+    if not raw:
+        return b""
+    import numpy as np
+
+    decoded = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if decoded is None:
+        return b""
+    enlarged = cv2.resize(decoded, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    ok, encoded = cv2.imencode(".png", enlarged)
+    return encoded.tobytes() if ok else b""
 
 
 def _normalize_circuit_result(value: dict[str, Any]) -> dict[str, Any]:
@@ -1084,6 +1224,7 @@ def enhance_pdf(
     pdf_extract_kit = PDFExtractKitAdapter()
     pdf_extract_kit.write_manifest(output_dir)
     layout_records: list[dict[str, Any]] = []
+    formula_audit_records: list[dict[str, Any]] = []
     analysis_pages = sorted(allowed_pages)
     if settings.pdf_extract_kit_page_limit > 0:
         analysis_pages = analysis_pages[: settings.pdf_extract_kit_page_limit]
@@ -1162,11 +1303,31 @@ def enhance_pdf(
                         "confidence": region.confidence,
                         "detector": region.detector,
                     })
-                for region in _indexable_pdfkit_regions(detected_regions):
+                selected_regions = _indexable_pdfkit_regions(detected_regions)
+                formula_ocr_candidates = _formula_candidates_from_page_text(meta.text)
+                formula_caption_regions = [
+                    region for region in detected_regions
+                    if region.category.lower() == "formula_caption"
+                ]
+                formula_candidate_index = 0
+                for region in selected_regions:
                     bbox_points = [round(value / render_scale, 2) for value in region.bbox_pixels]
                     category = region.category.lower()
+                    is_formula_region = category in {
+                        "isolate_formula", "isolated", "isolated_formula"
+                    }
+                    ocr_formula: dict[str, str] = {}
+                    caption_region: DetectedRegion | None = None
+                    if is_formula_region:
+                        if formula_candidate_index < len(formula_ocr_candidates):
+                            ocr_formula = formula_ocr_candidates[formula_candidate_index]
+                        formula_candidate_index += 1
+                        caption_region = _nearest_formula_caption_region(
+                            region, formula_caption_regions
+                        )
                     crop_bytes = _crop_png(image_bgr, region.bbox_pixels)
-                    if len(crop_bytes) < 300 or not _image_is_safe(crop_bytes):
+                    crop_usable = len(crop_bytes) >= 300 and _image_is_safe(crop_bytes)
+                    if not crop_usable and not is_formula_region:
                         continue
                     if category == "figure":
                         image_counter += 1
@@ -1175,11 +1336,15 @@ def enhance_pdf(
                             and image_counter > settings.multimodal_image_limit
                         ):
                             continue
-                    element_id, digest = _element_id(path.name, page_no, order, crop_bytes)
+                    id_content: bytes | str = crop_bytes or json.dumps(
+                        {"category": category, "bbox": bbox_points}, sort_keys=True
+                    )
+                    element_id, digest = _element_id(path.name, page_no, order, id_content)
                     image_path = artifacts_dir / (
                         f"p{page_no:04d}-{element_id[:10]}-pdfkit-{category}.png"
                     )
-                    image_path.write_bytes(crop_bytes)
+                    if crop_bytes:
+                        image_path.write_bytes(crop_bytes)
                     meta = page_meta[page_no]
                     nearby = _localized_nearby_text(bbox_points, text_blocks) or meta.text[-3000:]
                     element = LayoutElement(
@@ -1192,10 +1357,14 @@ def enhance_pdf(
                             else "formula"
                         ),
                         bbox=bbox_points,
-                        image_path=str(image_path.relative_to(output_dir)).replace("\\", "/"),
+                        image_path=(
+                            str(image_path.relative_to(output_dir)).replace("\\", "/")
+                            if crop_bytes else ""
+                        ),
                         reading_order=order,
                         chapter=meta.chapter,
                         section=meta.section,
+                        caption=ocr_formula.get("caption", ""),
                         nearby_text=nearby,
                         content_hash=digest,
                         confidence=region.confidence,
@@ -1244,7 +1413,8 @@ def enhance_pdf(
                                 pass
                             element.uncertain = not bool(element.text)
                     else:
-                        fallback_text = _formula_text_from_words(page, bbox_points)
+                        native_text = _formula_text_from_words(page, bbox_points)
+                        fallback_text = native_text or ocr_formula.get("plain_text", "")
                         native_latex = _formula_latex_from_pdf_geometry(page, bbox_points)
                         expected_processor = (
                             "pymupdf-geometry-latex"
@@ -1256,15 +1426,33 @@ def enhance_pdf(
                         cache_compatible = bool(cached) and (
                             str(cached.get("processor", "")).endswith(expected_processor)
                         )
+                        formula_audit: dict[str, Any] = {
+                            "source": path.name,
+                            "page": page_no,
+                            "source_page": meta.source_page or page_no,
+                            "bbox": bbox_points,
+                            "detector": region.detector,
+                            "detector_confidence": region.confidence,
+                            "image_path": element.image_path,
+                            "caption": element.caption,
+                            "caption_bbox": (
+                                [round(value / render_scale, 2) for value in caption_region.bbox_pixels]
+                                if caption_region else None
+                            ),
+                            "ocr_candidate": ocr_formula,
+                            "attempts": [],
+                            "fallback_source": "",
+                        }
                         if cache_compatible:
                             for field_name in (
-                                "text", "description", "confidence", "processor", "uncertain"
+                                "text", "description", "confidence", "processor", "uncertain", "caption"
                             ):
                                 if field_name in cached:
                                     setattr(element, field_name, cached[field_name])
+                            formula_audit["status"] = "cached"
                         else:
-                            result = (
-                                _normalize_formula_result(
+                            if native_latex:
+                                result = _normalize_formula_result(
                                     {
                                         "is_formula": True,
                                         "latex": native_latex,
@@ -1273,13 +1461,102 @@ def enhance_pdf(
                                     },
                                     fallback_text,
                                 )
-                                if native_latex
-                                else _recognize_formula(
-                                    vision_client, crop_bytes, fallback_text, nearby
+                                formula_audit["attempts"].append({
+                                    "stage": "native-pdf-geometry",
+                                    "accepted": True,
+                                    "latex": native_latex,
+                                })
+                                formula_audit["status"] = "recognized"
+                            else:
+                                primary = (
+                                    _recognize_formula(
+                                        vision_client, crop_bytes, fallback_text, nearby
+                                    )
+                                    if crop_usable
+                                    else {
+                                        "model_accepted": False,
+                                        "raw_result": {},
+                                        "recognition_error": "primary-crop-unavailable",
+                                    }
                                 )
-                            )
-                            if not result["is_formula"]:
-                                continue
+                                formula_audit["attempts"].append({
+                                    "stage": "qwen-primary",
+                                    "accepted": primary.get("model_accepted", False),
+                                    "result": primary.get("raw_result", {}),
+                                    "error": primary.get("recognition_error", ""),
+                                })
+                                result = primary if primary.get("model_accepted") else None
+                                retry_path: Path | None = None
+                                for retry_number in range(settings.formula_vl_retry_count):
+                                    if result is not None or vision_client is None:
+                                        break
+                                    retry_bytes = _formula_retry_crop(
+                                        image_bgr, region.bbox_pixels
+                                    )
+                                    if not retry_bytes or not _image_is_safe(retry_bytes):
+                                        formula_audit["attempts"].append({
+                                            "stage": f"qwen-retry-{retry_number + 1}",
+                                            "accepted": False,
+                                            "error": "retry-crop-unavailable",
+                                        })
+                                        break
+                                    retry_path = image_path.with_name(
+                                        image_path.stem + "-retry.png"
+                                    )
+                                    retry_path.write_bytes(retry_bytes)
+                                    retried = _recognize_formula(
+                                        vision_client, retry_bytes, fallback_text, nearby
+                                    )
+                                    formula_audit["attempts"].append({
+                                        "stage": f"qwen-retry-{retry_number + 1}",
+                                        "accepted": retried.get("model_accepted", False),
+                                        "image_path": str(
+                                            retry_path.relative_to(output_dir)
+                                        ).replace("\\", "/"),
+                                        "result": retried.get("raw_result", {}),
+                                        "error": retried.get("recognition_error", ""),
+                                    })
+                                    if retried.get("model_accepted"):
+                                        result = retried
+                                if result is not None:
+                                    result, reconciliation = _reconcile_formula_with_page_ocr(
+                                        result, ocr_formula
+                                    )
+                                    if reconciliation:
+                                        formula_audit["reconciliation"] = {
+                                            "source": "page-ocr",
+                                            "reason": reconciliation,
+                                            "latex": result.get("latex", ""),
+                                        }
+                                    formula_audit["status"] = "recognized"
+                                else:
+                                    fallback_latex = (
+                                        ocr_formula.get("latex", "")
+                                        or _formula_latex_from_ocr_text(fallback_text)
+                                    )
+                                    if fallback_latex or fallback_text:
+                                        result = _normalize_formula_result(
+                                            {
+                                                "is_formula": True,
+                                                "latex": fallback_latex,
+                                                "plain_text": fallback_text,
+                                                "confidence": 0.55,
+                                            },
+                                            fallback_text,
+                                        )
+                                        formula_audit["status"] = "fallback"
+                                        formula_audit["fallback_source"] = (
+                                            "page-ocr" if ocr_formula else "pymupdf-words"
+                                        )
+                                    else:
+                                        result = {
+                                            "is_formula": True,
+                                            "latex": "",
+                                            "plain_text": "",
+                                            "variables": [],
+                                            "confidence": 0.0,
+                                        }
+                                        formula_audit["status"] = "uncertain"
                             latex = str(result.get("latex", "")).strip()
                             plain_text = str(result.get("plain_text", "")).strip()
                             element.text = (
@@ -1287,16 +1564,37 @@ def enhance_pdf(
                                 if latex and plain_text
                                 else f"LaTeX: ${latex}$" if latex else plain_text
                             )
+                            if not element.text:
+                                element.text = "独立公式（未能可靠转写，详见公式审计）"
                             variables = result.get("variables", [])
                             if variables:
                                 element.description = "变量：" + json.dumps(
                                     variables, ensure_ascii=False
                                 )
-                            element.processor += f"+{expected_processor}"
+                            if formula_audit["status"] == "fallback":
+                                element.processor += "+page-ocr-formula-fallback"
+                            elif formula_audit["status"] == "uncertain":
+                                element.processor += "+formula-unresolved"
+                            else:
+                                element.processor += f"+{expected_processor}"
                             element.confidence = max(
                                 element.confidence, float(result.get("confidence", 0))
                             )
-                            element.uncertain = not bool(latex) or element.confidence < 0.6
+                            recognition_confidence = float(result.get("confidence", 0))
+                            element.uncertain = (
+                                formula_audit["status"] in {"fallback", "uncertain"}
+                                or not bool(latex)
+                                or recognition_confidence < 0.6
+                            )
+                        formula_audit["final"] = {
+                            "status": formula_audit.get("status", "uncertain"),
+                            "caption": element.caption,
+                            "text": element.text,
+                            "processor": element.processor,
+                            "confidence": element.confidence,
+                            "uncertain": element.uncertain,
+                        }
+                        formula_audit_records.append(formula_audit)
                     elements.append(element)
                     order += 1
 
@@ -1450,6 +1748,30 @@ def enhance_pdf(
     audit = [decisions[number] for number in sorted(decisions)]
     audit_path.write_text(
         json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (output_dir / f"{path.stem}.formula_audit.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "source": path.name,
+                "detected": len(formula_audit_records),
+                "recognized": sum(
+                    item.get("status") in {"recognized", "cached"}
+                    for item in formula_audit_records
+                ),
+                "fallback": sum(
+                    item.get("status") == "fallback" for item in formula_audit_records
+                ),
+                "uncertain": sum(
+                    bool((item.get("final") or {}).get("uncertain"))
+                    for item in formula_audit_records
+                ),
+                "formulas": formula_audit_records,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
     )
     (output_dir / f"{path.stem}.pdf_extract_kit.json").write_text(
         json.dumps(

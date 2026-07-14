@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 from dataclasses import replace
 
 import fitz
@@ -16,12 +17,14 @@ from backend.app.rag.pipeline import KnowledgeBaseBuildCancelled
 from backend.app.rag.multimodal import (
     LayoutElement,
     _analyze_image,
+    _formula_candidates_from_page_text,
     _formula_latex_from_pdf_geometry,
     _indexable_pdfkit_regions,
     _is_full_page_scan,
     _is_verified_circuit_result,
     _normalize_circuit_result,
     _normalize_formula_result,
+    _reconcile_formula_with_page_ocr,
     _ocr_scanned_pages,
     _safe_partial_noise_fragment,
     build_local_knowledge_graph,
@@ -562,6 +565,121 @@ def test_formula_recognition_normalizes_latex_and_rejects_prose():
     assert formula["is_formula"] is True
     assert formula["latex"].startswith("I_{BQ}")
     assert prose["is_formula"] is False
+
+
+def test_page_ocr_formula_candidates_keep_three_numbered_equations():
+    candidates = _formula_candidates_from_page_text(
+        "\n".join([
+            "在图示电路中，令 ui = 0，根据回路方程可得",
+            "I_BQ = (V_BB - U_BEQ) / R_b (2.2.1a)",
+            "I_CQ = βI_BQ (2.2.1b)",
+            "U_CEQ = V_CC - I_CQ * R_c (2.2.1c)",
+        ])
+    )
+
+    assert [item["caption"] for item in candidates] == [
+        "(2.2.1a)", "(2.2.1b)", "(2.2.1c)"
+    ]
+    assert candidates[0]["latex"] == r"I_{BQ} = \frac{V_{BB} - U_{BEQ}}{R_{b}}"
+    assert candidates[1]["latex"] == r"I_{CQ} = \beta I_{BQ}"
+    assert candidates[2]["latex"] == r"U_{CEQ} = V_{CC} - I_{CQ} R_{c}"
+
+
+def test_page_ocr_corrects_vl_beta_overbar_when_symbol_skeleton_matches():
+    result, reason = _reconcile_formula_with_page_ocr(
+        {
+            "is_formula": True,
+            "latex": r"I_{CQ} = \bar{\beta} I_{BQ}",
+            "plain_text": "I_CQ = beta_bar I_BQ",
+            "confidence": 0.95,
+        },
+        {
+            "latex": r"I_{CQ} = \beta I_{BQ}",
+            "plain_text": "I_CQ = beta I_BQ",
+            "caption": "(2.2.1b)",
+        },
+    )
+
+    assert result["latex"] == r"I_{CQ} = \beta I_{BQ}"
+    assert result["plain_text"] == "I_CQ = beta I_BQ"
+    assert reason == "matching-symbol-skeleton"
+
+
+@pytest.mark.parametrize("safe_crop", [True, False])
+def test_detected_formulas_survive_vl_rejection_with_page_ocr_fallback(
+    tmp_path, monkeypatch, safe_crop
+):
+    page_image = Image.new("RGB", (1000, 1400), "white")
+    draw = ImageDraw.Draw(page_image)
+    for top, text in ((200, "IBQ = ..."), (320, "ICQ = ..."), (440, "UCEQ = ...")):
+        draw.text((100, top), text, fill="black")
+        draw.line((90, top + 35, 520, top + 35), fill="black", width=2)
+    buffer = io.BytesIO()
+    page_image.save(buffer, format="PNG")
+
+    pdf_path = tmp_path / "three-formulas.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=500, height=700)
+    page.insert_image(page.rect, stream=buffer.getvalue())
+    pdf.save(pdf_path)
+    pdf.close()
+
+    regions = [
+        DetectedRegion("isolate_formula", [90, 190, 540, 260], 0.95, "pdf-extract-kit:layout"),
+        DetectedRegion("formula_caption", [650, 190, 780, 260], 0.90, "pdf-extract-kit:layout"),
+        DetectedRegion("isolate_formula", [90, 310, 540, 380], 0.94, "pdf-extract-kit:layout"),
+        DetectedRegion("formula_caption", [650, 310, 780, 380], 0.89, "pdf-extract-kit:layout"),
+        DetectedRegion("isolate_formula", [90, 430, 540, 500], 0.93, "pdf-extract-kit:layout"),
+        DetectedRegion("formula_caption", [650, 430, 780, 500], 0.88, "pdf-extract-kit:layout"),
+    ]
+    monkeypatch.setattr(PDFExtractKitAdapter, "available", property(lambda _self: True))
+    monkeypatch.setattr(PDFExtractKitAdapter, "detect", lambda _self, _image: regions)
+    if not safe_crop:
+        monkeypatch.setattr("backend.app.rag.multimodal._image_is_safe", lambda _data: False)
+
+    class RejectingVisionClient:
+        model = "qwen3-vl-flash"
+
+        def complete_json(self, *_args, **_kwargs):
+            return {"is_formula": False, "latex": "", "plain_text": ""}
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("backend.app.rag.multimodal.QwenVisionClient", lambda **_kwargs: RejectingVisionClient())
+    monkeypatch.setattr(
+        "backend.app.rag.multimodal.settings",
+        replace(
+            __import__("backend.app.rag.multimodal", fromlist=["settings"]).settings,
+            qwen_api_key="test-key",
+            formula_vl_retry_count=1,
+        ),
+    )
+    page_text = "\n".join([
+        "静态工作点公式如下：",
+        "I_BQ = (V_BB - U_BEQ) / R_b (2.2.1a)",
+        "I_CQ = βI_BQ (2.2.1b)",
+        "U_CEQ = V_CC - I_CQ R_c (2.2.1c)",
+        "这些公式用于分析基本共射放大电路。" * 8,
+    ])
+    documents = [PageDocument(
+        page_text, pdf_path.name, 1, "第二章 基本放大电路", "2.2.2 设置静态工作点"
+    )]
+
+    _kept, elements, _audit = enhance_pdf(pdf_path, documents, tmp_path / "index")
+    formulas = [element for element in elements if element.element_type == "formula"]
+    formula_audit = json.loads(
+        (tmp_path / "index" / "three-formulas.formula_audit.json").read_text(encoding="utf-8")
+    )
+
+    assert len(formulas) == 3
+    assert [element.caption for element in formulas] == [
+        "(2.2.1a)", "(2.2.1b)", "(2.2.1c)"
+    ]
+    assert all(element.uncertain for element in formulas)
+    assert formula_audit["detected"] == 3
+    assert formula_audit["fallback"] == 3
+    assert all(item["fallback_source"] == "page-ocr" for item in formula_audit["formulas"])
 
 
 def test_native_pdf_geometry_recovers_subscripts_and_fraction():

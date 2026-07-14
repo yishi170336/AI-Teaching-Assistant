@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable, Literal, TypedDict
 import sympy as sp
 from langgraph.graph import END, StateGraph
 
+from backend.app.config import settings
 from backend.app.rag.manager import KnowledgeBaseManager
 from backend.app.rag.models import RetrievalHit
 from backend.app.services.ollama_client import OllamaClient
@@ -931,12 +932,26 @@ class CircuitTutorEngine:
             f"学生附件：\n{state.get('attachment_context') or '无'}\n\n"
             f"课程资料：\n{context or '未检索到资料'}"
         )
-        user_message: dict[str, Any] = {"role": "user", "content": user}
-        images = list(state.get("attachment_images", []))
+        attachment_images = list(state.get("attachment_images", []))
+        images = list(attachment_images)
+        image_labels = [
+            f"图片{index}：学生上传的题目/电路图片"
+            for index in range(1, len(attachment_images) + 1)
+        ]
         retriever = self.knowledge_bases.get(state.get("knowledge_base", "default"))
-        for hit in state.get("hits", []):
+        reference_count = 0
+        seen_reference_paths: set[str] = set()
+        for source_index, hit in enumerate(state.get("hits", []), start=1):
+            if (
+                not attachment_images
+                or reference_count >= settings.circuit_image_retrieval_max_references
+                or len(images) >= settings.max_chat_document_images
+                or hit.chunk.element_type != "circuit"
+                or hit.image_score < settings.circuit_image_retrieval_min_score
+            ):
+                continue
             relative = hit.chunk.image_path
-            if not relative or len(images) >= 4:
+            if not relative or relative in seen_reference_paths:
                 continue
             image_path = (retriever.index_dir / relative).resolve()
             if retriever.index_dir.resolve() not in image_path.parents or not image_path.is_file():
@@ -944,6 +959,29 @@ class CircuitTutorEngine:
             # Knowledge-base artifacts were already bounded during ingestion.
             if image_path.stat().st_size <= 5 * 1024 * 1024:
                 images.append(base64.b64encode(image_path.read_bytes()).decode("ascii"))
+                seen_reference_paths.add(relative)
+                reference_count += 1
+                figure_match = re.search(
+                    r"(?:图|Fig\.?)\s*\d+(?:\.\d+)+(?:[-—]\d+)?",
+                    hit.chunk.text,
+                    flags=re.I,
+                )
+                location = " · ".join(
+                    item for item in (
+                        hit.chunk.source,
+                        hit.chunk.section,
+                        f"第 {hit.chunk.page_start} 页" if hit.chunk.page_start else "",
+                        figure_match.group(0) if figure_match else "",
+                    )
+                    if item
+                )
+                image_labels.append(
+                    f"图片{len(images)}：教材参考图片，对应[资料{source_index}] {location}，"
+                    f"图像相似度 {hit.image_score:.3f}"
+                )
+        if image_labels:
+            user += "\n\n图片顺序说明：\n" + "\n".join(image_labels)
+        user_message: dict[str, Any] = {"role": "user", "content": user}
         if images:
             user_message["images"] = images
         return {"answer_messages": [{"role": "system", "content": system}, user_message]}
