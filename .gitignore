@@ -11,6 +11,8 @@ tools/spreadsheet/node_modules/
 data/vector_stores/*/*.tmp
 data/uploads/
 data/session_memory/
+data/practice/submissions/
+data/practice/sessions/
 tmp/
 logs/
 third_party/

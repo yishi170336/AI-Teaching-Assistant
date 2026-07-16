@@ -7,6 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
     "check:latex": "node scripts/check-latex-normalization.mjs",
+    "check:practice": "node scripts/check-practice-latex.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

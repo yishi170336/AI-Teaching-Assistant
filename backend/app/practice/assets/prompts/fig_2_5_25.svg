@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="520" viewBox="0 0 1180 520">
+<title>图2.5.25 四种晶体管输入电路</title>
+<rect width="100%" height="100%" fill="white"/>
+<line x1="165.00" y1="152.00" x2="165.00" y2="188.00" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="126.00" y1="170.00" x2="165.00" y2="170.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="165.00" y1="159.20" x2="192.00" y2="135.20" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="165.00" y1="180.80" x2="192.00" y2="204.80" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="175.80" y1="190.40" x2="192.00" y2="204.80" stroke="#17202a" stroke-width="2" stroke-linecap="round"/>
+<polygon points="192.00,204.80 186.08,203.84 190.35,199.03" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<circle cx="35" cy="170" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="35.00" y1="170.00" x2="126.00" y2="170.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="192.0" cy="75" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="192.00" y1="135.20" x2="192.00" y2="75.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="192.00" y1="204.80" x2="192.00" y2="320.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="192.00" y1="308.00" x2="192.00" y2="320.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="174.00" y1="320.00" x2="210.00" y2="320.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="180.00" y1="327.00" x2="204.00" y2="327.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="186.00" y1="334.00" x2="198.00" y2="334.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="60.00" y1="305.00" x2="100.00" y2="305.00" stroke="#17202a" stroke-width="1.2" stroke-linecap="round"/>
+<polygon points="100.00,305.00 94.09,308.75 94.09,301.25" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<text x="80" y="280" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="16" fill="#17202a" style="font-style:italic;"><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">i</tspan></text>
+<text x="160" y="375" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="18" fill="#17202a" style="">(a)</text>
+<line x1="455.00" y1="152.00" x2="455.00" y2="188.00" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="416.00" y1="170.00" x2="455.00" y2="170.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="455.00" y1="159.20" x2="482.00" y2="135.20" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="455.00" y1="180.80" x2="482.00" y2="204.80" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="465.80" y1="190.40" x2="482.00" y2="204.80" stroke="#17202a" stroke-width="2" stroke-linecap="round"/>
+<polygon points="482.00,204.80 476.08,203.84 480.35,199.03" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<circle cx="325" cy="170" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="325.00" y1="170.00" x2="416.00" y2="170.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="482.0" cy="75" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="482.00" y1="135.20" x2="482.00" y2="75.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="482.00" y1="204.80" x2="482.00" y2="236.48" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="468.0" y="236.48" width="28" height="51.839999999999996" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="482.00" y1="288.32" x2="482.00" y2="320.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="506.0" y="262.4" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style="">100 Ω</text>
+<line x1="482.00" y1="308.00" x2="482.00" y2="320.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="464.00" y1="320.00" x2="500.00" y2="320.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="470.00" y1="327.00" x2="494.00" y2="327.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="476.00" y1="334.00" x2="488.00" y2="334.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="547.00" y1="204.80" x2="547.00" y2="254.40" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="525.00" y1="254.40" x2="569.00" y2="254.40" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="525.00" y1="270.40" x2="569.00" y2="270.40" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="547.00" y1="270.40" x2="547.00" y2="320.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="482.00" y1="204.80" x2="547.00" y2="204.80" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="482.00" y1="320.00" x2="547.00" y2="320.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="350.00" y1="305.00" x2="390.00" y2="305.00" stroke="#17202a" stroke-width="1.2" stroke-linecap="round"/>
+<polygon points="390.00,305.00 384.09,308.75 384.09,301.25" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<text x="370" y="280" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="16" fill="#17202a" style="font-style:italic;"><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">i</tspan></text>
+<text x="450" y="375" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="18" fill="#17202a" style="">(b)</text>
+<line x1="745.00" y1="152.00" x2="745.00" y2="188.00" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="706.00" y1="170.00" x2="745.00" y2="170.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="745.00" y1="159.20" x2="772.00" y2="135.20" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="745.00" y1="180.80" x2="772.00" y2="204.80" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="755.80" y1="190.40" x2="772.00" y2="204.80" stroke="#17202a" stroke-width="2" stroke-linecap="round"/>
+<polygon points="772.00,204.80 766.08,203.84 770.35,199.03" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<circle cx="615" cy="170" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="615.00" y1="170.00" x2="639.50" y2="170.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="639.5" y="156" width="42" height="28" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="681.50" y1="170.00" x2="706.00" y2="170.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="660.5" y="138" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="22" fill="#17202a" style="">100 Ω</text>
+<circle cx="772.0" cy="75" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="772.00" y1="135.20" x2="772.00" y2="75.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="772.00" y1="204.80" x2="772.00" y2="320.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="772.00" y1="308.00" x2="772.00" y2="320.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="754.00" y1="320.00" x2="790.00" y2="320.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="760.00" y1="327.00" x2="784.00" y2="327.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="766.00" y1="334.00" x2="778.00" y2="334.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="640.00" y1="305.00" x2="680.00" y2="305.00" stroke="#17202a" stroke-width="1.2" stroke-linecap="round"/>
+<polygon points="680.00,305.00 674.09,308.75 674.09,301.25" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<text x="660" y="280" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="16" fill="#17202a" style="font-style:italic;"><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">i</tspan></text>
+<text x="740" y="375" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="18" fill="#17202a" style="">(c)</text>
+<line x1="1035.00" y1="152.00" x2="1035.00" y2="188.00" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="996.00" y1="170.00" x2="1035.00" y2="170.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="1035.00" y1="159.20" x2="1062.00" y2="135.20" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="1035.00" y1="180.80" x2="1062.00" y2="204.80" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="1045.80" y1="190.40" x2="1062.00" y2="204.80" stroke="#17202a" stroke-width="2" stroke-linecap="round"/>
+<polygon points="1062.00,204.80 1056.08,203.84 1060.35,199.03" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<circle cx="905" cy="170" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="905.00" y1="170.00" x2="996.00" y2="170.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="1062.0" cy="75" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="1062.00" y1="135.20" x2="1062.00" y2="75.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="1062.00" y1="204.80" x2="1062.00" y2="236.48" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="1048.0" y="236.48" width="28" height="51.839999999999996" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="1062.00" y1="288.32" x2="1062.00" y2="320.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="1086.0" y="262.4" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style="">100 Ω</text>
+<line x1="1062.00" y1="308.00" x2="1062.00" y2="320.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="1044.00" y1="320.00" x2="1080.00" y2="320.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="1050.00" y1="327.00" x2="1074.00" y2="327.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="1056.00" y1="334.00" x2="1068.00" y2="334.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="930.00" y1="305.00" x2="970.00" y2="305.00" stroke="#17202a" stroke-width="1.2" stroke-linecap="round"/>
+<polygon points="970.00,305.00 964.09,308.75 964.09,301.25" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<text x="950" y="280" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="16" fill="#17202a" style="font-style:italic;"><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">i</tspan></text>
+<text x="1030" y="375" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="18" fill="#17202a" style="">(d)</text>
+<text x="590.0" y="496" text-anchor="middle" dominant-baseline="middle" font-family="SimSun,STSong,serif" font-size="22" fill="#17202a" style="">图 2.5.25　题 2.3.13 的图</text>
+</svg>

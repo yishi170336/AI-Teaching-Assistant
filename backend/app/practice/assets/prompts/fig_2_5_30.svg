@@ -1,0 +1,194 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="880" viewBox="0 0 1160 880">
+<title>图2.5.30 四种温度补偿电路</title>
+<rect width="100%" height="100%" fill="white"/>
+<line x1="70.00" y1="55.00" x2="325.00" y2="55.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="350" cy="55" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<text x="362" y="55" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="18" fill="#17202a" style=""><tspan>+V</tspan><tspan baseline-shift="sub" font-size="70%">CC</tspan></text>
+<line x1="235.00" y1="187.60" x2="235.00" y2="222.40" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="197.30" y1="205.00" x2="235.00" y2="205.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="235.00" y1="194.56" x2="261.10" y2="171.36" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="235.00" y1="215.44" x2="261.10" y2="238.64" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="245.44" y1="224.72" x2="261.10" y2="238.64" stroke="#17202a" stroke-width="2" stroke-linecap="round"/>
+<polygon points="261.10,238.64 255.38,237.71 259.50,233.06" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<text x="280.24" y="205" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style="">T</text>
+<line x1="261.10" y1="55.00" x2="261.10" y2="87.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="247.10000000000002" y="86.999" width="28" height="52.36200000000001" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="261.10" y1="139.36" x2="261.10" y2="171.36" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="237.10000000000002" y="113.18" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">C</tspan></text>
+<line x1="261.10" y1="238.64" x2="261.10" y2="350.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="70.00" y1="350.00" x2="355.00" y2="350.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="261.10" y1="338.00" x2="261.10" y2="350.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="243.10" y1="350.00" x2="279.10" y2="350.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="249.10" y1="357.00" x2="273.10" y2="357.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="255.10" y1="364.00" x2="267.10" y2="364.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="115.00" y1="55.00" x2="115.00" y2="96.25" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="101" y="96.25" width="28" height="67.5" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="115.00" y1="163.75" x2="115.00" y2="205.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="91" y="130.0" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">B</tspan></text>
+<line x1="115.00" y1="205.00" x2="197.30" y2="205.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="115.00" y1="205.00" x2="115.00" y2="302.50" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="115.00" y1="252.50" x2="115.00" y2="350.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<polygon points="97.00,300.50 133.00,300.50 115.00,267.50" fill="white" stroke="#17202a" stroke-width="2.2" stroke-linejoin="round"/>
+<line x1="93.00" y1="264.50" x2="137.00" y2="264.50" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<text x="145" y="277.5" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style="">D</text>
+<circle cx="50" cy="205" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="50.00" y1="205.00" x2="115.00" y2="205.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="355" cy="171.36" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="261.10" y1="171.36" x2="355.00" y2="171.36" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="195" y="400" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="18" fill="#17202a" style="">(a)</text>
+<line x1="630.00" y1="55.00" x2="885.00" y2="55.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="910" cy="55" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<text x="922" y="55" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="18" fill="#17202a" style=""><tspan>+V</tspan><tspan baseline-shift="sub" font-size="70%">CC</tspan></text>
+<line x1="795.00" y1="187.60" x2="795.00" y2="222.40" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="757.30" y1="205.00" x2="795.00" y2="205.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="795.00" y1="194.56" x2="821.10" y2="171.36" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="795.00" y1="215.44" x2="821.10" y2="238.64" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="805.44" y1="224.72" x2="821.10" y2="238.64" stroke="#17202a" stroke-width="2" stroke-linecap="round"/>
+<polygon points="821.10,238.64 815.38,237.71 819.50,233.06" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<text x="840.24" y="205" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style="">T</text>
+<line x1="821.10" y1="55.00" x2="821.10" y2="87.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="807.1" y="86.999" width="28" height="52.36200000000001" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="821.10" y1="139.36" x2="821.10" y2="171.36" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="797.1" y="113.18" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">C</tspan></text>
+<line x1="821.10" y1="238.64" x2="821.10" y2="269.26" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="807.1" y="269.264" width="28" height="50.11200000000001" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="821.10" y1="319.38" x2="821.10" y2="350.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="845.1" y="294.32" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">E</tspan></text>
+<line x1="881.10" y1="238.64" x2="881.10" y2="286.32" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="859.10" y1="286.32" x2="903.10" y2="286.32" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="859.10" y1="302.32" x2="903.10" y2="302.32" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="881.10" y1="302.32" x2="881.10" y2="350.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="911.1" y="294.32" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style="font-style:italic;"><tspan>C</tspan><tspan baseline-shift="sub" font-size="70%">E</tspan></text>
+<line x1="821.10" y1="238.64" x2="881.10" y2="238.64" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="821.10" y1="350.00" x2="881.10" y2="350.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="630.00" y1="350.00" x2="915.00" y2="350.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="821.10" y1="338.00" x2="821.10" y2="350.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="803.10" y1="350.00" x2="839.10" y2="350.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="809.10" y1="357.00" x2="833.10" y2="357.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="815.10" y1="364.00" x2="827.10" y2="364.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="675.00" y1="55.00" x2="675.00" y2="96.25" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="661" y="96.25" width="28" height="67.5" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="675.00" y1="163.75" x2="675.00" y2="205.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="651" y="130.0" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">B2</tspan></text>
+<line x1="675.00" y1="205.00" x2="675.00" y2="210.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="675.00" y1="260.00" x2="675.00" y2="265.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<polygon points="657.00,212.00 693.00,212.00 675.00,245.00" fill="white" stroke="#17202a" stroke-width="2.2" stroke-linejoin="round"/>
+<line x1="653.00" y1="248.00" x2="697.00" y2="248.00" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<text x="705" y="235.0" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style="">D</text>
+<line x1="675.00" y1="265.00" x2="675.00" y2="284.50" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="661" y="284.5" width="28" height="46" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="675.00" y1="330.50" x2="675.00" y2="350.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="651" y="307.5" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">B1</tspan></text>
+<line x1="675.00" y1="205.00" x2="757.30" y2="205.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="610" cy="205" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="610.00" y1="205.00" x2="634.50" y2="205.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="634.50" y1="183.00" x2="634.50" y2="227.00" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="650.50" y1="183.00" x2="650.50" y2="227.00" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="650.50" y1="205.00" x2="675.00" y2="205.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="642.5" y="171" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="22" fill="#17202a" style="font-style:italic;"><tspan>C</tspan><tspan baseline-shift="sub" font-size="70%">1</tspan></text>
+<line x1="821.10" y1="171.36" x2="860.05" y2="171.36" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="860.05" y1="149.36" x2="860.05" y2="193.36" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="876.05" y1="149.36" x2="876.05" y2="193.36" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="876.05" y1="171.36" x2="915.00" y2="171.36" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="868.05" y="137.36" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="22" fill="#17202a" style="font-style:italic;"><tspan>C</tspan><tspan baseline-shift="sub" font-size="70%">2</tspan></text>
+<text x="755" y="400" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="18" fill="#17202a" style="">(b)</text>
+<line x1="70.00" y1="460.00" x2="325.00" y2="460.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="350" cy="460" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<text x="362" y="460" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="18" fill="#17202a" style=""><tspan>+V</tspan><tspan baseline-shift="sub" font-size="70%">CC</tspan></text>
+<line x1="235.00" y1="592.60" x2="235.00" y2="627.40" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="197.30" y1="610.00" x2="235.00" y2="610.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="235.00" y1="599.56" x2="261.10" y2="576.36" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="235.00" y1="620.44" x2="261.10" y2="643.64" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="245.44" y1="629.72" x2="261.10" y2="643.64" stroke="#17202a" stroke-width="2" stroke-linecap="round"/>
+<polygon points="261.10,643.64 255.38,642.71 259.50,638.06" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<text x="280.24" y="610" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style="">T</text>
+<line x1="261.10" y1="460.00" x2="261.10" y2="492.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="247.10000000000002" y="491.9990000000001" width="28" height="52.36200000000001" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="261.10" y1="544.36" x2="261.10" y2="576.36" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="237.10000000000002" y="518.1800000000001" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">C</tspan></text>
+<line x1="261.10" y1="643.64" x2="261.10" y2="755.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="70.00" y1="755.00" x2="355.00" y2="755.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="261.10" y1="743.00" x2="261.10" y2="755.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="243.10" y1="755.00" x2="279.10" y2="755.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="249.10" y1="762.00" x2="273.10" y2="762.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="255.10" y1="769.00" x2="267.10" y2="769.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="115.00" y1="460.00" x2="115.00" y2="501.25" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="101" y="501.25" width="28" height="67.5" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="115.00" y1="568.75" x2="115.00" y2="610.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="91" y="535.0" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style="">R</text>
+<line x1="87.00" y1="561.00" x2="124.00" y2="524.00" stroke="#17202a" stroke-width="1.5" stroke-linecap="round"/>
+<polygon points="124.00,524.00 122.25,531.81 116.19,525.75" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<text x="81" y="515.0" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="17" fill="#17202a" style="font-style:italic;">θ</text>
+<line x1="115.00" y1="610.00" x2="197.30" y2="610.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="50" cy="610" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="50.00" y1="610.00" x2="115.00" y2="610.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="355" cy="576.36" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="261.10" y1="576.36" x2="355.00" y2="576.36" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="195" y="805" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="18" fill="#17202a" style="">(c)</text>
+<line x1="630.00" y1="460.00" x2="885.00" y2="460.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="910" cy="460" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<text x="922" y="460" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="18" fill="#17202a" style=""><tspan>+V</tspan><tspan baseline-shift="sub" font-size="70%">CC</tspan></text>
+<line x1="795.00" y1="592.60" x2="795.00" y2="627.40" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="757.30" y1="610.00" x2="795.00" y2="610.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="795.00" y1="599.56" x2="821.10" y2="576.36" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="795.00" y1="620.44" x2="821.10" y2="643.64" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="805.44" y1="629.72" x2="821.10" y2="643.64" stroke="#17202a" stroke-width="2" stroke-linecap="round"/>
+<polygon points="821.10,643.64 815.38,642.71 819.50,638.06" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<text x="840.24" y="610" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style="">T</text>
+<line x1="821.10" y1="460.00" x2="821.10" y2="492.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="807.1" y="491.9990000000001" width="28" height="52.36200000000001" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="821.10" y1="544.36" x2="821.10" y2="576.36" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="797.1" y="518.1800000000001" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">C</tspan></text>
+<line x1="821.10" y1="643.64" x2="821.10" y2="674.26" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="807.1" y="674.2639999999999" width="28" height="50.11200000000001" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="821.10" y1="724.38" x2="821.10" y2="755.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="845.1" y="699.3199999999999" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">E</tspan></text>
+<line x1="881.10" y1="643.64" x2="881.10" y2="691.32" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="859.10" y1="691.32" x2="903.10" y2="691.32" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="859.10" y1="707.32" x2="903.10" y2="707.32" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="881.10" y1="707.32" x2="881.10" y2="755.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="911.1" y="699.3199999999999" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style="font-style:italic;"><tspan>C</tspan><tspan baseline-shift="sub" font-size="70%">E</tspan></text>
+<line x1="821.10" y1="643.64" x2="881.10" y2="643.64" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="821.10" y1="755.00" x2="881.10" y2="755.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="630.00" y1="755.00" x2="915.00" y2="755.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="821.10" y1="743.00" x2="821.10" y2="755.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="803.10" y1="755.00" x2="839.10" y2="755.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="809.10" y1="762.00" x2="833.10" y2="762.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="815.10" y1="769.00" x2="827.10" y2="769.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="680.00" y1="460.00" x2="680.00" y2="501.25" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="666" y="501.25" width="28" height="67.5" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="680.00" y1="568.75" x2="680.00" y2="610.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="656" y="535.0" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">B2</tspan></text>
+<line x1="680.00" y1="610.00" x2="680.00" y2="649.88" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="666" y="649.875" width="28" height="65.25" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="680.00" y1="715.12" x2="680.00" y2="755.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="656" y="682.5" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">B1</tspan></text>
+<line x1="680.00" y1="610.00" x2="757.30" y2="610.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="680" cy="610" r="3" fill="#17202a" stroke="#17202a" stroke-width="2.2"/>
+<line x1="620.00" y1="610.00" x2="620.00" y2="619.50" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="606" y="619.5" width="28" height="46" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="620.00" y1="665.50" x2="620.00" y2="675.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="596" y="642.5" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">B3</tspan></text>
+<line x1="620.00" y1="675.00" x2="620.00" y2="692.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="606" y="692.0" width="28" height="46" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="620.00" y1="738.00" x2="620.00" y2="755.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="596" y="715.0" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style="">R</text>
+<line x1="592.00" y1="741.00" x2="629.00" y2="704.00" stroke="#17202a" stroke-width="1.5" stroke-linecap="round"/>
+<polygon points="629.00,704.00 627.25,711.81 621.19,705.75" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<text x="586" y="695.0" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="17" fill="#17202a" style="font-style:italic;">θ</text>
+<line x1="620.00" y1="610.00" x2="680.00" y2="610.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="620.00" y1="755.00" x2="680.00" y2="755.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="590" cy="610" r="4" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="590.00" y1="610.00" x2="627.00" y2="610.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="627.00" y1="588.00" x2="627.00" y2="632.00" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="643.00" y1="588.00" x2="643.00" y2="632.00" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="643.00" y1="610.00" x2="680.00" y2="610.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="635.0" y="576" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="22" fill="#17202a" style="font-style:italic;"><tspan>C</tspan><tspan baseline-shift="sub" font-size="70%">1</tspan></text>
+<line x1="821.10" y1="576.36" x2="860.05" y2="576.36" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="860.05" y1="554.36" x2="860.05" y2="598.36" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="876.05" y1="554.36" x2="876.05" y2="598.36" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="876.05" y1="576.36" x2="915.00" y2="576.36" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="868.05" y="542.36" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="22" fill="#17202a" style="font-style:italic;"><tspan>C</tspan><tspan baseline-shift="sub" font-size="70%">2</tspan></text>
+<text x="755" y="805" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="18" fill="#17202a" style="">(d)</text>
+<text x="580.0" y="856" text-anchor="middle" dominant-baseline="middle" font-family="SimSun,STSong,serif" font-size="22" fill="#17202a" style="">图 2.5.30　题 2.4.5 的图</text>
+</svg>

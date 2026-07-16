@@ -1,0 +1,186 @@
+{
+  "version": 1,
+  "visibility": "backend-only",
+  "answers": {
+    "2.3.1": {
+      "answer_markdown": "按放大电路的三条组成规则，先由直流通路判断静态工作点是否处于放大区，再由交流通路判断输入信号能否送入、输出信号能否送出。\n\n- (a) 无放大作用：\\(V_{CC}\\) 极性反接，静态工作点不在放大区。\n- (b) 有放大作用。\n- (c) 无放大作用：输入信号被短路。\n- (d) 无放大作用：不存在完整直流通路。\n- (e) 无放大作用：\\(V_{CC}\\) 极性反接。\n- (f) 无放大作用：发射结没有正向偏置。",
+      "key_points": ["逐图检查直流偏置与静态工作点", "逐图检查交流输入和输出通路", "只有图 (b) 能正常放大"],
+      "source_pages": [48, 49],
+      "figures": []
+    },
+    "2.3.2": {
+      "answer_markdown": "- 图 (a)：将负电源改为正电源 \\(+9V\\)，并去掉多余的 \\(C_3\\)。\n- 图 (b)：晶体管基极应通过新增的偏置电阻 \\(R_B\\) 接到 \\(V_{CC}\\)，以建立合适的静态工作点。",
+      "key_points": ["图 (a) 改正电源极性", "图 (a) 去掉 C3", "图 (b) 增加基极偏置电阻并接至 VCC"],
+      "source_pages": [49, 50],
+      "figures": []
+    },
+    "2.3.4": {
+      "answer_markdown": "使用 NPN 管时，图 (b) 为饱和失真，应降低静态工作点；图 (c) 为截止失真，应提高静态工作点。\n\n若改用 PNP 管，判断相反：图 (b) 为截止失真，应提高静态工作点；图 (c) 为饱和失真，应降低静态工作点。",
+      "key_points": ["NPN 图 (b) 为饱和失真", "NPN 图 (c) 为截止失真", "说明调整静态工作点的方向", "PNP 管的两种判断与调整方向相反"],
+      "source_pages": [51, 52],
+      "figures": []
+    },
+    "2.3.7": {
+      "answer_markdown": "先求临界饱和基极电流：\n\n\\[I_{BS}=\\frac{V_{CC}}{\\beta R_C}=\\frac{12}{80\\times4k\\Omega}=37.5\\mu A\\]\n\n- S 接 A：\\(I_B=(12-0.6)/40k\\Omega=285\\mu A>I_{BS}\\)，晶体管饱和，\\(I_C\\approx12/4k\\Omega=3mA\\)。\n- S 接 B：\\(I_B=(12-0.6)/500k\\Omega=22.8\\mu A<I_{BS}\\)，晶体管处于放大区，\\(I_C=\\beta I_B=1.82mA\\)。\n- S 接 C：发射结反偏，晶体管截止，\\(I_C\\approx0\\)。",
+      "key_points": ["计算临界饱和基极电流 37.5μA", "A 位饱和且 IC=3mA", "B 位放大且 IC=1.82mA", "C 位截止且 IC≈0"],
+      "source_pages": [53],
+      "figures": []
+    },
+    "2.3.8": {
+      "answer_markdown": "- 图 (a)：\\(I_{BS}=(6-0.3)/(30\\times1k\\Omega)=0.19mA\\)，\\(I_B=(6-0.7)/100k\\Omega=0.053mA<I_{BS}\\)，故处于放大区。\\(I_C=1.59mA\\)，\\(V_C=6-1.59\\times1=4.41V\\)。\n- 图 (b)：\\(V_B<0\\)，发射结反偏，晶体管截止，\\(V_C=V_{CC}=6V\\)。\n- 图 (c)：\\(I_{BS}=(12-0.3)/(50\\times1k\\Omega)=0.234mA\\)，\\(I_B=(2-0.7)/5k\\Omega=0.26mA>I_{BS}\\)，晶体管饱和，\\(V_C=0.3V\\)。",
+      "key_points": ["图 (a) 放大区且 VC=4.41V", "图 (b) 截止且 VC=6V", "图 (c) 饱和且 VC=0.3V"],
+      "source_pages": [53, 54],
+      "figures": []
+    },
+    "2.3.11": {
+      "answer_markdown": "静态分析时电容开路：\n\n\\[I_C=\\beta I_B=\\beta\\frac{V_{CC}-V_{BE}}{R_B+(1+\\beta)R_E}\\]\n\n\\[V_{CE}=V_{CC}-I_CR_C-I_ER_E\\]\n\n交流分析时电容视为短路：\n\n\\[A_u=-\\frac{\\beta(R_C\\parallel R_L)}{r_{be}},\\qquad R_i=R_B\\parallel r_{be},\\qquad R_o\\approx R_C\\]\n\n按教材结论，\\(C_3\\) 开路对静态工作点无影响；电压增益和输出电阻增大，输入电阻不变。",
+      "key_points": ["写出 IC 与 VCE 的静态表达式", "写出 Au、Ri、Ro 的交流表达式", "C3 开路不影响静态工作点", "说明 C3 开路对增益和输入输出电阻的影响"],
+      "source_pages": [55],
+      "figures": []
+    },
+    "2.3.12": {
+      "answer_markdown": "静态工作点为\n\n\\[I_{BQ}=30.8\\mu A,\\qquad I_{CQ}=3.08mA,\\qquad V_{CEQ}=3.84V\\]\n\n小信号参数\n\n\\[r_{be}=100\\Omega+101\\times\\frac{26mV}{3.08mA}=0.953k\\Omega\\]\n\n由交流等效电路得\n\n\\[A_u=-123.82,\\qquad R_i=20k\\Omega\\parallel0.953k\\Omega=0.91k\\Omega\\]\n\n\\[R_o=80k\\Omega\\parallel2k\\Omega=1.95k\\Omega,\\qquad A_{us}=-101.51\\]",
+      "key_points": ["直流通路与 Q 点：IBQ=30.8μA、ICQ=3.08mA、VCEQ=3.84V", "rbe=0.953kΩ", "Au=-123.82", "Ri=0.91kΩ、Ro=1.95kΩ、Aus=-101.51"],
+      "source_pages": [55, 56],
+      "figures": []
+    },
+    "2.3.13": {
+      "answer_markdown": "先求\n\n\\[r_{be}=r_{bb'}+(1+\\beta)\\frac{26mV}{I_{EQ}}=300\\Omega+100\\times26\\Omega=2.9k\\Omega\\]\n\n因此：\n\n- 图 (a)：\\(R_i=r_{be}=2.9k\\Omega\\)。\n- 图 (b)：\\(R_i=r_{be}=2.9k\\Omega\\)。\n- 图 (c)：\\(R_i=r_{be}+0.1k\\Omega=3.0k\\Omega\\)。\n- 图 (d)：\\(R_i=r_{be}+(1+\\beta)\\times0.1k\\Omega=12.9k\\Omega\\)。",
+      "key_points": ["计算 rbe=2.9kΩ", "四个输入电阻依次为 2.9kΩ、2.9kΩ、3.0kΩ、12.9kΩ", "发射极电阻需折合到基极侧"],
+      "source_pages": [56],
+      "figures": []
+    },
+    "2.3.14": {
+      "answer_markdown": "要使 \\(I_{CQ}=2mA\\)，有 \\(I_B=I_C/\\beta=0.04mA\\)，因此\n\n\\[R_B=\\frac{V_{CC}-2V_{BE}}{I_B}=\\frac{10-2\\times0.7}{0.04mA}=215k\\Omega\\]\n\n\\[r_{b'e}=\\beta\\frac{26mV}{I_C}=650\\Omega,\\qquad r_{be}=r_{bb'}+r_{b'e}=950\\Omega\\]\n\n\\[A_u=-\\frac{\\beta R_C}{r_{be}}=-105.26,\\qquad R_i=R_B\\parallel r_{be}\\approx950\\Omega,\\qquad R_o=R_C=2k\\Omega\\]",
+      "key_points": ["RB=215kΩ", "rbe=950Ω", "Au=-105.26", "Ri≈950Ω、Ro=2kΩ"],
+      "source_pages": [56, 57],
+      "figures": []
+    },
+    "2.4.1": {
+      "answer_markdown": "- 图 (a)：温度升高时，负温度系数热敏电阻 \\(R\\) 减小，使基极电位与 \\(V_{BE}\\) 减小，进而使 \\(I_B\\)、\\(I_C\\) 减小，能够抑制原来的温升趋势，因此能稳定工作点。\n- 图 (b)：温度升高时 \\(R\\) 减小，分压使基极电位、\\(V_{BE}\\)、\\(I_B\\)、\\(I_C\\) 增大，形成正反馈，不能稳定工作点。",
+      "key_points": ["图 (a) 能稳定 Q 点", "图 (b) 不能稳定 Q 点", "完整说明温度—电阻—基极电位—电流的反馈链"],
+      "source_pages": [57],
+      "figures": []
+    },
+    "2.4.3": {
+      "answer_markdown": "原电路的戴维宁等效参数为 \\(V_{BB}=2.25V\\)、\\(R_B=7.5k\\Omega\\)。\n\n\\[I_B=\\frac{2.25-0.7}{7.5k\\Omega+201\\times0.2k\\Omega}=32.49\\mu A\\]\n\n故 \\(I_C=6.5mA\\)、\\(V_{CE}=1.2V\\)，晶体管工作在放大区。\n\n1. \\(R_{B2}=2k\\Omega\\) 时，\\(V_{BB}=0.5625V<V_{th}\\)，晶体管截止。\n2. \\(R_{B1}=15k\\Omega\\) 时，\\(I_B=62.77\\mu A>I_{BS}=36.25\\mu A\\)，晶体管饱和。\n3. \\(R_E=100\\Omega\\) 时，\\(I_B=56.2\\mu A>I_{BS}\\)，晶体管饱和。",
+      "key_points": ["原 Q 点：IC=6.5mA、VCE=1.2V", "RB2=2kΩ 时截止", "RB1=15kΩ 时饱和", "RE=100Ω 时饱和"],
+      "source_pages": [58, 59],
+      "figures": []
+    },
+    "2.4.4": {
+      "answer_markdown": "- \\(R_{B1}=560k\\Omega\\)：\\(V_{BB}=0.34V<V_{th}\\)，晶体管截止，\\(I_C=0\\)。\n- \\(R_{B1}=180k\\Omega\\)：\\(V_{BB}=1V\\)、\\(R_B=18k\\Omega\\)，\\(I_B=16.67\\mu A<I_{BS}=49\\mu A\\)，处于放大区，\\(I_C=1.67mA\\)。\n- \\(R_{B1}=82k\\Omega\\)：\\(V_{BB}=1.96V\\)、\\(R_B=16.08k\\Omega\\)，\\(I_B=78.36\\mu A>I_{BS}\\)，处于饱和区，\\(I_C=(10-0.2)/2k\\Omega=4.9mA\\)。",
+      "key_points": ["560kΩ 时截止且 IC=0", "180kΩ 时放大且 IC=1.67mA", "82kΩ 时饱和且 IC=4.9mA", "用阈值与临界饱和电流分别判断"],
+      "source_pages": [59],
+      "figures": []
+    },
+    "2.4.5": {
+      "answer_markdown": "1. 图 (a) 利用二极管反向电流的正温度系数进行补偿；图 (b) 利用二极管正向压降的负温度系数进行补偿。\n2. 图 (c) 中热敏电阻应具有正温度系数；图 (d) 中热敏电阻应具有负温度系数。",
+      "key_points": ["图 (a) 利用反向电流正温度系数", "图 (b) 利用正向压降负温度系数", "图 (c) 用正温度系数热敏电阻", "图 (d) 用负温度系数热敏电阻"],
+      "source_pages": [59, 60],
+      "figures": []
+    },
+    "2.4.6": {
+      "answer_markdown": "静态计算得\n\n\\[I_{BQ}=0.267mA,\\qquad I_{CQ}=18.69mA\\]\n\n\\[r_{be}=80\\Omega+71\\times\\frac{26mV}{18.69mA}=179\\Omega\\]\n\n交流参数为\n\n\\[A_u=-\\frac{70(0.5k\\Omega\\parallel1k\\Omega)}{0.179k\\Omega+71\\times0.05k\\Omega}=-6.26\\]\n\n\\[R_i=68k\\Omega\\parallel(0.179k\\Omega+71\\times0.05k\\Omega)=3.53k\\Omega\\]\n\n\\[R_o\\approx R_C=0.5k\\Omega\\]",
+      "key_points": ["IBQ=0.267mA、ICQ=18.69mA", "rbe=179Ω", "Au=-6.26", "Ri=3.53kΩ、Ro=0.5kΩ"],
+      "source_pages": [59, 60],
+      "figures": []
+    },
+    "2.4.7": {
+      "answer_markdown": "\\[V_{BB}=3V,\\qquad R_B=10k\\Omega,\\qquad I_{BQ}=5.5825\\mu A,\\qquad I_{CQ}=1.1165mA\\]\n\n\\[r_{be}=80\\Omega+201\\times\\frac{26mV}{1.1165mA}=4.76k\\Omega\\]\n\n\\[A_u=-33.61,\\qquad R_i=10k\\Omega\\parallel4.76k\\Omega=3.22k\\Omega,\\qquad R_o\\approx4k\\Omega\\]\n\n计入 \\(R_s=1k\\Omega\\) 后，\n\n\\[A_{us}=\\frac{R_i}{R_i+R_s}A_u=-25.61\\]",
+      "key_points": ["正确求出 VBB、RB 和 Q 点", "rbe=4.76kΩ", "Au=-33.61、Ri=3.22kΩ、Ro=4kΩ", "Aus=-25.61"],
+      "source_pages": [60, 61],
+      "figures": []
+    },
+    "2.4.8": {
+      "answer_markdown": "\\[V_{BB}=3.169V,\\qquad R_B=11.83k\\Omega\\]\n\n\\[I_{BQ}=7.7923\\mu A,\\qquad I_{CQ}=1.17mA,\\qquad r_{be}=3.56k\\Omega\\]\n\n\\[A_u=-\\frac{150(8.2k\\Omega\\parallel8.2k\\Omega)}{3.56k\\Omega+151\\times0.02k\\Omega}=-93.47\\]\n\n\\[R_i=11.83k\\Omega\\parallel(3.56k\\Omega+151\\times0.02k\\Omega)=4.23k\\Omega\\]\n\n\\[R_o\\approx R_C=8.2k\\Omega\\]",
+      "key_points": ["Q 点与 rbe 计算正确", "Au=-93.47", "Ri=4.23kΩ", "Ro=8.2kΩ"],
+      "source_pages": [61, 62],
+      "figures": []
+    },
+    "2.4.9": {
+      "answer_markdown": "静态工作点：\n\n\\[I_{BQ}=8.9\\mu A,\\qquad I_{CQ}=0.89mA,\\qquad V_{CEQ}=11.13V\\]\n\n\\[r_{be}=300\\Omega+101\\times\\frac{26mV}{0.89mA}=3.25k\\Omega\\]\n\n交流参数：\n\n\\[A_u=-12.58,\\qquad R_i=33.01k\\Omega,\\qquad R_o\\approx6.2k\\Omega\\]\n\n当 \\(R_s=1k\\Omega\\)、\\(V_s=10mV\\) 时，\n\n\\[A_{us}=\\frac{33.01}{33.01+1}(-12.58)\\approx-12.13\\]\n\n\\[V_o=A_{us}V_s=-121.3mV\\]",
+      "key_points": ["Q 点：IBQ=8.9μA、ICQ=0.89mA、VCEQ=11.13V", "Au=-12.58、Ri=33.01kΩ、Ro=6.2kΩ", "Aus=-12.13", "Vo=-121.3mV"],
+      "source_pages": [61, 62],
+      "figures": []
+    },
+    "2.5.1": {
+      "answer_markdown": "\\[r_{be}=80\\Omega+101\\times\\frac{26mV}{1mA}=2.7k\\Omega\\]\n\n\\[A_u=\\frac{(1+\\beta)(R_E\\parallel R_L)}{r_{be}+(1+\\beta)(R_E\\parallel R_L)}\\approx0.98\\]\n\n\\[R_i=15.86k\\Omega,\\qquad R_o\\approx36\\Omega\\]\n\n计入信号源内阻后，\n\n\\[A_{us}=\\frac{R_i}{R_i+R_s}A_u\\approx0.92\\]",
+      "key_points": ["rbe=2.7kΩ", "Au=0.98", "Ri=15.86kΩ、Ro=36Ω", "Aus=0.92"],
+      "source_pages": [62],
+      "figures": []
+    },
+    "2.5.2": {
+      "answer_markdown": "\\[r_{be}=300\\Omega+101\\times\\frac{26mV}{10.1mA}=560\\Omega\\]\n\n\\[A_u=\\frac{\\beta(R_C\\parallel R_L)}{r_{be}}=66.96\\]\n\n\\[R_i\\approx\\frac{r_{be}}{1+\\beta}=5.54\\Omega,\\qquad R_o\\approx R_C=750\\Omega\\]",
+      "key_points": ["rbe=560Ω", "Au=66.96 且同相", "Ri=5.54Ω", "Ro=750Ω"],
+      "source_pages": [62, 63],
+      "figures": []
+    },
+    "2.5.4": {
+      "answer_markdown": "由静态发射极电流条件，\n\n\\[\\frac{15-0.7}{0.5k\\Omega+101R_E}=\\frac{1mA}{101}\\]\n\n得 \\(R_E=14.3k\\Omega\\)。\n\n由 \\(V_C=15-I_C R_C=5V\\)，取 \\(I_C\\approx1mA\\)，得 \\(R_C=10k\\Omega\\)。\n\n\\[r_{be}=200\\Omega+101\\times\\frac{26mV}{1mA}=2.826k\\Omega\\]\n\n\\[A_u=-117.95,\\qquad A_{us}=\\frac{2.826}{2.826+0.5}(-117.95)=-100.22\\]",
+      "key_points": ["RE=14.3kΩ", "RC=10kΩ", "rbe=2.826kΩ", "Aus=-100.22"],
+      "source_pages": [63, 64],
+      "figures": []
+    },
+    "2.5.5": {
+      "answer_markdown": "静态计算得 \\(I_{BQ}=0.16mA\\)、\\(I_{CQ}=3.2mA\\)、\\(r_{be}=0.25k\\Omega\\)。\n\n不接电压表时：\n\n\\[A_{u1}=-0.95,\\qquad V_{o1}=-0.95V\\]\n\n\\[A_{u2}=0.995,\\qquad V_{o2}=0.995V\\]\n\n接入内阻 \\(10k\\Omega\\) 的交流电压表后，其负载效应使读数变为：\n\n\\[|V_{o1}|=0.764V,\\qquad V_{o2}=0.994V\\]",
+      "key_points": ["静态电流与 rbe 计算正确", "Vo1=-0.95V、Vo2=0.995V", "说明电压表等效为 10kΩ 负载", "两表读数为 0.764V 与 0.994V"],
+      "source_pages": [64, 65],
+      "figures": []
+    },
+    "2.5.6": {
+      "answer_markdown": "静态等效参数与工作点为\n\n\\[V_{BB}=4.286V,\\quad R_B=8.57k\\Omega,\\quad I_{BQ}=16.94\\mu A\\]\n\n\\[I_{CQ}=1.69mA,\\quad V_{CEQ}=3.24V\\]\n\n\\[r_{be}=1.75k\\Omega,\\qquad R_i=R_B\\parallel[r_{be}+(1+\\beta)R_E]\\approx8.2k\\Omega\\]\n\n两个输出的源电压增益：\n\n\\[A_{us1}=-0.92,\\qquad A_{us2}=0.93\\]\n\n输出电阻：\n\n\\[R_{o1}=R_C=2k\\Omega,\\qquad R_{o2}\\approx22\\Omega\\]",
+      "key_points": ["Q 点：ICQ=1.69mA、VCEQ=3.24V", "Ri≈8.2kΩ", "Aus1=-0.92、Aus2=0.93", "Ro1=2kΩ、Ro2≈22Ω"],
+      "source_pages": [65],
+      "figures": []
+    },
+    "2.5.8": {
+      "answer_markdown": "静态电压为\n\n\\[V_B=-R_BI_B=-0.1V,\\qquad V_E=V_B-V_{BE}=-0.8V,\\qquad V_C=V_{CC}-I_CR_C=2V\\]\n\n\\[r_{be}=200\\Omega+101\\times\\frac{26mV}{1mA}=2.83k\\Omega\\]\n\n三种接法分别得到：\n\n1. Z 接地、X 输入、Y 输出：\\(R_i=2.21k\\Omega\\)，\\(A_{us}=-28.32\\)。\n2. X 接地、Z 输入、Y 输出：\\(R_i=28\\Omega\\)，\\(A_{us}=19.29\\)。\n3. Y 接地、X 输入、Z 输出：\\(R_i=9.12k\\Omega\\)，\\(A_{us}=0.08\\)。",
+      "key_points": ["VB=-0.1V、VE=-0.8V、VC=2V", "rbe=2.83kΩ", "三种接法的输入电阻判断正确", "三个 Aus 依次为 -28.32、19.29、0.08"],
+      "source_pages": [66, 67],
+      "figures": []
+    },
+    "2.6.1": {
+      "answer_markdown": "基准支路电流为\n\n\\[I_R=\\frac{V_{CC}-2V_{BE}}{R}=\\frac{15-2\\times0.7}{136k\\Omega}=0.11mA\\]\n\n各管特性相同且 \\(\\beta\\) 足够大时，\n\n\\[I_{C1}\\approx I_{C2}\\approx I_R=0.11mA\\]",
+      "key_points": ["基准支路含两个 VBE 压降", "IR=0.11mA", "IC1=IC2=0.11mA"],
+      "source_pages": [67],
+      "figures": []
+    },
+    "2.6.2": {
+      "answer_markdown": "考虑有限 \\(\\beta\\) 与厄尔利效应，输出电流随 \\(V_{CE2}\\) 增大而增加。教材计算结果为：\n\n\\[V_{CE2}=5V\\text{ 时 }I_o=1.032mA\\]\n\n\\[V_{CE2}=20V\\text{ 时 }I_o=1.18mA\\]\n\n输出电阻为\n\n\\[R_o=101.71k\\Omega\\]",
+      "key_points": ["考虑厄尔利效应而不是把输出电流视为完全恒定", "5V 时 Io=1.032mA", "20V 时 Io=1.18mA", "Ro=101.71kΩ"],
+      "source_pages": [67],
+      "figures": []
+    },
+    "2.6.3": {
+      "answer_markdown": "由基准支路的电流关系\n\n\\[I_R=2I_{C1}+\\frac{5I_{C1}}{\\beta}\\]\n\n得\n\n\\[I_{C1}=0.279mA\\]\n\n输出端为三支路合成，因此\n\n\\[I_o=3I_{C1}=0.837mA\\]\n\n三个输出晶体管的小信号输出电阻并联：\n\n\\[R_o=r_{ce3}\\parallel r_{ce4}\\parallel r_{ce5}=20k\\Omega\\]",
+      "key_points": ["写出含基极电流的基准支路关系", "IC1=0.279mA", "Io=0.837mA", "Ro=20kΩ"],
+      "source_pages": [67, 68],
+      "figures": []
+    },
+    "2.6.4": {
+      "answer_markdown": "当 \\(\\beta=100\\) 时，镜像输出电流约为 \\(I_{C2}=1.2mA\\)。由恒流充电关系\n\n\\[t=\\frac{C\\Delta V_C}{I_{C2}}\\]\n\n得\n\n\\[t=\\frac{10\\mu F\\times10V}{1.2mA}\\approx0.083s\\]\n\n改用 \\(\\beta=10\\) 的管子时，基极电流影响不能忽略，\\(I_{C2}=1mA\\)，故\n\n\\[t=\\frac{10\\mu F\\times10V}{1mA}=0.1s\\]",
+      "key_points": ["使用恒流充电关系 CΔV/I", "β=100 时电流 1.2mA、时间 0.083s", "β=10 时电流降为 1mA", "新时间 0.1s"],
+      "source_pages": [68],
+      "figures": []
+    },
+    "2.6.5": {
+      "answer_markdown": "\\[I_R=\\frac{30-0.6}{30k\\Omega}=0.98mA\\]\n\n根据电流比例 \\(I_R/I_o\\) 得\n\n\\[R_2=11.92k\\Omega\\]\n\n小信号参数为\n\n\\[r_{be2}=262.68k\\Omega,\\qquad r_{ce2}=\\frac{V_A}{I_o}=10M\\Omega,\\qquad r_{D1}=26.53\\Omega\\]\n\n代入电流源输出电阻表达式，得\n\n\\[R_o=51.29M\\Omega\\]",
+      "key_points": ["IR=0.98mA", "R2=11.92kΩ", "正确计算微电流下的小信号参数", "Ro=51.29MΩ"],
+      "source_pages": [68],
+      "figures": []
+    },
+    "2.6.6": {
+      "answer_markdown": "基准支路电流为\n\n\\[I_R=\\frac{V_{CC}-V_{BE}}{R}=\\frac{10-0.7}{9.3k\\Omega}=1mA\\]\n\n根据图中各输出支路要求的电流和共同基极电位，分别计算发射极电阻，教材结果为\n\n\\[R_{E2}=11.97k\\Omega,\\qquad R_{E3}=0.60k\\Omega\\]",
+      "key_points": ["IR=1mA", "按每个支路的目标电流分别列发射极电阻方程", "RE2=11.97kΩ", "RE3=0.60kΩ"],
+      "source_pages": [68, 69],
+      "figures": []
+    },
+    "2.7.1": {
+      "answer_markdown": "静态时两管对称：\n\n\\[I_{CQ1}=I_{CQ2}=1mA,\\qquad I_{BQ1}=I_{BQ2}=10\\mu A\\]\n\n\\[V_{C1}=V_{C2}=10-1mA\\times5.6k\\Omega=4.4V\\]\n\n\\[V_E=-0.6V,\\qquad V_{CEQ}=5V\\]\n\n\\[r_{be}=200\\Omega+101\\times\\frac{26mV}{1mA}=2.826k\\Omega\\]\n\n无负载时，\n\n\\[A_{ud}=-43.32,\\qquad v_o=A_{ud}(v_{i1}-v_{i2})=-0.87V\\]\n\n接入 \\(R_L=5.6k\\Omega\\) 后，\n\n\\[A_{ud}=-14.44,\\qquad v_o=-0.29V\\]\n\n\\[R_{id}=2[r_{be}+(1+\\beta)R_{E1}]=25.85k\\Omega\\]\n\n\\[R_{od}=2R_C=11.2k\\Omega\\]",
+      "key_points": ["对称 Q 点：两管 ICQ=1mA、VCEQ=5V", "无负载 Aud=-43.32、vo=-0.87V", "有负载 Aud=-14.44、vo=-0.29V", "Rid=25.85kΩ、Rod=11.2kΩ"],
+      "source_pages": [69, 70],
+      "figures": []
+    }
+  }
+}
