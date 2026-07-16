@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="780" height="640" viewBox="0 0 780 640">
+<title>图 2.5.47 带发射极电阻的电流源</title>
+<rect width="100%" height="100%" fill="white"/>
+<line x1="290.00" y1="270.20" x2="290.00" y2="309.80" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="247.10" y1="290.00" x2="290.00" y2="290.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="290.00" y1="278.12" x2="319.70" y2="251.72" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="290.00" y1="301.88" x2="319.70" y2="328.28" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="301.88" y1="312.44" x2="319.70" y2="328.28" stroke="#17202a" stroke-width="2" stroke-linecap="round"/>
+<polygon points="319.70,328.28 313.19,327.22 317.88,321.93" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<text x="341.48" y="290" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>T</tspan><tspan baseline-shift="sub" font-size="70%">1</tspan></text>
+<line x1="525.00" y1="270.20" x2="525.00" y2="309.80" stroke="#17202a" stroke-width="3" stroke-linecap="round"/>
+<line x1="567.90" y1="290.00" x2="525.00" y2="290.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="525.00" y1="278.12" x2="495.30" y2="251.72" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="525.00" y1="301.88" x2="495.30" y2="328.28" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="513.12" y1="312.44" x2="495.30" y2="328.28" stroke="#17202a" stroke-width="2" stroke-linecap="round"/>
+<polygon points="495.30,328.28 497.12,321.93 501.81,327.22" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<text x="473.52" y="290" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>T</tspan><tspan baseline-shift="sub" font-size="70%">2</tspan></text>
+<circle cx="319.7" cy="70" r="5" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<text x="333.7" y="70" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="20" fill="#17202a" style=""><tspan>V</tspan><tspan baseline-shift="sub" font-size="70%">CC</tspan></text>
+<line x1="319.70" y1="70.00" x2="319.70" y2="122.86" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="305.7" y="122.86000000000001" width="28" height="76" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="319.70" y1="198.86" x2="319.70" y2="251.72" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="343.7" y="160.86" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style="">R</text>
+<line x1="319.70" y1="251.72" x2="319.70" y2="290.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="319.70" y1="290.00" x2="247.10" y2="290.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="247.10" y1="290.00" x2="567.90" y2="290.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="495.3" cy="70" r="5" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="520.30" y1="105.00" x2="520.30" y2="175.00" stroke="#17202a" stroke-width="1.5" stroke-linecap="round"/>
+<polygon points="520.30,175.00 516.01,168.25 524.59,168.25" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<text x="550.3" y="140" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="19" fill="#17202a" style="font-style:italic;"><tspan>I</tspan><tspan baseline-shift="sub" font-size="70%">0</tspan></text>
+<line x1="319.70" y1="328.28" x2="319.70" y2="500.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="495.30" y1="328.28" x2="495.30" y2="376.14" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="481.3" y="376.14" width="28" height="76" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="495.30" y1="452.14" x2="495.30" y2="500.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="471.3" y="414.14" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>R</tspan><tspan baseline-shift="sub" font-size="70%">2</tspan></text>
+<line x1="319.70" y1="500.00" x2="495.30" y2="500.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="407.50" y1="488.00" x2="407.50" y2="500.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="389.50" y1="500.00" x2="425.50" y2="500.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="395.50" y1="507.00" x2="419.50" y2="507.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="401.50" y1="514.00" x2="413.50" y2="514.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="220.00" y1="115.00" x2="220.00" y2="185.00" stroke="#17202a" stroke-width="1.5" stroke-linecap="round"/>
+<polygon points="220.00,185.00 215.71,178.25 224.29,178.25" fill="#17202a" stroke="#17202a" stroke-width="1.3" stroke-linejoin="round"/>
+<text x="190" y="150" text-anchor="end" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="18" fill="#17202a" style="font-style:italic;"><tspan>I</tspan><tspan baseline-shift="sub" font-size="70%">R</tspan></text>
+<text x="390.0" y="616" text-anchor="middle" dominant-baseline="middle" font-family="SimSun,STSong,serif" font-size="22" fill="#17202a" style="">图 2.5.47　题 2.6.5 的图</text>
+</svg>

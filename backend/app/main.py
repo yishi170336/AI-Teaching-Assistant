@@ -24,15 +24,15 @@ from backend.app.rag.multimodal import BuildModelConfig
 from backend.app.schemas import ChatRequest, KnowledgeBaseRebuildRequest, MistakeCreateRequest
 from backend.app.services.memory import ConversationMemory
 from backend.app.services.ollama_client import OllamaClient
-from backend.app.services.openai_compatible_client import OpenAICompatibleClient
 from backend.app.services.attachments import ALLOWED_ATTACHMENT_SUFFIXES, AttachmentStore
 from backend.app.services.mistake_book import MistakeBook, related_mistake_context
+from backend.app.services.model_client_factory import create_model_client
+from backend.app.practice import router as practice_router
 from backend.app.services.model_catalog import (
     QWEN_MODELS,
     QWEN_MODEL_OPTIONS,
     QWEN_VL_FALLBACK_MODEL,
     canonical_model_id,
-    chat_model_unavailable_reason,
     choose_default_model,
 )
 
@@ -89,6 +89,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(practice_router)
 
 
 @app.middleware("http")
@@ -463,37 +464,12 @@ async def delete_mistake(mistake_id: str, student_id: str) -> dict[str, Any]:
 
 
 def select_model_client(payload: ChatRequest) -> tuple[Any, bool]:
-    model = canonical_model_id(payload.model_provider, payload.model)
-    unavailable_reason = chat_model_unavailable_reason(payload.model_provider, model)
-    if unavailable_reason:
-        raise ValueError(f"模型 {model} 不能用于对话：{unavailable_reason}")
-    if payload.model_provider == "ollama":
-        if model == settings.ollama_model:
-            return ollama, False
-        return OllamaClient(model=model), True
-
-    if payload.model_provider == "deepseek":
-        api_key = payload.api_key or settings.deepseek_api_key
-        base_url = (payload.base_url or settings.deepseek_base_url) if payload.api_key else settings.deepseek_base_url
-    elif payload.model_provider == "qwen":
-        api_key = payload.api_key or settings.qwen_api_key
-        base_url = (payload.base_url or settings.qwen_base_url) if payload.api_key else settings.qwen_base_url
-    else:
-        api_key = payload.api_key
-        base_url = payload.base_url
-
-    if not api_key:
-        raise ValueError("所选云端模型尚未配置 API Key")
-    if not base_url:
-        raise ValueError("所选模型尚未配置 API Base URL")
-    return (
-        OpenAICompatibleClient(
-            provider=payload.model_provider,
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
-        ),
-        True,
+    return create_model_client(
+        provider=payload.model_provider,
+        model=payload.model,
+        api_key=payload.api_key,
+        base_url=payload.base_url,
+        shared_ollama=ollama,
     )
 
 

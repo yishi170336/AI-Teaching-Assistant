@@ -250,6 +250,10 @@ function Sidebar({
             <Layers3 size={17} />
             <span>错题本</span>
           </button>
+          <Link to="/practice" className="nav-item practice-entry-link">
+            <FileText size={17} />
+            <span>刷题训练</span>
+          </Link>
         </nav>
 
         <div className="recent-section">

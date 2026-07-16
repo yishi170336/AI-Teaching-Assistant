@@ -9,6 +9,19 @@ export function normalizeLatex(input: string): string {
     // adjacent display blocks (`$$...$$\n$$...$$`).
     .replace(/(?<!\$)\${3}(?!\$)/g, '$$')
 
+  // Vision models often indent only the opening `$$` beneath a Markdown list
+  // item, while leaving the body and closing delimiter at column zero.
+  // Canonicalize display blocks at the top level so remark-math cannot swallow
+  // the following explanation as part of a malformed formula.
+  text = text.replace(
+    /^[ \t]*\$\$[ \t]*\n([\s\S]*?)\n[ \t]*\$\$[ \t]*$/gm,
+    (_, body) => `\n\n$$\n${body.trim()}\n$$\n\n`,
+  )
+  text = text.replace(
+    /^[ \t]*\$\$([^\n$]+?)\$\$[ \t]*$/gm,
+    (_, body) => `\n\n$$\n${body.trim()}\n$$\n\n`,
+  )
+
   const protectedBlocks: string[] = []
   text = text.replace(/\$\$[\s\S]*?\$\$/g, (block) => {
     protectedBlocks.push(block)

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="560" viewBox="0 0 760 560">
+<title>图1.4.4 稳压限幅电路</title>
+<rect width="100%" height="100%" fill="white"/>
+<circle cx="120" cy="150" r="4.5" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<circle cx="120" cy="410" r="4.5" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<circle cx="650" cy="150" r="4.5" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<circle cx="650" cy="410" r="4.5" fill="white" stroke="#17202a" stroke-width="1.4"/>
+<line x1="120.00" y1="150.00" x2="240.00" y2="150.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="240.0" y="136" width="70" height="28" fill="white" stroke="#17202a" stroke-width="2.2"/>
+<line x1="310.00" y1="150.00" x2="430.00" y2="150.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="22" fill="#17202a" style=""><tspan x="275.0" y="105.9">R</tspan><tspan x="275.0" y="130.10000000000002">3 kΩ</tspan></text>
+<line x1="430.00" y1="150.00" x2="650.00" y2="150.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="120.00" y1="410.00" x2="650.00" y2="410.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="430.00" y1="150.00" x2="430.00" y2="305.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="430.00" y1="255.00" x2="430.00" y2="410.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<polygon points="412.00,303.00 448.00,303.00 430.00,270.00" fill="white" stroke="#17202a" stroke-width="2.2" stroke-linejoin="round"/>
+<polyline points="408.00,262.00 416.00,267.00 444.00,267.00 452.00,272.00" fill="none" stroke="#17202a" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="460" y="280.0" text-anchor="start" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="21" fill="#17202a" style=""><tspan>D</tspan><tspan baseline-shift="sub" font-size="70%">Z</tspan></text>
+<line x1="430.00" y1="433.00" x2="430.00" y2="445.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="412.00" y1="445.00" x2="448.00" y2="445.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="418.00" y1="452.00" x2="442.00" y2="452.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="424.00" y1="459.00" x2="436.00" y2="459.00" stroke="#17202a" stroke-width="2.2" stroke-linecap="round"/>
+<text x="120" y="280" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="24" fill="#17202a" style="font-style:italic;"><tspan>v</tspan><tspan baseline-shift="sub" font-size="70%">i</tspan></text>
+<text x="650" y="280" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="24" fill="#17202a" style="font-style:italic;"><tspan>v</tspan><tspan baseline-shift="sub" font-size="70%">o</tspan></text>
+<text x="120" y="180" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="24" fill="#17202a" style="">+</text>
+<text x="120" y="380" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="26" fill="#17202a" style="">−</text>
+<text x="650" y="180" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="24" fill="#17202a" style="">+</text>
+<text x="650" y="380" text-anchor="middle" dominant-baseline="middle" font-family="Cambria Math,Cambria,Times New Roman,serif" font-size="26" fill="#17202a" style="">−</text>
+<text x="380.0" y="536" text-anchor="middle" dominant-baseline="middle" font-family="SimSun,STSong,serif" font-size="22" fill="#17202a" style="">图 1.4.4　题 1.2.5 的图</text>
+</svg>
