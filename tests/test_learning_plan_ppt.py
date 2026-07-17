@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from zipfile import ZipFile
 
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from backend.app.services.learning_plan_ppt import (
     build_learning_plan_ppt,
@@ -12,7 +14,7 @@ from backend.app.services.learning_plan_ppt import (
 )
 
 
-SAMPLE_PLAN = """
+SAMPLE_PLAN = r"""
 # 晶体管放大电路学习规划
 
 **总体目标：** 建立从静态工作点到动态参数分析的完整知识链，能够独立分析基本共射放大电路。
@@ -44,6 +46,7 @@ SAMPLE_PLAN = """
 - **目标：** 使用 h 参数等效模型求解电压增益、输入电阻和输出电阻。
 - **具体行动：** 先画交流等效电路，再列出输入与输出回路方程。
 - 对比旁路电容存在与不存在时增益和输入电阻的变化。
+- 推导 $A_u=-\frac{\beta R'_L}{r_{be}}$，并解释各参数对电压增益的影响。
 - 完成 4 道综合计算题，并用量纲与数量级复核答案。
 - **完成标准：** 能独立画出等效电路，三项动态参数正确率不低于 80%。
 
@@ -80,6 +83,8 @@ def test_parse_learning_plan_builds_a_logical_story() -> None:
     assert len(plan.stages) == 4
     assert plan.stages[0].duration == "1～2 小时"
     assert "直流通路" in plan.stages[0].actions[0]
+    assert "$I_{BQ}$" in plan.stages[1].goal
+    assert "\\frac{\\beta R'_L}{r_{be}}" in " ".join(plan.stages[2].actions)
     assert "85%" in " ".join(plan.metrics)
     assert len(plan.schedule) == 5
 
@@ -108,6 +113,20 @@ def test_build_learning_plan_ppt_is_editable_and_in_bounds(tmp_path: Path) -> No
     assert "学习路线一图看懂" in all_text
     assert "静态工作点分析" in all_text
     assert "什么时候算真正学会" in all_text
+    assert "I_BQ" not in all_text
+
+    formula_pictures = [
+        shape
+        for slide in presentation.slides
+        for shape in slide.shapes
+        if shape.shape_type == MSO_SHAPE_TYPE.PICTURE
+        and shape._element.nvPicPr.cNvPr.get("name") == "LaTeX formula"
+    ]
+    assert len(formula_pictures) >= 3
+    assert any("IBQ" in (shape._element.nvPicPr.cNvPr.get("descr") or "") for shape in formula_pictures)
+    with ZipFile(output) as package:
+        formula_media = [name for name in package.namelist() if name.startswith("ppt/media/")]
+    assert len(formula_media) >= 3
 
     for slide in presentation.slides:
         for shape in slide.shapes:
