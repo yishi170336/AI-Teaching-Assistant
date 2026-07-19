@@ -114,6 +114,11 @@ def test_build_excludes_question_bank_files(tmp_path, monkeypatch):
     assert metadata["excluded_sources"][0]["source"] == "questions.xlsx"
     assert all(chunk["doc_type"] != "question" for chunk in chunks)
     assert metadata["validation"]["question_chunks"] == 0
+    chapter_artifact = json.loads(
+        (output / "chapter_knowledge_points.json").read_text(encoding="utf-8")
+    )
+    assert chapter_artifact["chapters"]
+    assert metadata["knowledge_graph"]["chapters"] == len(chapter_artifact["chapters"])
 
 
 def test_formula_pipeline_stats_use_formula_audit_counts(tmp_path):

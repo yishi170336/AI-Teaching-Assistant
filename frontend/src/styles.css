@@ -461,6 +461,57 @@ button { color: inherit; }
 .graph-detail h2 { margin: 9px 0; color: #21484a; font-size: 17px; }
 .graph-detail p { font-size: 11px; line-height: 1.75; }
 .graph-detail code { display: block; margin-top: 18px; overflow-wrap: anywhere; color: #829592; font-size: 8px; }
+.chapter-directory { max-width: 1180px; margin: 18px auto 0; padding: 22px; overflow: hidden; background: linear-gradient(135deg, #0b4e50 0%, #0a3e47 72%, #113b51 100%); border-radius: 18px; box-shadow: 0 16px 38px rgba(16,66,63,.13); }
+.chapter-directory-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
+.chapter-directory-heading > div > span { color: #79c9bd; font-size: 9px; font-weight: 800; letter-spacing: .14em; }
+.chapter-directory-heading h2 { margin: 5px 0 4px; color: #fff; font-size: 20px; }
+.chapter-directory-heading p { margin: 0; color: #9fc1be; font-size: 10px; }
+.chapter-directory-heading > button { display: flex; align-items: center; gap: 7px; padding: 9px 12px; color: #eaf7f4; cursor: pointer; background: rgba(255,255,255,.09); border: 1px solid rgba(255,255,255,.15); border-radius: 10px; font-size: 10px; font-weight: 700; }
+.chapter-directory-heading > button:hover { background: rgba(255,255,255,.14); border-color: rgba(255,255,255,.25); }
+.chapter-card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.chapter-card { position: relative; min-width: 0; min-height: 210px; padding: 16px; background: #fff; border: 1px solid rgba(255,255,255,.72); border-radius: 14px; box-shadow: 0 8px 22px rgba(3,37,41,.13); }
+.chapter-card-topline { display: flex; align-items: center; justify-content: space-between; }
+.chapter-card-topline > span { display: grid; place-items: center; width: 28px; height: 28px; color: #fff; background: #e17b3f; border-radius: 8px; font-size: 10px; font-weight: 800; }
+.chapter-card-topline small { color: #829792; font-size: 9px; }
+.chapter-card h3 { min-height: 38px; margin: 13px 0 8px; color: #193f43; font-size: 14px; line-height: 1.35; }
+.chapter-card-stats { display: flex; gap: 14px; color: #708783; font-size: 9px; }
+.chapter-card-stats strong { color: #17766e; font-size: 12px; }
+.chapter-card-preview { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; padding-right: 4px; }
+.chapter-card-preview span { max-width: 120px; padding: 4px 7px; overflow: hidden; color: #54726e; background: #edf5f2; border-radius: 12px; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.chapter-card-enter { position: absolute; right: 15px; bottom: 14px; display: flex; align-items: center; gap: 3px; padding: 0; color: #16776e; cursor: pointer; background: transparent; border: 0; font-size: 9px; font-weight: 800; }
+.chapter-card-enter:hover { color: #e06f36; }
+.chapter-knowledge-modal .ant-modal-content { padding: 0; overflow: hidden; border-radius: 18px; }
+.chapter-knowledge-modal .ant-modal-close { z-index: 3; color: #68817d; }
+.chapter-window { display: grid; grid-template-columns: 245px minmax(0, 1fr); height: min(680px, calc(100vh - 120px)); min-height: 520px; }
+.chapter-window-nav { min-width: 0; padding: 24px 13px; overflow: hidden; color: #d8efea; background: radial-gradient(circle at 0 0, rgba(58,167,150,.22), transparent 35%), linear-gradient(180deg, #083f45, #062e36); }
+.chapter-window-brand { display: flex; align-items: center; gap: 10px; padding: 0 8px 19px; border-bottom: 1px solid rgba(255,255,255,.1); }
+.chapter-window-brand > svg { color: #76cabe; }
+.chapter-window-brand > div { display: flex; flex-direction: column; }
+.chapter-window-brand span { color: #72bcb3; font-size: 8px; font-weight: 800; letter-spacing: .13em; }
+.chapter-window-brand strong { margin-top: 3px; color: #fff; font-size: 13px; }
+.chapter-window-nav nav { height: calc(100% - 64px); padding-top: 12px; overflow-y: auto; }
+.chapter-window-nav nav button { width: 100%; display: grid; grid-template-columns: 25px minmax(0, 1fr) 14px; align-items: center; gap: 8px; padding: 10px 8px; color: #a9c5c1; cursor: pointer; text-align: left; background: transparent; border: 0; border-radius: 9px; }
+.chapter-window-nav nav button:hover { background: rgba(255,255,255,.06); }
+.chapter-window-nav nav button.active { color: #fff; background: rgba(72,175,158,.18); }
+.chapter-window-nav nav button > span { color: #65b9ad; font-size: 9px; font-weight: 800; }
+.chapter-window-nav nav button > div { display: flex; flex-direction: column; min-width: 0; }
+.chapter-window-nav nav button strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.chapter-window-nav nav button small { margin-top: 3px; color: #7da8a3; font-size: 8px; }
+.chapter-window-main { min-width: 0; padding: 27px 28px 20px; overflow: hidden; background: #f7faf8; }
+.chapter-window-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; padding-right: 28px; }
+.chapter-window-heading > div:first-child > span { color: #278379; font-size: 9px; font-weight: 800; }
+.chapter-window-heading h2 { margin: 6px 0 5px; color: #173f43; font-size: 22px; }
+.chapter-window-heading p { margin: 0; color: #778d89; font-size: 9px; }
+.chapter-concept-total { display: flex; flex-direction: column; align-items: flex-end; }
+.chapter-concept-total strong { color: #e0793e; font-size: 28px; line-height: 1; }
+.chapter-concept-total span { margin-top: 4px; color: #839793; font-size: 7px; font-weight: 800; letter-spacing: .1em; }
+.chapter-concept-search { margin: 19px 0 13px; border-color: #dce8e4; border-radius: 9px; }
+.chapter-concept-grid { height: calc(100% - 132px); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 9px; padding: 1px 4px 16px 1px; overflow-y: auto; }
+.chapter-concept-card { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; min-width: 0; padding: 12px; background: #fff; border: 1px solid #dfe9e6; border-radius: 11px; }
+.chapter-concept-card > span { display: grid; place-items: center; width: 30px; height: 30px; color: #247f75; background: #e8f4f1; border-radius: 8px; font-size: 8px; font-weight: 800; }
+.chapter-concept-card h3 { margin: 1px 0 5px; overflow: hidden; color: #274f50; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.chapter-concept-card p { margin: 0; overflow: hidden; color: #849793; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.chapter-concept-empty { grid-column: 1 / -1; min-height: 220px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #8ca09c; font-size: 10px; }
 .workspace-empty { min-height: 360px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #87a09c; text-align: center; }
 .workspace-empty strong { color: #4e706d; font-size: 15px; }
 .workspace-empty p { margin: 0; font-size: 11px; }
@@ -654,6 +705,19 @@ button { color: inherit; }
   .graph-range-grid { grid-template-columns: 1fr; gap: 7px; }
   .graph-layout { display: block; }
   .graph-detail { border-top: 1px solid #e1e9e7; border-left: 0; }
+  .chapter-directory { padding: 17px; }
+  .chapter-directory-heading { align-items: flex-start; flex-direction: column; gap: 13px; }
+  .chapter-card-grid { grid-template-columns: 1fr; }
+  .chapter-window { display: block; height: min(720px, calc(100vh - 80px)); min-height: 0; }
+  .chapter-window-nav { height: 124px; padding: 14px; }
+  .chapter-window-brand { padding: 0 4px 10px; }
+  .chapter-window-nav nav { height: auto; display: flex; gap: 6px; padding-top: 8px; overflow-x: auto; overflow-y: hidden; }
+  .chapter-window-nav nav button { width: 175px; min-width: 175px; padding: 7px; }
+  .chapter-window-main { height: calc(100% - 124px); padding: 20px 16px 14px; }
+  .chapter-window-heading { align-items: flex-start; padding-right: 20px; }
+  .chapter-window-heading h2 { font-size: 18px; }
+  .chapter-concept-total { display: none; }
+  .chapter-concept-grid { grid-template-columns: 1fr; height: calc(100% - 125px); }
   .mistake-grid { grid-template-columns: 1fr; }
   .schedule-overview { padding: 18px; }
   .schedule-layout { grid-template-columns: 1fr; }

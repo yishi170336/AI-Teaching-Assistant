@@ -17,7 +17,11 @@ from backend.app.config import settings
 from backend.app.rag.pipeline import KnowledgeBaseBuildCancelled
 from backend.app.rag.retriever import HybridRetriever
 from backend.app.rag.multimodal import BuildModelConfig
-from backend.app.rag.multimodal import build_local_knowledge_graph, project_student_knowledge_graph
+from backend.app.rag.multimodal import (
+    build_chapter_knowledge_summaries,
+    build_local_knowledge_graph,
+    project_student_knowledge_graph,
+)
 from backend.app.rag.ontology import is_course_concept
 from backend.app.rag.stores import delete_qdrant_indexes, sync_neo4j_graph
 
@@ -199,10 +203,14 @@ class KnowledgeBaseManager:
             if str(edge.get("source")) in allowed_ids
             and str(edge.get("target")) in allowed_ids
         ]
+        chapters = projected.get("chapters") or build_chapter_knowledge_summaries(
+            retriever.chunks
+        )
         return {
             "knowledge_base": knowledge_base,
             "nodes": visible_nodes,
             "edges": visible_edges,
+            "chapters": chapters,
             "stats": {
                 "nodes": len(visible_nodes),
                 "edges": len(visible_edges),
@@ -211,6 +219,7 @@ class KnowledgeBaseManager:
                 "pages": sum(node.get("type") == "page" for node in visible_nodes),
                 "circuits": sum(node.get("type") == "circuit" for node in visible_nodes),
                 "components": sum(node.get("type") == "component" for node in visible_nodes),
+                "chapters": len(chapters),
             },
         }
 

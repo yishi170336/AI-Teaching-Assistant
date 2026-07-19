@@ -97,11 +97,32 @@ export type KnowledgeGraphEdge = {
   evidence_count?: number
 }
 
+export type ChapterKnowledgeConcept = {
+  id: string
+  name: string
+  evidence_count: number
+  pages: number[]
+}
+
+export type ChapterKnowledgeSummary = {
+  id: string
+  name: string
+  order: number
+  page_start: number | null
+  page_end: number | null
+  pages: number[]
+  sources: string[]
+  section_count: number
+  concept_count: number
+  concepts: ChapterKnowledgeConcept[]
+}
+
 export type KnowledgeGraph = {
   knowledge_base: string
   nodes: KnowledgeGraphNode[]
   edges: KnowledgeGraphEdge[]
-  stats: { nodes: number; edges: number; concepts: number; documents?: number; pages?: number; circuits?: number; components?: number }
+  chapters?: ChapterKnowledgeSummary[]
+  stats: { nodes: number; edges: number; concepts: number; documents?: number; pages?: number; circuits?: number; components?: number; chapters?: number }
 }
 
 export type MistakeItem = {

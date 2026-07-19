@@ -28,6 +28,7 @@ from backend.app.rag.multimodal import (
     _ocr_scanned_pages,
     _page_cleaning_decisions,
     _safe_partial_noise_fragment,
+    build_chapter_knowledge_summaries,
     build_local_knowledge_graph,
     enhance_pdf,
     project_student_knowledge_graph,
@@ -191,6 +192,42 @@ def test_graph_separates_documents_pages_concepts_and_components():
     assert "formula" not in names_by_type["concept"]
     assert "analog_electronics_pages_101_103" not in names_by_type["concept"]
     assert "Rb" in names_by_type["component"]
+
+
+def test_chapter_knowledge_summaries_group_concepts_with_evidence_and_pages():
+    chunks = [
+        TextChunk(
+            id="chapter-1-page-1", text="PN结与半导体", source="lesson.pdf",
+            chapter="第一章 常用半导体器件", section="1.1 PN结", page_start=1,
+            page_end=1, doc_type="textbook", knowledge_tags=["PN结", "半导体"],
+        ),
+        TextChunk(
+            id="chapter-1-page-2", text="PN结单向导电", source="lesson.pdf",
+            chapter="第一章 常用半导体器件", section="1.2 二极管", page_start=2,
+            page_end=2, doc_type="textbook", knowledge_tags=["PN结", "二极管"],
+        ),
+        TextChunk(
+            id="chapter-2-page-10", text="共射放大电路", source="lesson.pdf",
+            chapter="第二章 基本放大电路", section="2.1 放大", page_start=10,
+            page_end=10, doc_type="textbook", knowledge_tags=["放大电路", "晶体管"],
+        ),
+    ]
+
+    chapters = build_chapter_knowledge_summaries(chunks)
+
+    assert [chapter["name"] for chapter in chapters] == [
+        "第一章 常用半导体器件",
+        "第二章 基本放大电路",
+    ]
+    assert chapters[0]["concept_count"] == 3
+    assert chapters[0]["page_start"] == 1
+    assert chapters[0]["page_end"] == 2
+    pn_junction = next(
+        concept for concept in chapters[0]["concepts"] if concept["name"] == "PN结"
+    )
+    assert pn_junction["evidence_count"] == 2
+    assert pn_junction["pages"] == [1, 2]
+    assert chapters[1]["concepts"][0]["name"] == "放大电路"
 
 
 def test_pdf_section_number_prefixes_are_removed_from_concepts():

@@ -1884,7 +1884,95 @@ def multimodal_chunks(elements: Iterable[LayoutElement]) -> list[TextChunk]:
     return chunks
 
 
+def build_chapter_knowledge_summaries(
+    chunks: Iterable[TextChunk],
+) -> list[dict[str, Any]]:
+    """Group indexed course concepts into chapter-level browse summaries."""
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for chunk_index, chunk in enumerate(chunks):
+        if chunk.doc_type == "question":
+            continue
+        chapter = re.sub(r"\s+", " ", str(chunk.chapter)).strip()
+        if not chapter:
+            continue
+        summary = grouped.setdefault(
+            chapter,
+            {
+                "id": "chapter:" + hashlib.sha1(chapter.encode("utf-8")).hexdigest()[:16],
+                "name": chapter,
+                "order": len(grouped) + 1,
+                "pages": set(),
+                "sources": set(),
+                "sections": set(),
+                "concepts": {},
+            },
+        )
+        summary["sources"].add(chunk.source)
+        section = meaningful_section(chunk.section)
+        if section and section != chapter:
+            summary["sections"].add(section)
+        chunk_pages = {
+            page
+            for page in (chunk.page_start, chunk.page_end)
+            if isinstance(page, int) and page > 0
+        }
+        summary["pages"].update(chunk_pages)
+        for concept in dict.fromkeys(chunk.knowledge_tags):
+            concept_name = normalize_concept_name(concept)
+            if not concept_name or not is_course_concept(concept_name):
+                continue
+            concept_summary = summary["concepts"].setdefault(
+                concept_name,
+                {
+                    "id": "concept:" + hashlib.sha1(
+                        concept_name.encode("utf-8")
+                    ).hexdigest()[:16],
+                    "name": concept_name,
+                    "evidence_count": 0,
+                    "pages": set(),
+                    "first_seen": chunk_index,
+                },
+            )
+            concept_summary["evidence_count"] += 1
+            concept_summary["pages"].update(chunk_pages)
+
+    result: list[dict[str, Any]] = []
+    for summary in grouped.values():
+        pages = sorted(summary["pages"])
+        concepts = sorted(
+            summary["concepts"].values(),
+            key=lambda item: (
+                -int(item["evidence_count"]),
+                int(item["first_seen"]),
+                str(item["name"]),
+            ),
+        )
+        result.append({
+            "id": summary["id"],
+            "name": summary["name"],
+            "order": summary["order"],
+            "page_start": pages[0] if pages else None,
+            "page_end": pages[-1] if pages else None,
+            "pages": pages,
+            "sources": sorted(summary["sources"]),
+            "section_count": len(summary["sections"]),
+            "concept_count": len(concepts),
+            "concepts": [
+                {
+                    "id": item["id"],
+                    "name": item["name"],
+                    "evidence_count": item["evidence_count"],
+                    "pages": sorted(item["pages"]),
+                }
+                for item in concepts
+            ],
+        })
+    return result
+
+
 def build_local_knowledge_graph(chunks: Iterable[TextChunk]) -> dict[str, Any]:
+    chunk_items = list(chunks)
     nodes: dict[str, dict[str, Any]] = {}
     edges: list[dict[str, str]] = []
     seen_edges: set[tuple[str, str, str]] = set()
@@ -1895,7 +1983,7 @@ def build_local_knowledge_graph(chunks: Iterable[TextChunk]) -> dict[str, Any]:
             edges.append({"source": source, "type": relation, "target": target})
             seen_edges.add(edge)
 
-    for chunk in chunks:
+    for chunk in chunk_items:
         if chunk.doc_type == "question":
             continue
         document_id = "document:" + hashlib.sha1(chunk.source.encode("utf-8")).hexdigest()[:16]
@@ -2007,7 +2095,12 @@ def build_local_knowledge_graph(chunks: Iterable[TextChunk]) -> dict[str, Any]:
                         and net_ref in map(str, terminal_nets)
                     ):
                         add_edge(component_nodes[component_ref], "CONNECTED_TO", net_id)
-    return {"schema_version": "2.1", "nodes": list(nodes.values()), "edges": edges}
+    return {
+        "schema_version": "2.2-chapter-summaries",
+        "nodes": list(nodes.values()),
+        "edges": edges,
+        "chapters": build_chapter_knowledge_summaries(chunk_items),
+    }
 
 
 def project_student_knowledge_graph(graph: dict[str, Any]) -> dict[str, Any]:
@@ -2164,7 +2257,8 @@ def project_student_knowledge_graph(graph: dict[str, Any]) -> dict[str, Any]:
         visible[component_id]["pages"] = sorted(pages)
 
     return {
-        "schema_version": "2.2-student-projection",
+        "schema_version": "2.3-student-chapter-projection",
         "nodes": list(visible.values()),
         "edges": projected_edges,
+        "chapters": graph.get("chapters", []),
     }

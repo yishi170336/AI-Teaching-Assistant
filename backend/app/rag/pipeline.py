@@ -29,6 +29,7 @@ from backend.app.rag.multimodal import (
     BuildModelConfig,
     LayoutElement,
     SCANNED_PAGE_PLACEHOLDER,
+    build_chapter_knowledge_summaries,
     build_local_knowledge_graph,
     enhance_pdf,
     multimodal_chunks,
@@ -732,11 +733,20 @@ def build_knowledge_base(
         json.dumps(cleaning_audits, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    report(60, "knowledge_graph", "正在构建知识图谱关系")
+    report(60, "knowledge_graph", "正在构建知识图谱并按章节汇总知识点")
     graph = build_local_knowledge_graph(chunks)
+    chapter_summaries = graph.get("chapters") or build_chapter_knowledge_summaries(chunks)
     semantic_quality = validate_graph_semantics(chunks, graph)
     (output_dir / "knowledge_graph.json").write_text(
         json.dumps(graph, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (output_dir / "chapter_knowledge_points.json").write_text(
+        json.dumps(
+            {"schema_version": "1.0", "chapters": chapter_summaries},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
     )
 
     if settings.qdrant_url:
@@ -800,7 +810,12 @@ def build_knowledge_base(
         "formula_processing": formula_processing,
         "table_elements": sum(item.element_type == "table" for item in elements),
         "discarded_pages": sum(not item.get("keep", True) for item in cleaning_audits),
-        "knowledge_graph": {"nodes": len(graph["nodes"]), "edges": len(graph["edges"]), "neo4j": neo4j_status},
+        "knowledge_graph": {
+            "nodes": len(graph["nodes"]),
+            "edges": len(graph["edges"]),
+            "chapters": len(chapter_summaries),
+            "neo4j": neo4j_status,
+        },
         "qdrant": qdrant_status,
         "vision_model": (
             f"qwen/{settings.qwen_circuit_vision_model}"
@@ -858,6 +873,7 @@ def build_knowledge_base(
             ),
             "graph_nodes": len(graph["nodes"]),
             "graph_edges": len(graph["edges"]),
+            "chapter_summaries": len(chapter_summaries),
             "graph_store": "neo4j" if neo4j_status.get("enabled") else "local-json",
         },
         "retrieval_service": {

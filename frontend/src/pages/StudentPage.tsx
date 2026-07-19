@@ -65,6 +65,7 @@ import {
   addScheduleItem,
   AttachmentInfo,
   cancelKnowledgeBaseBuild,
+  ChapterKnowledgeSummary,
   deleteKnowledgeBase,
   deleteMistake,
   deleteScheduleItem,
@@ -991,6 +992,9 @@ function Conversation({ onAddMistake }: { onAddMistake: (draft: MistakeDraft) =>
 
 function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loading: boolean }) {
   const [selectedId, setSelectedId] = useState('')
+  const [selectedChapterId, setSelectedChapterId] = useState('')
+  const [chapterWindowOpen, setChapterWindowOpen] = useState(false)
+  const [chapterConceptQuery, setChapterConceptQuery] = useState('')
   const [rangeMode, setRangeMode] = useState<'core' | 'extended' | 'all' | 'custom'>('core')
   const [limits, setLimits] = useState({ concepts: 14, pages: 8, structures: 14 })
   const totals = useMemo(() => ({
@@ -1013,6 +1017,9 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
       structures: Math.min(totals.structures, 14),
     })
     setSelectedId('')
+    setSelectedChapterId('')
+    setChapterWindowOpen(false)
+    setChapterConceptQuery('')
   }, [graph?.knowledge_base])
 
   const chooseRangeMode = (value: string | number) => {
@@ -1100,6 +1107,24 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
     : selected?.page
       ? [selected.page]
       : []
+  const chapters = graph?.chapters || []
+  const selectedChapter = chapters.find((chapter) => chapter.id === selectedChapterId)
+    || chapters[0]
+  const visibleChapterConcepts = selectedChapter?.concepts.filter((concept) => (
+    !chapterConceptQuery.trim()
+    || concept.name.toLowerCase().includes(chapterConceptQuery.trim().toLowerCase())
+  )) || []
+  const openChapterWindow = (chapter: ChapterKnowledgeSummary) => {
+    setSelectedChapterId(chapter.id)
+    setChapterConceptQuery('')
+    setChapterWindowOpen(true)
+  }
+  const chapterPageRange = (chapter: ChapterKnowledgeSummary) => {
+    if (!chapter.page_start) return '暂无页码'
+    return chapter.page_end && chapter.page_end !== chapter.page_start
+      ? `第 ${chapter.page_start}–${chapter.page_end} 页`
+      : `第 ${chapter.page_start} 页`
+  }
 
   if (loading) return <div className="workspace-empty"><LoaderCircle className="spin" /><strong>正在整理知识图谱…</strong></div>
   if (!graph?.nodes.length) return <div className="workspace-empty"><Network /><strong>当前知识库还没有图谱数据</strong><p>重建知识库后会自动提取知识点与资料关系。</p></div>
@@ -1175,6 +1200,112 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
           {selected ? <><span>{typeLabel[selected.type] || '知识节点'}</span><h2>{selected.name || '未命名节点'}</h2><p>连接 {neighbors} 个语义节点{selected.evidence_count ? `，由 ${selected.evidence_count} 条教材证据支持` : ''}。公式与正文片段不会单独铺在图中，但仍参与检索和答案引用。</p>{selectedPages.length > 0 && <div className="graph-page-list">来源页码：{selectedPages.map((page) => `第 ${page} 页`).join('、')}</div>}</> : <><Network size={28} /><h2>探索知识关系</h2><p>教材位于中心，绿色知识点构成语义核心，蓝色页面与外围电路结构作为可追溯证据。</p></>}
         </aside>
       </div>
+      {chapters.length > 0 && (
+        <section className="chapter-directory" aria-labelledby="chapter-directory-title">
+          <div className="chapter-directory-heading">
+            <div>
+              <span>CHAPTER INDEX</span>
+              <h2 id="chapter-directory-title">按章节查看知识点</h2>
+              <p>构建完成后自动按教材章节归档，进入任一章节即可查看知识点与教材证据页。</p>
+            </div>
+            <button type="button" onClick={() => openChapterWindow(chapters[0])}>
+              <BookOpen size={15} /> 查看全部章节 <ChevronRight size={14} />
+            </button>
+          </div>
+          <div className="chapter-card-grid">
+            {chapters.map((chapter, index) => (
+              <article className="chapter-card" key={chapter.id}>
+                <div className="chapter-card-topline">
+                  <span>{String(index + 1).padStart(2, '0')}</span>
+                  <small>{chapterPageRange(chapter)}</small>
+                </div>
+                <h3>{chapter.name}</h3>
+                <div className="chapter-card-stats">
+                  <span><strong>{chapter.concept_count}</strong> 个知识点</span>
+                  <span><strong>{chapter.section_count}</strong> 个小节</span>
+                </div>
+                <div className="chapter-card-preview">
+                  {chapter.concepts.slice(0, 5).map((concept) => (
+                    <span key={concept.id}>{concept.name}</span>
+                  ))}
+                  {chapter.concept_count > 5 && <span>+{chapter.concept_count - 5}</span>}
+                </div>
+                <button type="button" className="chapter-card-enter" onClick={() => openChapterWindow(chapter)}>
+                  进入查看 <ChevronRight size={14} />
+                </button>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+      <Modal
+        open={chapterWindowOpen && Boolean(selectedChapter)}
+        onCancel={() => setChapterWindowOpen(false)}
+        footer={null}
+        width={960}
+        title={null}
+        className="chapter-knowledge-modal"
+      >
+        {selectedChapter && (
+          <div className="chapter-window">
+            <aside className="chapter-window-nav">
+              <div className="chapter-window-brand">
+                <GraduationCap size={22} />
+                <div><span>CHAPTER MAP</span><strong>章节知识目录</strong></div>
+              </div>
+              <nav aria-label="章节知识点">
+                {chapters.map((chapter, index) => (
+                  <button
+                    type="button"
+                    className={chapter.id === selectedChapter.id ? 'active' : ''}
+                    key={chapter.id}
+                    onClick={() => {
+                      setSelectedChapterId(chapter.id)
+                      setChapterConceptQuery('')
+                    }}
+                  >
+                    <span>{String(index + 1).padStart(2, '0')}</span>
+                    <div><strong>{chapter.name}</strong><small>{chapter.concept_count} 个知识点</small></div>
+                    <ChevronRight size={14} />
+                  </button>
+                ))}
+              </nav>
+            </aside>
+            <main className="chapter-window-main">
+              <div className="chapter-window-heading">
+                <div>
+                  <span>第 {selectedChapter.order} 组 · {chapterPageRange(selectedChapter)}</span>
+                  <h2>{selectedChapter.name}</h2>
+                  <p>{selectedChapter.sources.join('、')} · {selectedChapter.section_count} 个小节 · {selectedChapter.concept_count} 个知识点</p>
+                </div>
+                <div className="chapter-concept-total"><strong>{selectedChapter.concept_count}</strong><span>KNOWLEDGE POINTS</span></div>
+              </div>
+              <Input
+                allowClear
+                value={chapterConceptQuery}
+                onChange={(event) => setChapterConceptQuery(event.target.value)}
+                prefix={<Search size={15} />}
+                placeholder="在本章知识点中搜索"
+                className="chapter-concept-search"
+              />
+              <div className="chapter-concept-grid">
+                {visibleChapterConcepts.map((concept, index) => (
+                  <article className="chapter-concept-card" key={concept.id}>
+                    <span>{String(index + 1).padStart(2, '0')}</span>
+                    <div>
+                      <h3>{concept.name}</h3>
+                      <p>{concept.evidence_count} 条教材证据{concept.pages.length ? ` · 第 ${concept.pages.join('、')} 页` : ''}</p>
+                    </div>
+                  </article>
+                ))}
+                {!visibleChapterConcepts.length && (
+                  <div className="chapter-concept-empty"><Search size={22} /><span>没有匹配的知识点</span></div>
+                )}
+              </div>
+            </main>
+          </div>
+        )}
+      </Modal>
     </section>
   )
 }
