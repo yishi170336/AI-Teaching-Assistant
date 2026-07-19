@@ -45,6 +45,15 @@ class Settings:
         "QWEN_CIRCUIT_VISION_MODEL", "qwen3-vl-flash"
     )
     qwen_cleaning_model: str = os.getenv("QWEN_CLEANING_MODEL", "qwen3.7-plus")
+    qwen_homework_extraction_model: str = os.getenv(
+        "QWEN_HOMEWORK_EXTRACTION_MODEL", "qwen3-vl-plus"
+    )
+    qwen_homework_grading_model: str = os.getenv(
+        "QWEN_HOMEWORK_GRADING_MODEL", "qwen3-vl-plus"
+    )
+    qwen_homework_review_model: str = os.getenv(
+        "QWEN_HOMEWORK_REVIEW_MODEL", "qwen3-vl-flash"
+    )
     qwen_vision_max_tokens: int = int(os.getenv("QWEN_VISION_MAX_TOKENS", "8192"))
     qwen_multimodal_embedding_model: str = os.getenv(
         "QWEN_MULTIMODAL_EMBEDDING_MODEL", "qwen3-vl-embedding"
@@ -86,6 +95,10 @@ class Settings:
     initial_chapter_limit: int = int(os.getenv("INITIAL_CHAPTER_LIMIT", "1"))
     max_upload_mb: int = int(os.getenv("MAX_UPLOAD_MB", "80"))
     max_attachment_mb: int = int(os.getenv("MAX_ATTACHMENT_MB", "20"))
+    max_homework_upload_mb: int = int(os.getenv("MAX_HOMEWORK_UPLOAD_MB", "100"))
+    max_homework_answer_images: int = int(
+        os.getenv("MAX_HOMEWORK_ANSWER_IMAGES", "8")
+    )
     max_chat_attachments: int = int(os.getenv("MAX_CHAT_ATTACHMENTS", "5"))
     max_chat_document_images: int = int(os.getenv("MAX_CHAT_DOCUMENT_IMAGES", "6"))
     qdrant_url: str = os.getenv("QDRANT_URL", "")

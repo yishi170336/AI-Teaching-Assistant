@@ -37,6 +37,7 @@ import {
   Download,
   FileText,
   ExternalLink,
+  FileCheck2,
   GraduationCap,
   HelpCircle,
   Layers3,
@@ -60,6 +61,7 @@ import {
   Zap,
 } from 'lucide-react'
 import MathMarkdown from '../components/MathMarkdown'
+import HomeworkView from './HomeworkView'
 import {
   addMistake,
   addScheduleItem,
@@ -97,7 +99,7 @@ import {
 import { CHAT_MODEL, CHAT_MODEL_PROVIDER, ChatMessage, ChatMode, useChatStore } from '../store/chatStore'
 
 const { TextArea } = Input
-type WorkspaceView = 'chat' | 'graph' | 'mistakes' | 'schedule'
+type WorkspaceView = 'chat' | 'graph' | 'homework' | 'mistakes' | 'schedule'
 type MistakeDraft = {
   question: string
   answer: string
@@ -262,6 +264,10 @@ function Sidebar({
           <button className={`nav-item ${activeView === 'graph' ? 'active' : ''}`} onClick={() => onView('graph')}>
             <BookOpen size={17} />
             <span>知识图谱</span>
+          </button>
+          <button className={`nav-item ${activeView === 'homework' ? 'active' : ''}`} onClick={() => onView('homework')}>
+            <FileCheck2 size={17} />
+            <span>我的作业</span>
           </button>
           <button className={`nav-item ${activeView === 'mistakes' ? 'active' : ''}`} onClick={() => onView('mistakes')}>
             <Layers3 size={17} />
@@ -2203,7 +2209,7 @@ function StudentPageContent() {
             <button className="menu-button" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu size={19} /></button>
             <div>
               <span className="breadcrumb">学生工作台 /</span>
-              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'mistakes' ? '错题本' : activeView === 'schedule' ? '学习日历' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
+              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'homework' ? '我的作业' : activeView === 'mistakes' ? '错题本' : activeView === 'schedule' ? '学习日历' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
             </div>
           </div>
           <div className="topbar-actions">
@@ -2274,13 +2280,15 @@ function StudentPageContent() {
           <KnowledgeGraphView graph={knowledgeGraph} loading={graphLoading} />
         ) : activeView === 'mistakes' ? (
           <MistakeBookView mistakes={mistakes} onDelete={(id) => void removeMistake(id)} onPlan={planFromMistakes} />
-        ) : (
+        ) : activeView === 'schedule' ? (
           <ScheduleView
             items={scheduleItems}
             onAdd={createScheduleItem}
             onToggle={(item) => void toggleScheduleItem(item)}
             onDelete={(id) => void removeScheduleItem(id)}
           />
+        ) : (
+          <HomeworkView studentId={studentId} />
         )}
       </main>
 

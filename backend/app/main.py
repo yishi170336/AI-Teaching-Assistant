@@ -11,7 +11,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -38,6 +38,13 @@ from backend.app.services.schedule import StudentSchedule
 from backend.app.services.learning_plan_ppt import (
     generate_learning_plan_ppt,
     presentation_filename,
+)
+from backend.app.services.homework import (
+    ANSWER_IMAGE_SUFFIXES,
+    HOMEWORK_SOURCE_SUFFIXES,
+    HomeworkStore,
+    grade_submission,
+    process_homework,
 )
 from backend.app.services.model_catalog import (
     QWEN_MODELS,
@@ -78,6 +85,7 @@ engine = CircuitTutorEngine(ollama, knowledge_bases)
 attachments = AttachmentStore()
 mistake_book = MistakeBook()
 student_schedule = StudentSchedule()
+homework_store = HomeworkStore()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -824,7 +832,213 @@ async def upload(
 
 @app.get("/api/teacher/status")
 async def teacher_status() -> dict[str, Any]:
-    return {"available": False, "message": "教师工作台接口已预留，业务功能将在后续版本开放。"}
+    return {
+        "available": True,
+        "message": "教师作业工作台已启用",
+        "homework_extraction_model": settings.qwen_homework_extraction_model,
+        "homework_grading_model": settings.qwen_homework_grading_model,
+        "homework_review_model": settings.qwen_homework_review_model,
+        "qwen_configured": bool(settings.qwen_api_key),
+    }
+
+
+async def _read_bounded_upload(upload: UploadFile, max_bytes: int, label: str) -> bytes:
+    content = bytearray()
+    while chunk := await upload.read(1024 * 1024):
+        content.extend(chunk)
+        if len(content) > max_bytes:
+            raise HTTPException(status_code=413, detail=f"{label}不能超过 {max_bytes // 1024 // 1024} MB")
+    return bytes(content)
+
+
+@app.get("/api/homeworks")
+async def list_homeworks(role: str = "student", student_id: str = "learner-demo") -> dict[str, Any]:
+    try:
+        return {"homeworks": homework_store.list_homeworks(role=role, student_id=student_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/homeworks")
+async def create_homework(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    instructions: str = Form(""),
+    due_at: str = Form(""),
+) -> dict[str, Any]:
+    original_name = Path(file.filename or "homework.pdf").name
+    content_type = file.content_type
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in HOMEWORK_SOURCE_SUFFIXES:
+        raise HTTPException(status_code=415, detail=f"不支持的作业附件类型：{suffix or '未知'}")
+    try:
+        content = await _read_bounded_upload(
+            file, settings.max_homework_upload_mb * 1024 * 1024, "作业附件"
+        )
+    finally:
+        await file.close()
+    try:
+        homework = await asyncio.to_thread(
+            homework_store.create_homework,
+            title=title,
+            instructions=instructions,
+            due_at=due_at,
+            filename=original_name,
+            content_type=content_type,
+            data=content,
+        )
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    background_tasks.add_task(process_homework, homework_store, str(homework["id"]))
+    return {
+        "ok": True,
+        "homework": homework,
+        "message": "附件已上传，qwen3-vl-plus 与 PDF-Extract-Kit 正在拆分题目",
+    }
+
+
+@app.get("/api/homeworks/{homework_id}")
+async def get_homework(
+    homework_id: str, role: str = "student", student_id: str = "learner-demo"
+) -> dict[str, Any]:
+    try:
+        homework = homework_store.get_homework(
+            homework_id, role=role, student_id=student_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"homework": homework}
+
+
+@app.post("/api/homeworks/{homework_id}/publish")
+async def publish_homework(homework_id: str) -> dict[str, Any]:
+    try:
+        homework = await asyncio.to_thread(homework_store.publish, homework_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True, "homework": homework, "message": "作业已发送给学生"}
+
+
+@app.post("/api/homeworks/{homework_id}/reprocess")
+async def reprocess_homework(
+    homework_id: str, background_tasks: BackgroundTasks
+) -> dict[str, Any]:
+    try:
+        homework = homework_store.get_raw_homework(homework_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if homework.get("status") == "processing":
+        raise HTTPException(status_code=409, detail="作业正在识别中")
+    await asyncio.to_thread(
+        homework_store.update_homework,
+        homework_id,
+        status="processing",
+        processing_error="",
+        processing_warnings=[],
+        processing_progress=0,
+        processing_message="等待重新识别",
+    )
+    background_tasks.add_task(process_homework, homework_store, homework_id)
+    return {"ok": True, "message": "已重新开始识别作业"}
+
+
+@app.delete("/api/homeworks/{homework_id}")
+async def delete_homework(homework_id: str) -> dict[str, Any]:
+    try:
+        deleted = await asyncio.to_thread(homework_store.delete, homework_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="作业不存在")
+    return {"ok": True}
+
+
+@app.get("/api/homeworks/{homework_id}/source")
+async def get_homework_source(homework_id: str) -> FileResponse:
+    try:
+        homework, path = homework_store.source_file(homework_id)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type=str(homework.get("source_content_type", "application/octet-stream")),
+        filename=str(homework.get("source_name", path.name)),
+        content_disposition_type="inline",
+    )
+
+
+@app.get("/api/homeworks/{homework_id}/assets/{asset_name}")
+async def get_homework_asset(homework_id: str, asset_name: str) -> FileResponse:
+    try:
+        path = homework_store.asset_file(homework_id, asset_name)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "image/png")
+
+
+@app.post("/api/homeworks/{homework_id}/submissions")
+async def submit_homework(
+    homework_id: str,
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(...),
+    student_id: str = Form(...),
+) -> dict[str, Any]:
+    if len(files) > settings.max_homework_answer_images:
+        raise HTTPException(
+            status_code=400,
+            detail=f"一次最多上传 {settings.max_homework_answer_images} 张答案图片",
+        )
+    saved: list[tuple[str, str | None, bytes]] = []
+    try:
+        for upload in files:
+            filename = Path(upload.filename or "answer.jpg").name
+            suffix = Path(filename).suffix.lower()
+            if suffix not in ANSWER_IMAGE_SUFFIXES:
+                raise HTTPException(status_code=415, detail="学生答案只支持图片格式")
+            content = await _read_bounded_upload(
+                upload, settings.max_attachment_mb * 1024 * 1024, "单张答案图片"
+            )
+            saved.append((filename, upload.content_type, content))
+    finally:
+        for upload in files:
+            await upload.close()
+    try:
+        submission = await asyncio.to_thread(
+            homework_store.create_submission,
+            homework_id=homework_id,
+            student_id=student_id,
+            files=saved,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    background_tasks.add_task(grade_submission, homework_store, str(submission["id"]))
+    return {
+        "ok": True,
+        "submission": submission,
+        "message": "答案已提交，qwen3-vl-plus 正在批改，随后由 qwen3-vl-flash 复核",
+    }
+
+
+@app.get("/api/homework-submissions/{submission_id}/files/{filename}")
+async def get_homework_submission_file(submission_id: str, filename: str) -> FileResponse:
+    try:
+        path = homework_store.submission_file(submission_id, filename)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "image/jpeg")
 
 
 frontend_dist = settings.root_dir / "frontend" / "dist"

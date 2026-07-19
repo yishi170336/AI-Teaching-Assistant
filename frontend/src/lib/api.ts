@@ -156,6 +156,104 @@ export type ScheduleItem = {
 
 export type ScheduleItemDraft = Pick<ScheduleItem, 'title' | 'date' | 'time' | 'category' | 'note'>
 
+export type HomeworkStatus = 'processing' | 'draft' | 'published' | 'error'
+export type HomeworkSubmissionStatus = 'grading' | 'graded' | 'review_required' | 'error'
+
+export type HomeworkAsset = {
+  file: string
+  name?: string
+  url: string
+  page?: number
+  width?: number
+  height?: number
+  size?: number
+  content_type?: string
+  redactions_applied?: number
+}
+
+export type HomeworkQuestion = {
+  id: string
+  number: string
+  question_type: string
+  prompt: string
+  points: number
+  page_start: number | null
+  page_end: number | null
+  sequence: number
+  layout_images: HomeworkAsset[]
+  figures: HomeworkAsset[]
+  answer?: string
+  rubric?: string
+}
+
+export type HomeworkGradingItem = {
+  question_id: string
+  number: string
+  student_answer: string
+  score: number
+  max_score: number
+  is_correct: boolean
+  feedback: string
+  evidence: string
+}
+
+export type HomeworkGrading = {
+  items: HomeworkGradingItem[]
+  total_score: number
+  max_score: number
+  summary: string
+}
+
+export type HomeworkReview = {
+  passed: boolean
+  confidence: number
+  issues: string[]
+  recommendation: string
+  review_model: string
+}
+
+export type HomeworkSubmission = {
+  id: string
+  homework_id: string
+  student_id: string
+  student_name: string
+  status: HomeworkSubmissionStatus
+  answer_images: HomeworkAsset[]
+  extracted_answer: string
+  grading: HomeworkGrading | null
+  review: HomeworkReview | null
+  processing_error: string
+  created_at: string
+  updated_at: string
+}
+
+export type Homework = {
+  id: string
+  title: string
+  instructions: string
+  due_at: string
+  status: HomeworkStatus
+  source_name: string
+  source_url?: string
+  created_at: string
+  updated_at: string
+  published_at: string
+  extraction_model: string
+  grading_model: string
+  review_model: string
+  processing_error: string
+  processing_warnings: string[]
+  processing_progress: number
+  processing_message: string
+  page_count: number
+  max_score: number
+  question_count: number
+  questions: HomeworkQuestion[]
+  submissions?: HomeworkSubmission[]
+  submission_count?: number
+  submission?: HomeworkSubmission | null
+}
+
 export type GeneratedPresentation = {
   blob: Blob
   filename: string
@@ -411,6 +509,74 @@ export async function deleteScheduleItem(studentId: string, itemId: string): Pro
     const result = await response.json().catch(() => ({}))
     throw new Error(result.detail || '日程删除失败')
   }
+}
+
+async function homeworkResponse<T>(response: Response, fallback: string): Promise<T> {
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(result.detail || result.error || fallback)
+  return result as T
+}
+
+export async function fetchHomeworks(
+  role: 'teacher' | 'student',
+  studentId = 'learner-demo',
+): Promise<Homework[]> {
+  const query = new URLSearchParams({ role, student_id: studentId })
+  const response = await fetch(`/api/homeworks?${query.toString()}`)
+  const result = await homeworkResponse<{ homeworks: Homework[] }>(response, '作业列表读取失败')
+  return result.homeworks || []
+}
+
+export async function createHomework(
+  file: File,
+  fields: { title: string; instructions: string; dueAt: string },
+): Promise<Homework> {
+  const data = new FormData()
+  data.append('file', file)
+  data.append('title', fields.title)
+  data.append('instructions', fields.instructions)
+  data.append('due_at', fields.dueAt)
+  const response = await fetch('/api/homeworks', { method: 'POST', body: data })
+  const result = await homeworkResponse<{ homework: Homework }>(response, '作业上传失败')
+  return result.homework
+}
+
+export async function publishHomework(homeworkId: string): Promise<Homework> {
+  const response = await fetch(`/api/homeworks/${encodeURIComponent(homeworkId)}/publish`, {
+    method: 'POST',
+  })
+  const result = await homeworkResponse<{ homework: Homework }>(response, '作业发布失败')
+  return result.homework
+}
+
+export async function reprocessHomework(homeworkId: string): Promise<void> {
+  const response = await fetch(`/api/homeworks/${encodeURIComponent(homeworkId)}/reprocess`, {
+    method: 'POST',
+  })
+  await homeworkResponse(response, '重新识别失败')
+}
+
+export async function deleteHomework(homeworkId: string): Promise<void> {
+  const response = await fetch(`/api/homeworks/${encodeURIComponent(homeworkId)}`, {
+    method: 'DELETE',
+  })
+  await homeworkResponse(response, '作业删除失败')
+}
+
+export async function submitHomework(
+  homeworkId: string,
+  studentId: string,
+  files: File[],
+): Promise<HomeworkSubmission> {
+  const data = new FormData()
+  data.append('student_id', studentId)
+  files.forEach((file) => data.append('files', file))
+  const response = await fetch(
+    `/api/homeworks/${encodeURIComponent(homeworkId)}/submissions`,
+    { method: 'POST', body: data },
+  )
+  const result = await homeworkResponse<{ submission: HomeworkSubmission }>(response, '答案提交失败')
+  return result.submission
 }
 
 function presentationFilename(disposition: string | null): string {

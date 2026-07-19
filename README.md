@@ -1,6 +1,6 @@
 # CircuitMind 多智能体电路课程教学平台
 
-这是一个本地优先的电路课程教学 MVP。当前已完成学生端；教师端保留页面、路由和 `/api/teacher/status` 接口，后续可直接扩展。
+这是一个本地优先的电路课程教学 MVP。当前已完成学生学习工作台与教师作业工作台；当前版本按单教师、单学生流程运行，班级与学生管理暂不在范围内。
 
 已跑通的链路：
 
@@ -17,6 +17,8 @@
 - 左侧“最近学习”读取持久化会话列表，支持点击恢复历史对话；刷新页面后会自动恢复当前会话。
 - 学生端知识图谱默认展示聚合后的“教材—页面—知识点—电路图—去重元件”语义关系；公式、文本片段和网络节点保留在底层图中作为检索证据，不直接铺到画布上。
 - 答疑和出题内容均可加入持久化错题本；归档前自动提取知识点，错题页可按薄弱点发起知识补全与巩固规划。
+- 教师可上传 PDF、图片或扫描版习题册；`qwen3-vl-plus` 联合 PDF-Extract-Kit 按题拆分题号、题干、所属插图、答案与评分点，学生版保留原版裁切布局并遮除答案。
+- 学生端“我的作业”支持多张作答照片提交；`qwen3-vl-plus` 识别手写内容并评分，`qwen3-vl-flash` 独立复核漏题、错读、步骤分与总分，疑点会标记为教师复查。
 
 ## 当前数据成果
 
@@ -95,7 +97,19 @@ python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 powershell -ExecutionPolicy Bypass -File scripts/start.ps1
 ```
 
-打开 `http://127.0.0.1:8000/student`。生产构建由 FastAPI 直接提供；开发前端可在 `frontend` 中运行 `npm run dev`，Vite 会代理 `/api` 到 8000 端口。
+打开 `http://127.0.0.1:8000/student`；教师作业工作台位于 `http://127.0.0.1:8000/teacher`。生产构建由 FastAPI 直接提供；开发前端可在 `frontend` 中运行 `npm run dev`，Vite 会代理 `/api` 到 8000 端口。
+
+## 作业布置与双模型批改
+
+教师端上传附件后会在后台执行以下流程：
+
+1. PDF 页面渲染或图片标准化，PDF-Extract-Kit 给出版面区域候选。
+2. `qwen3-vl-plus` 逐页返回题目标识、题干/插图/答案 bbox、标准答案和评分点，并合并跨页续题。
+3. 系统按题裁切原版布局，对答案 bbox 做白色遮盖，只公开无答案布局图和题目所属插图；原始整页渲染不会进入公开素材目录。
+4. 教师预览后发布，学生端只取得不含 `answer`、`rubric` 和原始附件地址的数据。
+5. 学生拍照提交后，`qwen3-vl-plus` 识别并逐题评分，再由 `qwen3-vl-flash` 独立复核；复核不通过的提交进入“待教师复查”。
+
+需要在 `.env` 配置 `QWEN_API_KEY`。相关模型与限制可通过 `QWEN_HOMEWORK_EXTRACTION_MODEL`、`QWEN_HOMEWORK_GRADING_MODEL`、`QWEN_HOMEWORK_REVIEW_MODEL`、`MAX_HOMEWORK_UPLOAD_MB` 和 `MAX_HOMEWORK_ANSWER_IMAGES` 调整。作业及提交保存在 `data/homework/`。
 
 ## 模型切换与 API 配置
 
@@ -228,6 +242,11 @@ docker compose up -d qdrant redis
 - `GET /api/mistakes?student_id=...`
 - `POST /api/mistakes`（调用当前模型提取知识点后归档）
 - `DELETE /api/mistakes/{mistake_id}?student_id=...`
+- `GET /api/homeworks?role=teacher|student&student_id=...`
+- `POST /api/homeworks`（上传 PDF/图片并后台拆题）
+- `POST /api/homeworks/{homework_id}/publish`
+- `POST /api/homeworks/{homework_id}/reprocess`
+- `POST /api/homeworks/{homework_id}/submissions`（上传学生作答图片并后台双模型批改）
 - `GET /api/teacher/status`
 
 ## 测试与诊断
