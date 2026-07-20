@@ -21,6 +21,8 @@ from backend.app.rag.pdf_extract_kit import DetectedRegion, PDFExtractKitAdapter
 from backend.app.rag.models import PageDocument, TextChunk
 from backend.app.rag.ontology import (
     COMPONENT_CONCEPTS,
+    component_display_name,
+    component_role,
     extract_course_concepts,
     extract_formula_concepts,
     is_course_concept,
@@ -1032,9 +1034,9 @@ def _analyze_image(
     client: QwenVisionClient | None,
 ) -> None:
     likely, heuristic_score = _circuit_image_heuristic(image_bytes)
-    prompt = """只有包含至少两个电气元件且存在可核验导线连接的原理图、等效电路或小信号模型才可令 is_circuit=true。器件实物/外形、单个器件符号、半导体物理结构、特性曲线、波形图和系统框图必须令 is_circuit=false，即使它们包含端子、箭头或直线。\n""" + f"""你是电路图结构化识别器。判断图片是否为电路图；若是，结合邻近教材正文识别所有元件、端口、节点和导线连接，输出可复核的 SPICE 风格 Netlist 和中文结构/功能描述。跨线但无连接点时不得当作连接。看不清的值写 null，不得猜测。components.terminals 必须直接填写网络 ID；BJT 顺序为 collector/base/emitter，MOS 顺序为 drain/gate/source/bulk，其它二端元件按图中方向列出。
+    prompt = """只有包含至少两个电气元件且存在可核验导线连接的原理图、等效电路或小信号模型才可令 is_circuit=true。器件实物/外形、单个器件符号、半导体物理结构、特性曲线、波形图和系统框图必须令 is_circuit=false，即使它们包含端子、箭头或直线。\n""" + f"""你是电路图结构化识别器。判断图片是否为电路图；若是，结合邻近教材正文识别所有元件、端口、节点和导线连接，输出可复核的 SPICE 风格 Netlist 和中文结构/功能描述。跨线但无连接点时不得当作连接。看不清的值写 null，不得猜测。components.role 填该元件在本图中的具体作用（例如负载电阻、基极偏置电阻、输入耦合电容），不得只重复元件类型；无法判断时填 null。components.terminals 必须直接填写网络 ID；BJT 顺序为 collector/base/emitter，MOS 顺序为 drain/gate/source/bulk，其它二端元件按图中方向列出。
 附近正文：{element.nearby_text[:1800]}
-返回 JSON：{{"is_circuit":true,"caption":"","components":[{{"id":"R1","type":"resistor","value":"4 ohm","terminals":["n1","n2"],"bbox":[]}}],"nets":[{{"id":"n1","terminals":["R1.1"]}}],"netlist":"R1 n1 n2 4","description":"...","confidence":0.0}}。"""
+返回 JSON：{{"is_circuit":true,"caption":"","components":[{{"id":"R1","type":"resistor","role":"负载电阻","value":"4 ohm","terminals":["n1","n2"],"bbox":[]}}],"nets":[{{"id":"n1","terminals":["R1.1"]}}],"netlist":"R1 n1 n2 4","description":"...","confidence":0.0}}。"""
     try:
         raw_vlm_result = (
             client.complete_json(
@@ -2049,11 +2051,27 @@ def build_local_knowledge_graph(chunks: Iterable[TextChunk]) -> dict[str, Any]:
             ]
             for component in components:
                 ref = str(component.get("id") or component.get("ref") or "component")
+                component_type = str(component.get("type", "unknown"))
+                role = component_role(
+                    ref,
+                    component_type,
+                    explicit_role=str(component.get("role") or component.get("function") or ""),
+                    context=chunk.text,
+                )
                 component_id = f"component:{chunk.id}:{ref}"
                 component_nodes[ref] = component_id
                 nodes[component_id] = {
-                    "id": component_id, "type": "component", "name": ref,
-                    "component_type": str(component.get("type", "unknown")), "chunk_id": chunk.id,
+                    "id": component_id,
+                    "type": "component",
+                    "name": component_display_name(
+                        ref,
+                        component_type,
+                        explicit_role=role,
+                    ),
+                    "symbol": ref,
+                    "component_role": role,
+                    "component_type": component_type,
+                    "chunk_id": chunk.id,
                 }
                 add_edge(chunk_node, "CONTAINS", component_id)
                 component_concept = COMPONENT_CONCEPTS.get(
@@ -2096,7 +2114,7 @@ def build_local_knowledge_graph(chunks: Iterable[TextChunk]) -> dict[str, Any]:
                     ):
                         add_edge(component_nodes[component_ref], "CONNECTED_TO", net_id)
     return {
-        "schema_version": "2.2-chapter-summaries",
+        "schema_version": "2.3-semantic-components",
         "nodes": list(nodes.values()),
         "edges": edges,
         "chapters": build_chapter_knowledge_summaries(chunk_items),
@@ -2193,18 +2211,27 @@ def project_student_knowledge_graph(graph: dict[str, Any]) -> dict[str, Any]:
     for node_id, node in raw_nodes.items():
         if node.get("type") != "component":
             continue
-        name = str(node.get("name", "")).strip()
-        if not name or name.lower() in {"component", "unknown", "?"}:
+        raw_name = str(node.get("name", "")).strip()
+        symbol = str(node.get("symbol") or raw_name).strip()
+        if not symbol or symbol.lower() in {"component", "unknown", "?"}:
             continue
         component_type = str(node.get("component_type", "unknown"))
+        role = component_role(
+            symbol,
+            component_type,
+            explicit_role=str(node.get("component_role") or node.get("role") or ""),
+        )
+        name = component_display_name(symbol, component_type, explicit_role=role)
         merged_id = "component:" + hashlib.sha1(
-            f"{name.lower()}|{component_type.lower()}".encode("utf-8")
+            f"{symbol.lower()}|{component_type.lower()}|{role}".encode("utf-8")
         ).hexdigest()[:16]
         original_to_visible_component[node_id] = merged_id
         visible.setdefault(merged_id, {
             "id": merged_id,
             "type": "component",
             "name": name,
+            "symbol": symbol,
+            "component_role": role,
             "component_type": component_type,
             "pages": [],
             "evidence_count": 0,
@@ -2257,7 +2284,7 @@ def project_student_knowledge_graph(graph: dict[str, Any]) -> dict[str, Any]:
         visible[component_id]["pages"] = sorted(pages)
 
     return {
-        "schema_version": "2.3-student-chapter-projection",
+        "schema_version": "2.4-semantic-component-labels",
         "nodes": list(visible.values()),
         "edges": projected_edges,
         "chapters": graph.get("chapters", []),

@@ -191,7 +191,7 @@ def test_graph_separates_documents_pages_concepts_and_components():
     assert {"晶体管", "静态工作点", "电阻"}.issubset(names_by_type["concept"])
     assert "formula" not in names_by_type["concept"]
     assert "analog_electronics_pages_101_103" not in names_by_type["concept"]
-    assert "Rb" in names_by_type["component"]
+    assert "基极偏置电阻 Rb" in names_by_type["component"]
 
 
 def test_chapter_knowledge_summaries_group_concepts_with_evidence_and_pages():
@@ -852,4 +852,54 @@ def test_student_graph_projection_hides_chunks_formulas_and_nets():
     assert "formula" not in node_types
     assert {"document", "page", "concept", "circuit", "component"}.issubset(node_types)
     assert sum(node["type"] == "component" for node in projected["nodes"]) == 1
+    component = next(node for node in projected["nodes"] if node["type"] == "component")
+    assert component["name"] == "基极偏置电阻 Rb"
+    assert component["symbol"] == "Rb"
+    assert component["component_role"] == "基极偏置电阻"
     assert any(edge["type"] == "COVERS" for edge in projected["edges"])
+
+
+def test_student_graph_component_labels_explain_reference_designators():
+    chunk = TextChunk(
+        id="semantic-component-labels",
+        text="共射放大电路，R1 为反馈电阻。",
+        source="lesson.pdf",
+        chapter="chapter",
+        section="section",
+        page_start=8,
+        page_end=8,
+        doc_type="multimodal",
+        knowledge_tags=["晶体管", "电阻"],
+        element_type="circuit",
+        multimodal={
+            "components": [
+                {"id": "RL", "type": "resistor", "terminals": ["n1", "n2"]},
+                {"id": "Rb", "type": "resistor", "terminals": ["n2", "n3"]},
+                {"id": "Rc", "type": "resistor", "terminals": ["n3", "n4"]},
+                {"id": "Rs", "type": "resistor", "terminals": ["n4", "n5"]},
+                {"id": "R1", "type": "resistor", "terminals": ["n5", "n6"]},
+                {"id": "T", "type": "bjt", "terminals": ["n6", "n7", "n8"]},
+                {"id": "D1", "type": "diode", "terminals": ["n8", "n9"]},
+                {"id": "V1", "type": "voltage_source", "terminals": ["n9", "n1"]},
+            ],
+            "nets": [],
+        },
+    )
+
+    projected = project_student_knowledge_graph(build_local_knowledge_graph([chunk]))
+    components = {
+        node["symbol"]: node["name"]
+        for node in projected["nodes"]
+        if node["type"] == "component"
+    }
+
+    assert components == {
+        "RL": "负载电阻 RL",
+        "Rb": "基极偏置电阻 Rb",
+        "Rc": "集电极电阻 Rc",
+        "Rs": "信号源内阻 Rs",
+        "R1": "反馈电阻 R1",
+        "T": "晶体管 T",
+        "D1": "二极管 D1",
+        "V1": "电压源 V1",
+    }

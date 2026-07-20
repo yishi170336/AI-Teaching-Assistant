@@ -34,6 +34,125 @@ COMPONENT_CONCEPTS = {
     "voltage_source": "直流电源",
 }
 
+COMPONENT_TYPE_LABELS = {
+    "resistor": "电阻",
+    "capacitor": "电容",
+    "inductor": "电感",
+    "diode": "二极管",
+    "zener": "稳压二极管",
+    "npn": "晶体管",
+    "pnp": "晶体管",
+    "bjt": "晶体管",
+    "bipolar_junction_transistor": "晶体管",
+    "mosfet": "场效应管",
+    "vsource": "电压源",
+    "voltage_source": "电压源",
+    "isource": "电流源",
+    "current_source": "电流源",
+    "switch": "开关",
+    "port": "信号端口",
+}
+
+COMPONENT_SYMBOL_ROLES = (
+    (r"^rl\d*$", "负载电阻"),
+    (r"^rb[12]$", "基极分压电阻"),
+    (r"^rb\d*$", "基极偏置电阻"),
+    (r"^rc\d*$", "集电极电阻"),
+    (r"^re\d*$", "发射极电阻"),
+    (r"^rs\d*$", "信号源内阻"),
+    (r"^rg\d*$", "栅极电阻"),
+    (r"^rd\d*$", "漏极电阻"),
+    (r"^rds\d*$", "漏源等效电阻"),
+    (r"^rbe\d*$", "基极-发射极等效电阻"),
+    (r"^ri\d*$", "输入电阻"),
+    (r"^(?:ro|r0)\d*$", "输出电阻"),
+    (r"^rf\d*$", "反馈电阻"),
+    (r"^ce\d*$", "发射极旁路电容"),
+    (r"^cs\d*$", "源极旁路电容"),
+    (r"^(?:ci|c1)$", "输入耦合电容"),
+    (r"^(?:co|c2)$", "输出耦合电容"),
+    (r"^vbb\d*$", "基极偏置电源"),
+    (r"^vcc\d*$", "集电极直流电源"),
+    (r"^vgg\d*$", "栅极偏置电源"),
+    (r"^vdd\d*$", "漏极直流电源"),
+    (r"^vee\d*$", "发射极负电源"),
+    (r"^vaa\d*$", "直流电源"),
+    (r"^(?:us|vs)\d*$", "输入信号源"),
+    (r"^(?:ui|vi)\d*$", "输入电压"),
+    (r"^(?:uo|vo)\d*$", "输出电压"),
+    (r"^dz\d*$", "稳压二极管"),
+    (r"^[qt]\d*$", "晶体管"),
+    (r"^m\d*$", "场效应管"),
+    (r"^d\d*$", "二极管"),
+    (r"^s\d*$", "开关"),
+)
+
+COMPONENT_CONTEXT_ROLES = (
+    "基极-发射极等效电阻", "发射极旁路电容", "源极旁路电容",
+    "基极分压电阻", "基极偏置电阻", "集电极直流电源", "基极偏置电源",
+    "栅极偏置电源", "漏极直流电源", "输入耦合电容", "输出耦合电容",
+    "信号源内阻", "集电极电阻", "发射极电阻", "负载电阻", "反馈电阻",
+    "输入电阻", "输出电阻", "栅极电阻", "漏极电阻", "晶体管",
+    "场效应管", "稳压二极管", "二极管", "直流电源", "输入信号源",
+)
+
+
+def _canonical_component_symbol(value: str) -> str:
+    """Normalize common textbook subscript spellings without changing the label."""
+
+    return re.sub(r"[\s_{}'’′-]", "", value).lower()
+
+
+def component_role(
+    symbol: str,
+    component_type: str = "",
+    *,
+    explicit_role: str = "",
+    context: str = "",
+) -> str:
+    """Return the circuit-specific meaning of a component reference designator."""
+
+    reference = str(symbol).strip()
+    role = str(explicit_role or "").strip()
+    if reference and role:
+        role = re.sub(re.escape(reference), "", role, flags=re.I).strip(" ：:，,（）()")
+    if role.lower() in {"", "null", "none", "unknown", "component", "元件", "器件"}:
+        role = ""
+    if role and len(role) <= 24:
+        return role
+
+    if reference and context:
+        for candidate in COMPONENT_CONTEXT_ROLES:
+            before = rf"{re.escape(candidate)}\s*{re.escape(reference)}"
+            after = rf"{re.escape(reference)}\s*(?:为|是|作为|表示|：|:)\s*{re.escape(candidate)}"
+            if re.search(before, context, re.I) or re.search(after, context, re.I):
+                return candidate
+
+    canonical = _canonical_component_symbol(reference)
+    for pattern, candidate in COMPONENT_SYMBOL_ROLES:
+        if re.fullmatch(pattern, canonical, re.I):
+            return candidate
+    return COMPONENT_TYPE_LABELS.get(str(component_type).strip().lower(), "电路元件")
+
+
+def component_display_name(
+    symbol: str,
+    component_type: str = "",
+    *,
+    explicit_role: str = "",
+    context: str = "",
+) -> str:
+    """Format a graph label as a semantic role followed by its original symbol."""
+
+    reference = str(symbol).strip() or "未标注"
+    role = component_role(
+        reference,
+        component_type,
+        explicit_role=explicit_role,
+        context=context,
+    )
+    return f"{role} {reference}"
+
 NON_CONCEPT_TAGS = {
     "text", "image", "figure", "formula", "table", "circuit", "multimodal",
     "component", "net", "port", "vsource", "isource", "resistor", "capacitor",

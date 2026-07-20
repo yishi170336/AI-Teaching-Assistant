@@ -87,6 +87,8 @@ export type KnowledgeGraphNode = {
   page?: number
   pages?: number[]
   evidence_count?: number
+  symbol?: string
+  component_role?: string
   component_type?: string
 }
 
