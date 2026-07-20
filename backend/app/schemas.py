@@ -316,7 +316,8 @@ class HomeworkSubmissionAnswer(BaseModel):
 
 class KBStatus(BaseModel):
     id: str
-    state: Literal["ready", "building", "error", "missing"]
+    display_name: str | None = None
+    state: Literal["ready", "building", "cancelling", "cancelled", "error", "missing"]
     documents: int = 0
     chunks: int = 0
     message: str = ""

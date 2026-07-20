@@ -514,8 +514,9 @@ def test_background_build_reports_progress_and_cleans_cache_on_cancel(tmp_path, 
     monkeypatch.setattr(manager, "_run_build_subprocess", fake_worker)
 
     async def scenario():
-        started = manager.start_build("cancel-me")
+        started = manager.start_build("cancel-me", display_name="模拟电子技术")
         assert started["state"] == "building"
+        assert started["display_name"] == "模拟电子技术"
         await asyncio.sleep(0.05)
         assert manager.statuses()[0]["progress"] == 42
 
@@ -530,6 +531,14 @@ def test_background_build_reports_progress_and_cleans_cache_on_cancel(tmp_path, 
         assert any(name.startswith(".cancel-me.building-") for name in cleaned_qdrant)
 
     asyncio.run(scenario())
+
+
+def test_knowledge_base_display_name_supports_chinese_and_infers_source_title():
+    assert KnowledgeBaseManager.validate_display_name("  模拟电子技术 基础  ") == "模拟电子技术 基础"
+    assert KnowledgeBaseManager._display_name(
+        "Analog-Electronics---First-Two-Chapters",
+        meta={"sources": ["模拟电子技术基础-前两章.pdf"]},
+    ) == "模拟电子技术基础-前两章"
 
 
 def test_delete_knowledge_base_removes_index_and_resources(tmp_path, monkeypatch):

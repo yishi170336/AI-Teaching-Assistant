@@ -22,6 +22,7 @@ export type SourceInfo = {
 
 export type KBStatus = {
   id: string
+  display_name?: string
   state: 'ready' | 'building' | 'cancelling' | 'cancelled' | 'error' | 'missing'
   documents: number
   chunks: number
@@ -842,10 +843,12 @@ export async function uploadKnowledgeFile(
   file: File,
   knowledgeBase: string,
   modelConfig: ModelConfig,
+  displayName?: string,
 ) {
   const data = new FormData()
   data.append('file', file)
   data.append('knowledge_base', knowledgeBase)
+  if (displayName?.trim()) data.append('display_name', displayName.trim())
   data.append('rebuild', 'true')
   data.append('model_provider', modelConfig.provider)
   data.append('model', modelConfig.model)

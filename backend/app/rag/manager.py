@@ -66,6 +66,46 @@ class KnowledgeBaseManager:
             raise ValueError("知识库名称仅允许字母、数字、连字符和下划线")
         return knowledge_base
 
+    @staticmethod
+    def validate_display_name(display_name: str) -> str:
+        normalized = re.sub(r"\s+", " ", display_name).strip()
+        if not normalized:
+            raise ValueError("请输入知识库中文名称")
+        if len(normalized) > 48:
+            raise ValueError("知识库名称不能超过 48 个字符")
+        if re.search(r"[\x00-\x1f\x7f]", normalized):
+            raise ValueError("知识库名称包含不可用字符")
+        return normalized
+
+    @classmethod
+    def _display_name(
+        cls,
+        knowledge_base: str,
+        *,
+        meta: dict[str, Any] | None = None,
+        sources: list[str] | None = None,
+    ) -> str:
+        explicit = str((meta or {}).get("display_name") or "").strip()
+        if explicit:
+            try:
+                return cls.validate_display_name(explicit)
+            except ValueError:
+                pass
+        source_names = sources or [
+            str(item) for item in (meta or {}).get("sources", []) if str(item).strip()
+        ]
+        source_stems = list(dict.fromkeys(
+            Path(source).stem.strip() for source in source_names if Path(source).stem.strip()
+        ))
+        if source_stems:
+            inferred = source_stems[0]
+            if len(source_stems) > 1:
+                inferred = f"{inferred}等{len(source_stems)}份资料"
+            return inferred[:48]
+        if knowledge_base == "default":
+            return "默认课程知识库"
+        return knowledge_base
+
     def resource_dir(self, knowledge_base: str) -> Path:
         knowledge_base = self.validate_id(knowledge_base)
         if knowledge_base == "default":
@@ -102,6 +142,7 @@ class KnowledgeBaseManager:
                 meta = self._retrievers[knowledge_base].meta
                 self._states[knowledge_base] = {
                     "id": knowledge_base,
+                    "display_name": self._display_name(knowledge_base, meta=meta),
                     "state": "ready",
                     "documents": meta.get("documents", 0),
                     "chunks": meta.get("chunks", 0),
@@ -120,6 +161,7 @@ class KnowledgeBaseManager:
                 logger.exception("Failed to load knowledge base %s", knowledge_base)
                 self._states[knowledge_base] = {
                     "id": knowledge_base,
+                    "display_name": self._display_name(knowledge_base),
                     "state": "error",
                     "documents": 0,
                     "chunks": 0,
@@ -134,10 +176,16 @@ class KnowledgeBaseManager:
             for resource_dir in custom_resources.iterdir():
                 if not resource_dir.is_dir() or not re.fullmatch(r"[A-Za-z0-9_-]{1,48}", resource_dir.name):
                     continue
+                resource_sources = [
+                    path.name for path in resource_dir.iterdir() if path.is_file()
+                ]
                 self._states.setdefault(resource_dir.name, {
                     "id": resource_dir.name,
+                    "display_name": self._display_name(
+                        resource_dir.name, sources=resource_sources
+                    ),
                     "state": "missing",
-                    "documents": sum(path.is_file() for path in resource_dir.iterdir()),
+                    "documents": len(resource_sources),
                     "chunks": 0,
                     "message": "资料已保留，尚未完成知识库构建",
                     "available": False,
@@ -152,7 +200,7 @@ class KnowledgeBaseManager:
             self._states.setdefault(
                 "default",
                 {
-                    "id": "default", "state": "missing",
+                    "id": "default", "display_name": "默认课程知识库", "state": "missing",
                     "documents": len(default_resources), "chunks": 0,
                     "message": "资料已保留，尚未完成知识库构建", "progress": 0,
                     "stage": "missing", "cancellable": False, "available": False,
@@ -229,6 +277,7 @@ class KnowledgeBaseManager:
         *,
         chapter_limit: int | None = None,
         model_config: BuildModelConfig | None = None,
+        display_name: str | None = None,
     ) -> dict[str, Any]:
         knowledge_base = self.validate_id(knowledge_base)
         running = self._tasks.get(knowledge_base)
@@ -236,8 +285,17 @@ class KnowledgeBaseManager:
             raise RuntimeError(f"知识库 {knowledge_base} 正在构建")
         started_at = self._now()
         previous_state = self._states.get(knowledge_base, {})
+        resolved_display_name = (
+            self.validate_display_name(display_name)
+            if display_name is not None and display_name.strip()
+            else str(previous_state.get("display_name") or self._display_name(
+                knowledge_base,
+                meta=(self._retrievers.get(knowledge_base).meta if knowledge_base in self._retrievers else None),
+            ))
+        )
         self._states[knowledge_base] = {
             "id": knowledge_base,
+            "display_name": resolved_display_name,
             "state": "building",
             "documents": previous_state.get("documents", 0),
             "chunks": previous_state.get("chunks", 0),
@@ -254,6 +312,7 @@ class KnowledgeBaseManager:
                 knowledge_base,
                 chapter_limit=chapter_limit,
                 model_config=model_config,
+                display_name=resolved_display_name,
             )
         )
         return dict(self._states[knowledge_base])
@@ -372,6 +431,7 @@ class KnowledgeBaseManager:
         *,
         chapter_limit: int | None,
         model_config: BuildModelConfig | None,
+        display_name: str,
     ) -> None:
         staging_dir: Path | None = None
         was_cancelled = False
@@ -434,6 +494,10 @@ class KnowledgeBaseManager:
             meta = json.loads(
                 (staging_dir / "index_meta.json").read_text(encoding="utf-8")
             )
+            meta["display_name"] = display_name
+            (staging_dir / "index_meta.json").write_text(
+                json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             for worker_file in (job_path, progress_path, result_path):
                 worker_file.unlink(missing_ok=True)
             ensure_not_cancelled()
@@ -460,6 +524,7 @@ class KnowledgeBaseManager:
             completed_at = self._now()
             self._states[knowledge_base] = {
                 "id": knowledge_base,
+                "display_name": display_name,
                 "state": "ready",
                 "documents": meta.get("documents", 0),
                 "chunks": meta.get("chunks", 0),
@@ -509,6 +574,7 @@ class KnowledgeBaseManager:
             await restore_previous_index()
             self._states[knowledge_base] = {
                 "id": knowledge_base,
+                "display_name": display_name,
                 "state": "error",
                 "documents": 0,
                 "chunks": 0,

@@ -116,6 +116,16 @@ type MistakeDraft = {
   attachments: AttachmentInfo[]
 }
 
+const knowledgeBaseDisplayName = (status: KBStatus | undefined, fallbackId = '') => (
+  status?.display_name?.trim()
+  || (fallbackId === 'default' ? '默认课程知识库' : fallbackId)
+  || '当前知识库'
+)
+
+const createKnowledgeBaseInternalId = () => (
+  `kb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`
+)
+
 const providerLabels: Record<ModelProviderId, string> = {
   ollama: '本地',
   deepseek: 'DeepSeek',
@@ -561,7 +571,6 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
   const activeCitedSources = useChatStore((state) => state.activeCitedSources)
   const activeMessageId = useChatStore((state) => state.activeMessageId)
   const knowledgeBase = useChatStore((state) => state.knowledgeBase)
-  const defaultKnowledgeBase = useChatStore((state) => state.defaultKnowledgeBase)
   const modelProvider = useChatStore((state) => state.modelConfig.provider)
   const messages = useChatStore((state) => state.messages)
   const activeAssistant = messages.find((item) => item.id === activeMessageId)
@@ -592,7 +601,7 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
       <div className="kb-summary-card">
         <span className="kb-icon">{quizContext ? <BrainCircuit size={18} /> : <Database size={18} />}</span>
         <div>
-          <strong>{quizContext ? '原题驱动出题' : activeKnowledgeBase === defaultKnowledgeBase ? '默认课程知识库' : activeKnowledgeBase}</strong>
+          <strong>{quizContext ? '原题驱动出题' : knowledgeBaseDisplayName(current, activeKnowledgeBase)}</strong>
           <span>{quizContext ? '会话上下文 · 不检索知识库' : `${current?.chunks || 0} 个文本块 · ${current?.documents || 0} 份资料`}</span>
         </div>
         <span className={`kb-state ${quizContext ? 'ready' : current?.state || 'missing'}`}>
@@ -1994,6 +2003,7 @@ function StudentPageContent() {
   const activeBuilds = statuses.filter((item) => item.state === 'building' || item.state === 'cancelling')
   const hasActiveBuilds = activeBuilds.length > 0
   const currentKbStatus = statuses.find((item) => item.id === knowledgeBase)
+  const currentKbDisplayName = knowledgeBaseDisplayName(currentKbStatus, knowledgeBase)
   const deleteKbDisabledReason = !currentKbStatus
     ? '该知识库尚未创建'
     : currentKbStatus.state === 'building' || currentKbStatus.state === 'cancelling'
@@ -2090,9 +2100,10 @@ function StudentPageContent() {
     statuses.forEach((item) => {
       const prior = previous[item.id]
       if (prior === 'building' || prior === 'cancelling') {
-        if (item.state === 'ready') toast.success(`知识库 ${item.id} 构建完成`)
-        if (item.state === 'cancelled') toast.info(`知识库 ${item.id} 构建已取消，缓存已清理`)
-        if (item.state === 'error') toast.error(`知识库 ${item.id} 构建失败：${item.message}`)
+        const displayName = knowledgeBaseDisplayName(item, item.id)
+        if (item.state === 'ready') toast.success(`知识库“${displayName}”构建完成`)
+        if (item.state === 'cancelled') toast.info(`知识库“${displayName}”构建已取消，缓存已清理`)
+        if (item.state === 'error') toast.error(`知识库“${displayName}”构建失败：${item.message}`)
       }
     })
     previousBuildStates.current = Object.fromEntries(
@@ -2112,12 +2123,16 @@ function StudentPageContent() {
   const kbOptions = useMemo(() => {
     const base = statuses.map((item) => ({
       value: item.id,
-      label: item.id === defaultKnowledgeBase ? `${item.id}（默认课程）` : item.id,
+      label: item.id === defaultKnowledgeBase
+        ? `${knowledgeBaseDisplayName(item, item.id)}（默认课程）`
+        : knowledgeBaseDisplayName(item, item.id),
     }))
     if (knowledgeBase && !base.some((item) => item.value === knowledgeBase)) {
       base.push({
         value: knowledgeBase,
-        label: knowledgeBase === defaultKnowledgeBase ? `${knowledgeBase}（默认课程）` : knowledgeBase,
+        label: knowledgeBase === defaultKnowledgeBase
+          ? `${knowledgeBaseDisplayName(undefined, knowledgeBase)}（默认课程）`
+          : knowledgeBaseDisplayName(undefined, knowledgeBase),
       })
     }
     return base
@@ -2125,7 +2140,9 @@ function StudentPageContent() {
 
   const defaultKbOptions = useMemo(() => statuses.map((item) => ({
     value: item.id,
-    label: item.id === defaultKnowledgeBase ? `${item.id}（当前默认）` : item.id,
+    label: item.id === defaultKnowledgeBase
+      ? `${knowledgeBaseDisplayName(item, item.id)}（当前默认）`
+      : knowledgeBaseDisplayName(item, item.id),
     disabled: item.state !== 'ready' && !item.available,
   })), [statuses, defaultKnowledgeBase])
 
@@ -2136,7 +2153,7 @@ function StudentPageContent() {
       return
     }
     setDefaultKnowledgeBase(id)
-    toast.success(`已将 ${id} 设为默认课程知识库`)
+    toast.success(`已将“${knowledgeBaseDisplayName(target, id)}”设为默认课程知识库`)
   }
 
   const ask = (prompt: string, preferredMode?: ChatMode) => {
@@ -2277,12 +2294,13 @@ function StudentPageContent() {
   const removeKnowledgeBase = async () => {
     try {
       const deleted = knowledgeBase
+      const deletedDisplayName = currentKbDisplayName
       const replacement = statuses.find((item) => (
         item.id !== deleted
         && (item.state === 'ready' || item.available)
       ))
       const nextKnowledgeBase = replacement?.id || ''
-      const result = await deleteKnowledgeBase(deleted)
+      await deleteKnowledgeBase(deleted)
       if (deleted === defaultKnowledgeBase) {
         setDefaultKnowledgeBase(nextKnowledgeBase)
       } else {
@@ -2294,7 +2312,7 @@ function StudentPageContent() {
       }
       setKnowledgeGraph(undefined)
       await refreshStatuses()
-      toast.success(result.message)
+      toast.success(`知识库“${deletedDisplayName}”已删除`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '删除知识库失败')
     }
@@ -2305,23 +2323,24 @@ function StudentPageContent() {
       toast.warning('请先选择需要上传的教材文件')
       return
     }
-    const normalized = newKbName.trim().replace(/\s+/g, '-')
-    if (!/^[A-Za-z0-9_-]{1,48}$/.test(normalized)) {
-      toast.warning('名称仅支持字母、数字、连字符和下划线')
+    const displayName = newKbName.trim().replace(/\s+/g, ' ')
+    if (!displayName || displayName.length > 48) {
+      toast.warning('知识库名称不能为空且不能超过 48 个字符')
       return
     }
-    if (statuses.some((item) => item.id === normalized)) {
-      toast.warning(`知识库 ${normalized} 已存在，请在下方选择后追加资料`)
+    if (statuses.some((item) => knowledgeBaseDisplayName(item, item.id) === displayName)) {
+      toast.warning(`知识库“${displayName}”已存在，请在下方选择后追加资料`)
       return
     }
+    const internalId = createKnowledgeBaseInternalId()
     setCreatingKnowledgeBase(true)
     try {
-      const result = await uploadKnowledgeFile(newKbFile, normalized, modelConfig)
-      setKnowledgeBase(normalized)
+      const result = await uploadKnowledgeFile(newKbFile, internalId, modelConfig, displayName)
+      setKnowledgeBase(internalId)
       upsertBuildStatus(result.build)
       setNewKbFile(null)
       setNewKbName('')
-      toast.success(`知识库 ${normalized} 已创建，正在构建索引`)
+      toast.success(`知识库“${displayName}”已创建，正在构建索引`)
       void refreshStatuses()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '知识库创建失败')
@@ -2393,7 +2412,7 @@ function StudentPageContent() {
               <div className="build-task-banner" key={item.id}>
                 <span className="build-task-icon"><LoaderCircle className="spin" size={18} /></span>
                 <div className="build-task-copy">
-                  <strong>{item.state === 'cancelling' ? `正在取消 ${item.id}` : `正在构建知识库 ${item.id}`}</strong>
+                  <strong>{item.state === 'cancelling' ? `正在取消“${knowledgeBaseDisplayName(item, item.id)}”` : `正在构建知识库“${knowledgeBaseDisplayName(item, item.id)}”`}</strong>
                   <span>{item.message}</span>
                   <Progress percent={item.progress || 0} size="small" showInfo={false} />
                 </div>
@@ -2479,6 +2498,7 @@ function StudentPageContent() {
             accept=".pdf,.md,.txt,.docx"
             beforeUpload={(file) => {
               setNewKbFile(file)
+              setNewKbName((current) => current.trim() || file.name.replace(/\.[^.]+$/, '').slice(0, 48))
               return Upload.LIST_IGNORE
             }}
             showUploadList={false}
@@ -2512,12 +2532,12 @@ function StudentPageContent() {
           <Input
             value={newKbName}
             onChange={(event) => setNewKbName(event.target.value)}
-            placeholder="英文标识，如 analog-circuits"
+            placeholder="如：模拟电子技术基础"
             prefix={<Plus size={15} />}
             disabled={!newKbFile || creatingKnowledgeBase}
             onPressEnter={() => void createKnowledgeBase()}
           />
-          <p className="modal-field-help">支持字母、数字、连字符和下划线，创建后不可直接改名。</p>
+          <p className="modal-field-help">支持中文、字母、数字和空格；系统会自动生成内部标识。</p>
           <Button
             type="primary"
             block
@@ -2554,10 +2574,10 @@ function StudentPageContent() {
               aria-label="选择当前目标知识库"
               style={{ width: '100%' }}
             />
-            <Tooltip title={deleteKbDisabledReason || `删除知识库 ${knowledgeBase}`}>
+            <Tooltip title={deleteKbDisabledReason || `删除知识库“${currentKbDisplayName}”`}>
               <span>
                 <Popconfirm
-                  title={`确认删除知识库 ${knowledgeBase}？`}
+                  title={`确认删除知识库“${currentKbDisplayName}”？`}
                   description="索引、知识图谱及已上传资料都会被永久删除。"
                   okText="确认删除"
                   cancelText="取消"
@@ -2569,7 +2589,7 @@ function StudentPageContent() {
                     danger
                     icon={<Trash2 size={15} />}
                     disabled={Boolean(deleteKbDisabledReason)}
-                    aria-label={`删除知识库 ${knowledgeBase}`}
+                    aria-label={`删除知识库 ${currentKbDisplayName}`}
                   >
                     删除
                   </Button>
@@ -2591,11 +2611,11 @@ function StudentPageContent() {
           >
             <p className="ant-upload-drag-icon"><UploadCloud size={28} /></p>
             <p className="ant-upload-text">拖入新资料，或点击选择文件</p>
-            <p className="ant-upload-hint">文件将追加到 {knowledgeBase || '当前知识库'} 并触发重建</p>
+            <p className="ant-upload-hint">文件将追加到“{currentKbDisplayName}”并触发重建</p>
           </Upload.Dragger>
         </div>
         {(currentKbStatus?.state === 'building' || currentKbStatus?.state === 'cancelling') && (
-          <div className="modal-build-progress" aria-label={`${knowledgeBase} 构建进度`}>
+          <div className="modal-build-progress" aria-label={`${currentKbDisplayName} 构建进度`}>
             <div>
               <strong>{currentKbStatus.state === 'cancelling' ? '正在取消并清理缓存' : currentKbStatus.message}</strong>
               <span>{currentKbStatus.progress || 0}%</span>

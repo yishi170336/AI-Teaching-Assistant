@@ -776,6 +776,7 @@ async def get_chat_attachment(attachment_id: str, session_id: str) -> FileRespon
 async def upload(
     file: UploadFile = File(...),
     knowledge_base: str = Form("default"),
+    display_name: str = Form(""),
     rebuild: bool = Form(True),
     model_provider: str = Form("deepseek"),
     model: str = Form(""),
@@ -784,6 +785,10 @@ async def upload(
 ) -> dict[str, Any]:
     try:
         knowledge_base = knowledge_bases.validate_id(knowledge_base)
+        normalized_display_name = (
+            knowledge_bases.validate_display_name(display_name)
+            if display_name.strip() else None
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     original_name = Path(file.filename or "upload.bin").name
@@ -818,6 +823,7 @@ async def upload(
                 knowledge_base,
                 chapter_limit=None,
                 model_config=build_model if build_model.enabled else None,
+                display_name=normalized_display_name,
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -827,6 +833,7 @@ async def upload(
         "size": size,
         "content_type": file.content_type or mimetypes.guess_type(original_name)[0],
         "knowledge_base": knowledge_base,
+        "display_name": normalized_display_name,
         "indexing": bool(rebuild and indexable),
         "build": build_state,
         "multimodal_model": f"qwen/{QWEN_VL_FALLBACK_MODEL}",
