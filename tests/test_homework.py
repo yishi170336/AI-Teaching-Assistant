@@ -1273,6 +1273,77 @@ def test_submission_is_graded_then_independently_reviewed(tmp_path):
         store.start_submission_grading(submission["id"])
 
 
+def test_fixed_choice_and_fill_answers_use_zero_model_calls(tmp_path):
+    store = HomeworkStore(tmp_path / "homework")
+    created = store.create_homework(
+        title="固定答案快速批改",
+        instructions="",
+        due_at="",
+        filename="questions.png",
+        content_type="image/png",
+        data=sample_image_bytes(),
+    )
+    questions = [
+        {
+            "id": f"choice-{index}",
+            "sequence": index,
+            "number": str(index),
+            "question_type": "choice",
+            "prompt": f"第 {index} 道选择题。",
+            "options": [
+                {"label": "A", "text": "选项A"},
+                {"label": "B", "text": "选项B"},
+            ],
+            "answer": "A" if index % 2 else "B",
+            "rubric": "选对得1分，错选得0分。",
+            "points": 1,
+        }
+        for index in range(1, 21)
+    ]
+    questions.append({
+        "id": "fill-21",
+        "sequence": 21,
+        "number": "21",
+        "question_type": "fill_blank",
+        "prompt": "常数答案为______。",
+        "answer": "$42\\,\\Omega$",
+        "points": 2,
+    })
+    store.update_homework(created["id"], status="draft", questions=questions)
+    store.publish(created["id"])
+    submission = store.create_submission(
+        homework_id=created["id"],
+        student_id="learner-test",
+        files=[],
+        answers=[
+            {"question_id": f"choice-{index}", "selected_options": ["A"]}
+            for index in range(1, 21)
+        ] + [{"question_id": "fill-21", "answer": "42Ω"}],
+        file_question_ids=[],
+    )
+    store.start_submission_grading(submission["id"])
+    grader = FakeVisionClient()
+    reviewer = FakeVisionClient()
+
+    grade_submission(
+        store,
+        submission["id"],
+        grading_client=grader,
+        review_client=reviewer,
+    )
+
+    graded = store.get_raw_submission(submission["id"])
+    assert graded["status"] == "graded"
+    assert graded["grading"]["total_score"] == 12
+    assert graded["grading"]["max_score"] == 22
+    assert len(graded["grading"]["items"]) == 21
+    assert "21 道固定答案题" in graded["grading"]["summary"]
+    assert graded["grading"]["items"][-1]["is_correct"] is True
+    assert graded["review"]["review_model"] == "deterministic-rules"
+    assert grader.calls == []
+    assert reviewer.calls == []
+
+
 def test_failed_review_triggers_one_grading_correction_and_second_review(tmp_path):
     store = HomeworkStore(tmp_path / "homework")
     homework_id, question_id = extracted_homework(store)

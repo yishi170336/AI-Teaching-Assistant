@@ -210,6 +210,7 @@ function SubmissionPanel({
 }) {
   const status = submissionStatus[submission.status]
   const grading = submission.grading
+  const deterministicReview = submission.review?.review_model === 'deterministic-rules'
   const scorePercent = grading?.max_score
     ? Math.round((grading.total_score / grading.max_score) * 100)
     : 0
@@ -306,8 +307,8 @@ function SubmissionPanel({
           <div className={`review-result ${submission.review.passed ? 'passed' : 'flagged'}`}>
             {submission.review.passed ? <ShieldCheck size={18} /> : <AlertTriangle size={18} />}
             <div>
-              <strong>{submission.review.passed ? '审查模型确认批改无误' : '审查模型发现疑点'}</strong>
-              <span>qwen3-vl-flash · 置信度 {Math.round(submission.review.confidence * 100)}%</span>
+              <strong>{deterministicReview ? '固定答案规则校验完成' : submission.review.passed ? '审查模型确认批改无误' : '审查模型发现疑点'}</strong>
+              <span>{deterministicReview ? '本地确定性规则' : 'qwen3-vl-flash'} · 置信度 {Math.round(submission.review.confidence * 100)}%</span>
               {submission.review.issues.map((issue) => <p key={issue}>{issue}</p>)}
               {submission.review.recommendation && <p>{submission.review.recommendation}</p>}
             </div>

@@ -4112,8 +4112,209 @@ def _grading_student_payload(
     return result
 
 
-def _submission_grading_batches(
+def _canonical_fixed_answer(value: Any) -> str:
+    text = _clean_text(value, 1000).strip().rstrip("。.").lower()
+    text = re.sub(r"\\(?:mathrm|text)\s*\{([^{}]*)\}", r"\1", text)
+    text = text.replace("\\left", "").replace("\\right", "").replace("\\,", "")
+    text = re.sub(r"\\([a-z]+)", r"\1", text)
+    text = text.replace("ω", "omega").replace("Ω", "omega")
+    text = text.replace("，", ",").replace("；", ";").replace("：", ":")
+    return re.sub(r"[\s${}]", "", text)
+
+
+def _fixed_choice_labels(question: dict[str, Any]) -> list[str]:
+    valid_labels = {
+        _clean_text(option.get("label"), 12).upper()
+        for option in _normalize_options(question.get("options"))
+        if _clean_text(option.get("label"), 12)
+    }
+    if not valid_labels:
+        return []
+    for value in (question.get("answer"), question.get("rubric")):
+        text = _clean_text(value, 2000).upper().strip()
+        if not text:
+            continue
+        compact = re.sub(r"[\s,，、;/]+", "", text)
+        if compact and all(character in valid_labels for character in compact):
+            return sorted(set(compact))
+        match = re.search(
+            r"(?:标准答案|正确答案|答案|应选)\s*(?:为|是|[:：])?\s*"
+            r"([A-Z](?:\s*[,，、/ ]\s*[A-Z])*)",
+            text,
+        )
+        if match:
+            labels = re.findall(r"[A-Z]", match.group(1))
+            if labels and all(label in valid_labels for label in labels):
+                return sorted(set(labels))
+    return []
+
+
+def _fixed_true_false_answer(question: dict[str, Any]) -> str:
+    for value in (question.get("answer"), question.get("rubric")):
+        text = _clean_text(value, 2000)
+        exact = text.strip().rstrip("。")
+        if exact in {"正确", "错误"}:
+            return exact
+        match = re.search(r"(?:标准答案|正确答案|答案)\s*(?:为|是|[:：])?\s*(正确|错误)", text)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _simple_fill_standard(value: Any) -> str:
+    text = _clean_text(value, 1000).strip()
+    if not text or len(text) > 160 or "\n" in text:
+        return ""
+    text = re.sub(r"^(?:标准答案|正确答案|答案)\s*[:：]\s*", "", text).strip()
+    if re.search(r"(?:解[:：]?|因为|所以|故|步骤|解析|说明|或|均可|任意|不唯一)", text):
+        return ""
+    return text
+
+
+def _deterministic_grading_item(
+    question: dict[str, Any], answer: dict[str, Any]
+) -> dict[str, Any] | None:
+    question_id = str(question.get("id", ""))
+    question_type = _question_type(question.get("question_type"))
+    max_score = _question_scoring_max(question)
+    is_scored = max_score > 0
+    subquestion_results: list[dict[str, Any]] = []
+    student_answer = ""
+    expected_answer = ""
+    is_correct: bool
+    if question_type == "choice":
+        expected_labels = _fixed_choice_labels(question)
+        if not expected_labels:
+            return None
+        selected = sorted(set(
+            _clean_text(value, 12).upper()
+            for value in answer.get("selected_options", [])
+            if _clean_text(value, 12)
+        ))
+        if not selected:
+            return None
+        is_correct = selected == expected_labels
+        student_answer = "、".join(selected)
+        expected_answer = "、".join(expected_labels)
+    elif question_type == "true_false":
+        expected_answer = _fixed_true_false_answer(question)
+        selected = [
+            _clean_text(value, 12)
+            for value in answer.get("selected_options", [])
+            if _clean_text(value, 12)
+        ]
+        if not expected_answer or len(selected) != 1:
+            return None
+        student_answer = selected[0]
+        is_correct = student_answer == expected_answer
+    elif question_type == "fill_blank":
+        expected_parts = _normalize_labeled_parts(question.get("answer_subquestions"))
+        student_parts = _normalize_labeled_parts(answer.get("subquestion_answers"))
+        if expected_parts:
+            student_by_label = {part["label"]: part["text"] for part in student_parts}
+            grading_parts = {
+                part["label"]: part for part in _question_grading_parts(question)
+            }
+            if not all(part["label"] in student_by_label for part in expected_parts):
+                return None
+            part_correctness: list[bool] = []
+            for expected in expected_parts:
+                label = expected["label"]
+                actual_text = student_by_label[label]
+                correct = _canonical_fixed_answer(actual_text) == _canonical_fixed_answer(
+                    expected["text"]
+                )
+                part_correctness.append(correct)
+                part_max = _as_float(grading_parts.get(label, {}).get("points"))
+                subquestion_results.append({
+                    "label": label,
+                    "answered": bool(_clean_text(actual_text)),
+                    "student_answer": actual_text,
+                    "score": part_max if correct and part_max > 0 else 0.0,
+                    "max_score": part_max,
+                    "feedback": "答案正确" if correct else f"正确答案：{expected['text']}",
+                    "completeness_evidence": "学生端结构化填写",
+                })
+            is_correct = all(part_correctness)
+            student_answer = "；".join(
+                f"（{part['label']}）{student_by_label[part['label']]}"
+                for part in expected_parts
+            )
+            expected_answer = "；".join(
+                f"（{part['label']}）{part['text']}" for part in expected_parts
+            )
+        else:
+            expected_answer = _simple_fill_standard(question.get("answer"))
+            student_answer = _clean_text(answer.get("answer"), 12000)
+            if not expected_answer or not student_answer:
+                return None
+            is_correct = (
+                _canonical_fixed_answer(student_answer)
+                == _canonical_fixed_answer(expected_answer)
+            )
+    else:
+        return None
+    score = (
+        round(sum(_as_float(part.get("score")) for part in subquestion_results), 2)
+        if subquestion_results
+        else (max_score if is_correct and is_scored else 0.0)
+    )
+    return {
+        "question_id": question_id,
+        "number": question.get("number", ""),
+        "student_answer": student_answer,
+        "score": score,
+        "max_score": max_score,
+        "is_scored": is_scored,
+        "is_correct": is_correct,
+        "feedback": (
+            "答案正确"
+            if is_correct
+            else f"答案错误；正确答案为 {expected_answer}"
+        ),
+        "evidence": "固定答案题已通过本地结构化规则核对，无需调用视觉模型",
+        "subquestion_results": subquestion_results,
+    }
+
+
+def _deterministic_grading_items(
     homework: dict[str, Any], submission: dict[str, Any]
+) -> list[dict[str, Any]]:
+    question_ids = {
+        str(question.get("id"))
+        for question in homework.get("questions", [])
+        if isinstance(question, dict) and question.get("id")
+    }
+    answer_images = [
+        item for item in submission.get("answer_images", []) if isinstance(item, dict)
+    ]
+    if any(str(item.get("question_id", "")) not in question_ids for item in answer_images):
+        return []
+    image_question_ids = {
+        str(item.get("question_id")) for item in answer_images if item.get("question_id")
+    }
+    answers_by_id = {
+        str(item.get("question_id")): item
+        for item in submission.get("answers", [])
+        if isinstance(item, dict) and item.get("question_id")
+    }
+    result: list[dict[str, Any]] = []
+    for question in homework.get("questions", []):
+        if not isinstance(question, dict) or not question.get("id"):
+            continue
+        question_id = str(question.get("id"))
+        if question_id in image_question_ids or question_id not in answers_by_id:
+            continue
+        item = _deterministic_grading_item(question, answers_by_id[question_id])
+        if item is not None:
+            result.append(item)
+    return result
+
+
+def _submission_grading_batches(
+    homework: dict[str, Any],
+    submission: dict[str, Any],
+    excluded_question_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     questions = [
         item for item in homework.get("questions", [])
@@ -4139,8 +4340,11 @@ def _submission_grading_batches(
 
     batches: list[dict[str, Any]] = []
     direct_questions: list[dict[str, Any]] = []
+    excluded = excluded_question_ids or set()
     for question in questions:
         question_id = str(question.get("id"))
+        if question_id in excluded:
+            continue
         images = images_by_question.get(question_id, [])
         if images:
             # The same uploaded image may intentionally be reused by several
@@ -4208,30 +4412,44 @@ def grade_submission(
     try:
         submission = store.get_raw_submission(submission_id)
         homework = store.get_raw_homework(str(submission["homework_id"]))
-        if grading_client is None or review_client is None:
-            if not settings.qwen_api_key:
-                raise RuntimeError("未配置 QWEN_API_KEY，无法自动批改作业")
-        if grading_client is None:
-            grading_client = QwenVisionClient(
-                api_key=settings.qwen_api_key,
-                model=settings.qwen_homework_grading_model,
-                base_url=settings.qwen_base_url,
-            )
-            owned_grader = True
-        if review_client is None:
-            review_client = QwenVisionClient(
-                api_key=settings.qwen_api_key,
-                model=settings.qwen_homework_review_model,
-                base_url=settings.qwen_base_url,
-            )
-            owned_reviewer = True
-        submission_dir = store.root / "submissions" / submission_id
-        batches = _submission_grading_batches(homework, submission)
-        if not batches:
+        deterministic_items = _deterministic_grading_items(homework, submission)
+        deterministic_ids = {
+            str(item.get("question_id")) for item in deterministic_items
+        }
+        batches = _submission_grading_batches(
+            homework, submission, excluded_question_ids=deterministic_ids
+        )
+        if not deterministic_items and not batches:
             raise RuntimeError("作业中没有可批改的题目")
-        all_items: list[dict[str, Any]] = []
-        grading_summaries: list[str] = []
-        extracted_parts: list[str] = []
+        if batches:
+            if grading_client is None or review_client is None:
+                if not settings.qwen_api_key:
+                    raise RuntimeError("未配置 QWEN_API_KEY，无法自动批改作业")
+            if grading_client is None:
+                grading_client = QwenVisionClient(
+                    api_key=settings.qwen_api_key,
+                    model=settings.qwen_homework_grading_model,
+                    base_url=settings.qwen_base_url,
+                )
+                owned_grader = True
+            if review_client is None:
+                review_client = QwenVisionClient(
+                    api_key=settings.qwen_api_key,
+                    model=settings.qwen_homework_review_model,
+                    base_url=settings.qwen_base_url,
+                )
+                owned_reviewer = True
+        submission_dir = store.root / "submissions" / submission_id
+        all_items: list[dict[str, Any]] = list(deterministic_items)
+        grading_summaries: list[str] = (
+            [f"{len(deterministic_items)} 道固定答案题已通过本地规则快速批改"]
+            if deterministic_items
+            else []
+        )
+        extracted_parts: list[str] = [
+            f"第 {item.get('number', '?')} 题：{item.get('student_answer', '')}"
+            for item in deterministic_items
+        ]
         batch_reviews: list[dict[str, Any]] = []
         forced_review_issues: list[str] = []
         correction_count = 0
@@ -4426,16 +4644,19 @@ required_subquestions 非空时，必须先逐小问核对图片并返回全部 
             review.get("recommendation", "") for review in batch_reviews
         )
         review = {
-            "passed": bool(batch_reviews)
-            and all(review.get("passed", False) for review in batch_reviews)
+            "passed": all(review.get("passed", False) for review in batch_reviews)
             and not forced_review_issues,
             "confidence": min(
                 (_as_float(review.get("confidence")) for review in batch_reviews),
-                default=0.0,
+                default=1.0,
             ),
             "issues": review_issues,
-            "recommendation": "；".join(recommendations),
-            "review_model": settings.qwen_homework_review_model,
+            "recommendation": "；".join(recommendations) or (
+                "固定答案题已完成确定性核对" if deterministic_items and not batches else ""
+            ),
+            "review_model": (
+                settings.qwen_homework_review_model if batches else "deterministic-rules"
+            ),
         }
         extracted_answer = "\n\n".join(extracted_parts)
         status = "graded" if review["passed"] else "review_required"
