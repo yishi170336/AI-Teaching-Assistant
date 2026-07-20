@@ -1062,7 +1062,6 @@ export default function TeacherPage() {
               <div className="homework-processing-panel"><LoaderCircle className="spin" size={30} /><div><strong>{bankDetail.processing_message || '正在逐页提取题库内容'}</strong><span>进度 {bankDetail.processing_progress || 0}% · 识别完成后即可长期选用。</span></div></div>
             )}
             {bankDetail.processing_error && <div className="homework-detail-error"><AlertTriangle size={18} /><div><strong>题库识别未完成</strong><span>{bankDetail.processing_error}</span></div></div>}
-            {bankDetail.processing_warnings?.length > 0 && <div className="homework-warnings">{bankDetail.processing_warnings.map((warning) => <span key={warning}>{warning}</span>)}</div>}
             {bankDetail.status === 'ready' && (
               <QuestionBankPreview
                 bank={bankDetail}
@@ -1127,7 +1126,6 @@ export default function TeacherPage() {
                 <Button icon={<RefreshCw size={14} />} loading={actionId === detail.id} onClick={() => void runAction(detail.id, 'retry')}>修复并重新识别</Button>
               </div>
             )}
-            {detail.processing_warnings.length > 0 && <div className="homework-warnings">{detail.processing_warnings.map((warning) => <span key={warning}>{warning}</span>)}</div>}
             {detail.questions.length > 0 && (
               <QuestionPreview
                 homework={detail}

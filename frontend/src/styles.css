@@ -905,7 +905,6 @@ button { color: inherit; }
 .homework-integrity-warning strong { color: #80501e; font-size: 10px; }
 .homework-integrity-warning span { color: #9a744d; font-size: 9px; line-height: 1.6; }
 .homework-integrity-warning .ant-btn { flex: none; color: #8d581e; border-color: #dfc08e; }
-.homework-warnings { display: grid; gap: 4px; margin: 17px; padding: 10px; color: #9a6734; background: #fff8eb; border-radius: 9px; font-size: 8px; }
 .teacher-question-section, .teacher-submission-section { margin: 17px; }
 .homework-paper-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 7px; }
 .homework-reflow-note { margin: 11px 0 12px; padding: 9px 11px; color: #39736d; background: #edf7f4; border: 1px solid #d5e9e4; border-radius: 9px; font-size: 9px; line-height: 1.65; }
