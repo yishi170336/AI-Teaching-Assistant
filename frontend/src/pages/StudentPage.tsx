@@ -4,7 +4,6 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
-  type WheelEvent as ReactWheelEvent,
 } from 'react'
 import { Link } from 'react-router-dom'
 import {
@@ -1025,6 +1024,7 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
   const [graphZoom, setGraphZoom] = useState(1)
   const [graphCenter, setGraphCenter] = useState({ x: GRAPH_VIEWBOX_WIDTH / 2, y: GRAPH_VIEWBOX_HEIGHT / 2 })
   const [graphDragging, setGraphDragging] = useState(false)
+  const graphSvgRef = useRef<SVGSVGElement | null>(null)
   const graphDragRef = useRef<{
     pointerId: number
     clientX: number
@@ -1088,19 +1088,27 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
     setGraphCenter({ x: GRAPH_VIEWBOX_WIDTH / 2, y: GRAPH_VIEWBOX_HEIGHT / 2 })
   }
 
-  const handleGraphWheel = (event: ReactWheelEvent<SVGSVGElement>) => {
-    event.preventDefault()
-    const rect = event.currentTarget.getBoundingClientRect()
-    if (!rect.width || !rect.height) return
-    const ratioX = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
-    const ratioY = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height))
-    changeGraphZoom(graphZoom * Math.exp(-event.deltaY * 0.0015), {
-      ratioX,
-      ratioY,
-      x: graphViewport.x + ratioX * graphViewport.width,
-      y: graphViewport.y + ratioY * graphViewport.height,
-    })
-  }
+  useEffect(() => {
+    const svg = graphSvgRef.current
+    const canvas = svg?.parentElement
+    if (!svg || !canvas) return
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      const rect = svg.getBoundingClientRect()
+      if (!rect.width || !rect.height) return
+      const ratioX = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
+      const ratioY = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height))
+      changeGraphZoom(graphZoom * Math.exp(-event.deltaY * 0.0015), {
+        ratioX,
+        ratioY,
+        x: graphViewport.x + ratioX * graphViewport.width,
+        y: graphViewport.y + ratioY * graphViewport.height,
+      })
+    }
+    canvas.addEventListener('wheel', handleWheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', handleWheel)
+  }, [graphZoom, graphCenter.x, graphCenter.y])
 
   const handleGraphPointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (event.button !== 0) return
@@ -1119,6 +1127,8 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
   const handleGraphPointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
     const drag = graphDragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
+    event.preventDefault()
+    event.stopPropagation()
     const rect = event.currentTarget.getBoundingClientRect()
     if (!rect.width || !rect.height) return
     const deltaX = event.clientX - drag.clientX
@@ -1288,10 +1298,10 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
       <div className="graph-layout">
         <div className={`graph-canvas ${graphDragging ? 'is-dragging' : ''}`}>
           <svg
+            ref={graphSvgRef}
             viewBox={graphViewBox}
             role="img"
             aria-label={`课程知识关系图，当前缩放 ${Math.round(graphZoom * 100)}%`}
-            onWheel={handleGraphWheel}
             onPointerDown={handleGraphPointerDown}
             onPointerMove={handleGraphPointerMove}
             onPointerUp={finishGraphPointer}
