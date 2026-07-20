@@ -433,8 +433,9 @@ button { color: inherit; }
 .graph-range-grid b { color: #19776e; }
 .graph-range-grid .ant-slider { margin: 6px 5px 1px; }
 .graph-layout { display: grid; grid-template-columns: minmax(0, 1fr) 240px; min-height: 680px; max-width: 1180px; margin: auto; overflow: hidden; background: #fff; border: 1px solid #dce6e3; border-radius: 18px; box-shadow: 0 12px 35px rgba(34,76,70,.06); }
-.graph-canvas { position: relative; min-height: 680px; background: radial-gradient(circle at center, rgba(221,242,237,.72), transparent 47%), linear-gradient(#fbfdfc, #f7faf8); }
-.graph-canvas svg { width: 100%; height: 100%; min-height: 680px; }
+.graph-canvas { position: relative; min-height: 680px; overflow: hidden; background: radial-gradient(circle at center, rgba(221,242,237,.72), transparent 47%), linear-gradient(#fbfdfc, #f7faf8); }
+.graph-canvas svg { width: 100%; height: 100%; min-height: 680px; cursor: grab; touch-action: none; user-select: none; }
+.graph-canvas.is-dragging svg, .graph-canvas.is-dragging .graph-node { cursor: grabbing; }
 .graph-edges line { stroke: #c9dbd7; stroke-width: 1; }
 .graph-node { cursor: pointer; outline: none; }
 .graph-node circle { fill: #91aaa6; stroke: #fff; stroke-width: 2; filter: drop-shadow(0 2px 3px rgba(25,79,71,.16)); }
@@ -447,6 +448,13 @@ button { color: inherit; }
 .graph-node text { max-width: 100px; fill: #617976; font-size: 9px; text-anchor: middle; pointer-events: none; }
 .graph-node.concept text { fill: #244f4c; font-size: 10px; font-weight: 700; }
 .graph-node.document text, .graph-node.page text, .graph-node.circuit text { fill: #254b61; font-size: 10px; font-weight: 700; }
+.graph-zoom-controls { position: absolute; top: 14px; right: 14px; z-index: 2; display: flex; align-items: center; overflow: hidden; padding: 3px; border: 1px solid #d8e4e1; border-radius: 10px; background: rgba(255,255,255,.94); box-shadow: 0 5px 18px rgba(34,76,70,.1); backdrop-filter: blur(8px); }
+.graph-zoom-controls button { display: grid; width: 31px; height: 29px; padding: 0; place-items: center; color: #486b67; background: transparent; border: 0; border-radius: 7px; cursor: pointer; transition: color .18s ease, background .18s ease; }
+.graph-zoom-controls button:hover:not(:disabled) { color: #0c7168; background: #e9f5f2; }
+.graph-zoom-controls button:focus-visible { outline: 2px solid #39a99e; outline-offset: -1px; }
+.graph-zoom-controls button:disabled { color: #b7c4c2; cursor: not-allowed; }
+.graph-zoom-controls .graph-zoom-value { width: 47px; color: #315a56; font-size: 10px; font-variant-numeric: tabular-nums; }
+.graph-zoom-hint { position: absolute; top: 58px; right: 16px; z-index: 1; color: #849692; font-size: 9px; pointer-events: none; }
 .graph-legend { position: absolute; left: 16px; bottom: 14px; display: flex; gap: 12px; padding: 7px 9px; color: #728885; background: rgba(255,255,255,.86); border-radius: 8px; font-size: 9px; }
 .graph-legend span { display: flex; align-items: center; gap: 4px; }
 .graph-legend i { width: 7px; height: 7px; background: #91aaa6; border-radius: 50%; }

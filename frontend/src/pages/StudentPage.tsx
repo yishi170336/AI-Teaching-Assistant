@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
+} from 'react'
 import { Link } from 'react-router-dom'
 import {
   App as AntApp,
@@ -59,6 +66,9 @@ import {
   WandSparkles,
   X,
   Zap,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
 } from 'lucide-react'
 import MathMarkdown from '../components/MathMarkdown'
 import HomeworkView from './HomeworkView'
@@ -996,6 +1006,15 @@ function Conversation({ onAddMistake }: { onAddMistake: (draft: MistakeDraft) =>
   )
 }
 
+const GRAPH_VIEWBOX_WIDTH = 800
+const GRAPH_VIEWBOX_HEIGHT = 760
+const GRAPH_ZOOM_MIN = 0.6
+const GRAPH_ZOOM_MAX = 3
+
+const clampGraphZoom = (value: number) => (
+  Math.min(GRAPH_ZOOM_MAX, Math.max(GRAPH_ZOOM_MIN, value))
+)
+
 function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loading: boolean }) {
   const [selectedId, setSelectedId] = useState('')
   const [selectedChapterId, setSelectedChapterId] = useState('')
@@ -1003,6 +1022,18 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
   const [chapterConceptQuery, setChapterConceptQuery] = useState('')
   const [rangeMode, setRangeMode] = useState<'core' | 'extended' | 'all' | 'custom'>('core')
   const [limits, setLimits] = useState({ concepts: 14, pages: 8, structures: 14 })
+  const [graphZoom, setGraphZoom] = useState(1)
+  const [graphCenter, setGraphCenter] = useState({ x: GRAPH_VIEWBOX_WIDTH / 2, y: GRAPH_VIEWBOX_HEIGHT / 2 })
+  const [graphDragging, setGraphDragging] = useState(false)
+  const graphDragRef = useRef<{
+    pointerId: number
+    clientX: number
+    clientY: number
+    centerX: number
+    centerY: number
+    moved: boolean
+  } | null>(null)
+  const suppressGraphClickRef = useRef(false)
   const totals = useMemo(() => ({
     concepts: graph?.nodes.filter((node) => node.type === 'concept').length || 0,
     pages: graph?.nodes.filter((node) => node.type === 'page').length || 0,
@@ -1026,7 +1057,92 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
     setSelectedChapterId('')
     setChapterWindowOpen(false)
     setChapterConceptQuery('')
+    setGraphZoom(1)
+    setGraphCenter({ x: GRAPH_VIEWBOX_WIDTH / 2, y: GRAPH_VIEWBOX_HEIGHT / 2 })
   }, [graph?.knowledge_base])
+
+  const graphViewport = {
+    width: GRAPH_VIEWBOX_WIDTH / graphZoom,
+    height: GRAPH_VIEWBOX_HEIGHT / graphZoom,
+    x: graphCenter.x - GRAPH_VIEWBOX_WIDTH / graphZoom / 2,
+    y: graphCenter.y - GRAPH_VIEWBOX_HEIGHT / graphZoom / 2,
+  }
+  const graphViewBox = `${graphViewport.x} ${graphViewport.y} ${graphViewport.width} ${graphViewport.height}`
+
+  const changeGraphZoom = (requestedZoom: number, anchor?: { ratioX: number; ratioY: number; x: number; y: number }) => {
+    const nextZoom = clampGraphZoom(requestedZoom)
+    if (Math.abs(nextZoom - graphZoom) < 0.001) return
+    if (anchor) {
+      const nextWidth = GRAPH_VIEWBOX_WIDTH / nextZoom
+      const nextHeight = GRAPH_VIEWBOX_HEIGHT / nextZoom
+      setGraphCenter({
+        x: anchor.x + (0.5 - anchor.ratioX) * nextWidth,
+        y: anchor.y + (0.5 - anchor.ratioY) * nextHeight,
+      })
+    }
+    setGraphZoom(nextZoom)
+  }
+
+  const resetGraphViewport = () => {
+    setGraphZoom(1)
+    setGraphCenter({ x: GRAPH_VIEWBOX_WIDTH / 2, y: GRAPH_VIEWBOX_HEIGHT / 2 })
+  }
+
+  const handleGraphWheel = (event: ReactWheelEvent<SVGSVGElement>) => {
+    event.preventDefault()
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (!rect.width || !rect.height) return
+    const ratioX = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
+    const ratioY = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height))
+    changeGraphZoom(graphZoom * Math.exp(-event.deltaY * 0.0015), {
+      ratioX,
+      ratioY,
+      x: graphViewport.x + ratioX * graphViewport.width,
+      y: graphViewport.y + ratioY * graphViewport.height,
+    })
+  }
+
+  const handleGraphPointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (event.button !== 0) return
+    graphDragRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      centerX: graphCenter.x,
+      centerY: graphCenter.y,
+      moved: false,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setGraphDragging(true)
+  }
+
+  const handleGraphPointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const drag = graphDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (!rect.width || !rect.height) return
+    const deltaX = event.clientX - drag.clientX
+    const deltaY = event.clientY - drag.clientY
+    if (Math.abs(deltaX) + Math.abs(deltaY) > 4) drag.moved = true
+    setGraphCenter({
+      x: drag.centerX - deltaX * graphViewport.width / rect.width,
+      y: drag.centerY - deltaY * graphViewport.height / rect.height,
+    })
+  }
+
+  const finishGraphPointer = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const drag = graphDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    if (drag.moved) {
+      suppressGraphClickRef.current = true
+      window.setTimeout(() => { suppressGraphClickRef.current = false }, 0)
+    }
+    graphDragRef.current = null
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    setGraphDragging(false)
+  }
 
   const chooseRangeMode = (value: string | number) => {
     const mode = String(value) as 'core' | 'extended' | 'all' | 'custom'
@@ -1170,8 +1286,17 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
         </div>
       </div>
       <div className="graph-layout">
-        <div className="graph-canvas">
-          <svg viewBox="0 0 800 760" role="img" aria-label="课程知识关系图">
+        <div className={`graph-canvas ${graphDragging ? 'is-dragging' : ''}`}>
+          <svg
+            viewBox={graphViewBox}
+            role="img"
+            aria-label={`课程知识关系图，当前缩放 ${Math.round(graphZoom * 100)}%`}
+            onWheel={handleGraphWheel}
+            onPointerDown={handleGraphPointerDown}
+            onPointerMove={handleGraphPointerMove}
+            onPointerUp={finishGraphPointer}
+            onPointerCancel={finishGraphPointer}
+          >
             <g className="graph-edges">
               {visual.edges.map((edge, index) => {
                 const from = positions.get(edge.source)
@@ -1185,7 +1310,9 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
                   key={node.id}
                   className={`graph-node ${node.type} ${selectedId === node.id ? 'selected' : ''}`}
                   transform={`translate(${node.x} ${node.y})`}
-                  onClick={() => setSelectedId(node.id)}
+                  onClick={() => {
+                    if (!suppressGraphClickRef.current) setSelectedId(node.id)
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') setSelectedId(node.id)
                   }}
@@ -1200,6 +1327,21 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
               ))}
             </g>
           </svg>
+          <div className="graph-zoom-controls" role="group" aria-label="知识图谱缩放控制">
+            <button type="button" onClick={() => changeGraphZoom(graphZoom / 1.25)} disabled={graphZoom <= GRAPH_ZOOM_MIN} aria-label="缩小知识图谱" title="缩小">
+              <ZoomOut size={16} />
+            </button>
+            <button type="button" className="graph-zoom-value" onClick={resetGraphViewport} aria-label="恢复知识图谱默认大小" title="恢复默认视图">
+              {Math.round(graphZoom * 100)}%
+            </button>
+            <button type="button" onClick={() => changeGraphZoom(graphZoom * 1.25)} disabled={graphZoom >= GRAPH_ZOOM_MAX} aria-label="放大知识图谱" title="放大">
+              <ZoomIn size={16} />
+            </button>
+            <button type="button" onClick={resetGraphViewport} aria-label="重置知识图谱视图" title="重置视图">
+              <RotateCcw size={15} />
+            </button>
+          </div>
+          <div className="graph-zoom-hint">滚轮缩放 · 拖拽移动</div>
           <div className="graph-legend"><span><i className="document" />教材</span><span><i className="page" />页面</span><span><i className="concept" />知识点</span><span><i className="circuit" />电路图</span><span><i className="component" />元件</span></div>
         </div>
         <aside className="graph-detail">
