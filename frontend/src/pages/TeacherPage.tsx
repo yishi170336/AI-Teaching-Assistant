@@ -274,18 +274,26 @@ function SubmissionPanel({
         {grading && (
           <div className="grading-result">
             <div className="grading-score">
-              <Progress type="circle" percent={scorePercent} size={88} strokeColor="#0f766e" />
-              <div><strong>{grading.total_score} / {grading.max_score}</strong><span>{grading.summary || '自动批改已完成'}</span></div>
+              <Progress
+                type="circle"
+                percent={grading.max_score > 0 ? scorePercent : 100}
+                format={grading.max_score > 0 ? undefined : () => '不计分'}
+                size={88}
+                strokeColor="#0f766e"
+              />
+              <div><strong>{grading.max_score > 0 ? `${grading.total_score} / ${grading.max_score}` : '本作业不计分'}</strong><span>{grading.summary || '自动批改已完成'}</span></div>
             </div>
             <div className="grading-items">
               {grading.items.map((item) => (
                 <div key={`${item.question_id}-${item.number}`}>
                   <span>第 {item.number} 题</span>
-                  <strong>{item.score} / {item.max_score} 分</strong>
+                  <strong>{item.max_score > 0 ? `${item.score} / ${item.max_score} 分` : '不计分'}</strong>
                   <p>
                     {item.subquestion_results?.length
                       ? item.subquestion_results.map((part) => (
-                        `（${part.label}）${part.answered ? `${part.score}/${part.max_score}分` : `未作答，0/${part.max_score}分`}`
+                        part.max_score > 0
+                          ? `（${part.label}）${part.answered ? `${part.score}/${part.max_score}分` : `未作答，0/${part.max_score}分`}`
+                          : `（${part.label}）${part.answered ? '已作答（不计分）' : '未作答（不计分）'}`
                       )).join('；') + `。${item.feedback || item.evidence}`
                       : item.feedback || item.evidence}
                   </p>

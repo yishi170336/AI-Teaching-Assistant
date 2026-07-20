@@ -238,6 +238,7 @@ export type HomeworkGradingItem = {
   student_answer: string
   score: number
   max_score: number
+  is_scored?: boolean
   is_correct: boolean
   feedback: string
   evidence: string

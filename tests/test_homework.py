@@ -1437,6 +1437,94 @@ def test_blank_subquestion_is_detected_from_image_and_forced_to_zero(tmp_path):
     assert '"answered": false' in grader.calls[0][0]
 
 
+def test_mixed_point_rules_preserve_explicit_allocate_remainder_and_leave_unscored():
+    reference = _grading_reference({
+        "questions": [
+            {
+                "id": "mixed",
+                "number": "1",
+                "points": 10,
+                "prompt": "完成三问：(1) 第一问。(2) 第二问。(3) 第三问。",
+                "answer": "(1)（4分）答案一。(2)答案二。(3)答案三。",
+            },
+            {
+                "id": "total-only",
+                "number": "2",
+                "points": 8,
+                "prompt": "完成两问：(1) 第一问。(2) 第二问。",
+                "answer": "(1)答案一。(2)答案二。",
+            },
+            {
+                "id": "parts-only",
+                "number": "3",
+                "points": 0,
+                "prompt": "完成两问：(1) 第一问。(2) 第二问。",
+                "answer": "(1)（2分）答案一。(2)（3分）答案二。",
+            },
+            {
+                "id": "unscored",
+                "number": "4",
+                "points": 0,
+                "prompt": "完成两问：(1) 第一问。(2) 第二问。",
+                "answer": "(1)答案一。(2)答案二。",
+            },
+        ]
+    })
+
+    assert [part["points"] for part in reference[0]["required_subquestions"]] == [
+        4, 3, 3,
+    ]
+    assert [part["points"] for part in reference[1]["required_subquestions"]] == [
+        4, 4,
+    ]
+    assert reference[2]["points"] == 5
+    assert reference[2]["scoring_status"] == "scored"
+    assert reference[3]["points"] == 0
+    assert reference[3]["scoring_status"] == "unscored"
+    assert all(
+        part["points_source"] == "unscored"
+        for part in reference[3]["required_subquestions"]
+    )
+
+
+def test_unscored_question_is_qualitative_and_does_not_inflate_total():
+    homework = {
+        "questions": [
+            {"id": "scored", "number": "1", "question_type": "choice", "points": 2},
+            {"id": "unscored", "number": "2", "question_type": "other", "points": 0},
+        ]
+    }
+    result = _normalize_grading(
+        {
+            "items": [
+                {
+                    "question_id": "scored",
+                    "student_answer": "A",
+                    "score": 2,
+                    "max_score": 2,
+                    "is_correct": True,
+                },
+                {
+                    "question_id": "unscored",
+                    "student_answer": "完整作答",
+                    "score": 10,
+                    "max_score": 10,
+                    "is_correct": True,
+                    "feedback": "作答正确",
+                },
+            ]
+        },
+        homework,
+    )
+
+    assert result["total_score"] == 2
+    assert result["max_score"] == 2
+    assert result["items"][1]["score"] == 0
+    assert result["items"][1]["max_score"] == 0
+    assert result["items"][1]["is_scored"] is False
+    assert result["items"][1]["is_correct"] is True
+
+
 def test_each_mapped_photo_question_is_graded_independently_even_with_reused_image(tmp_path):
     store = HomeworkStore(tmp_path / "homework")
     created = store.create_homework(

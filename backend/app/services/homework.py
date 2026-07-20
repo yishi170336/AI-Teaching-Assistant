@@ -483,6 +483,14 @@ class HomeworkStore:
                 "processing_progress", "processing_message", "page_count", "max_score",
             )
         }
+        result["max_score"] = round(
+            sum(
+                _question_scoring_max(question)
+                for question in homework.get("questions", [])
+                if isinstance(question, dict)
+            ),
+            2,
+        )
         result["question_count"] = len(homework.get("questions", []))
         result["questions"] = [
             self._public_question(homework_id, question, include_answers=include_answers)
@@ -510,6 +518,14 @@ class HomeworkStore:
                 "processing_progress", "processing_message", "page_count", "max_score",
             )
         }
+        result["max_score"] = round(
+            sum(
+                _question_scoring_max(question)
+                for question in bank.get("questions", [])
+                if isinstance(question, dict)
+            ),
+            2,
+        )
         result["question_count"] = len(bank.get("questions", []))
         result["questions"] = [
             self._public_question(
@@ -753,7 +769,11 @@ class HomeworkStore:
                     })
                 question[field] = edited
             document["max_score"] = round(
-                sum(_as_float(item.get("points")) for item in document.get("questions", [])),
+                sum(
+                    _question_scoring_max(item)
+                    for item in document.get("questions", [])
+                    if isinstance(item, dict)
+                ),
                 2,
             )
             document["updated_at"] = _now()
@@ -954,7 +974,12 @@ class HomeworkStore:
                 value for value in bank.get("questions", []) if value.get("id") != question_id
             ]
             bank["max_score"] = round(
-                sum(_as_float(value.get("points")) for value in bank["questions"]), 2
+                sum(
+                    _question_scoring_max(value)
+                    for value in bank["questions"]
+                    if isinstance(value, dict)
+                ),
+                2,
             )
             bank["updated_at"] = _now()
             self._write(state)
@@ -1071,7 +1096,9 @@ class HomeworkStore:
             "processing_progress": 100,
             "processing_message": "已从题库生成结构化作业",
             "page_count": 0,
-            "max_score": round(sum(_as_float(item.get("points")) for item in questions), 2),
+            "max_score": round(
+                sum(_question_scoring_max(item) for item in questions), 2
+            ),
             "questions": questions,
             "extraction_schema_version": 4,
         }
@@ -3551,7 +3578,7 @@ def process_homework(
                 "source_segments": segments,
             })
         warnings.extend(_prune_cross_question_answer_leakage(questions))
-        max_score = round(sum(float(item.get("points", 0)) for item in questions), 2)
+        max_score = round(sum(_question_scoring_max(item) for item in questions), 2)
         updater(
             homework_id,
             status="ready" if is_question_bank else "draft",
@@ -3662,6 +3689,15 @@ def _part_point_value(*values: Any) -> float:
     return 0.0
 
 
+def _distribute_points(total: float, count: int) -> list[float]:
+    if total <= 0 or count <= 0:
+        return [0.0] * max(count, 0)
+    base = round(total / count, 2)
+    values = [base] * count
+    values[-1] = round(total - sum(values[:-1]), 2)
+    return values
+
+
 def _question_grading_parts(question: dict[str, Any]) -> list[dict[str, Any]]:
     prompt_parts = _normalize_labeled_parts(question.get("subquestions"))
     if not prompt_parts:
@@ -3674,7 +3710,7 @@ def _question_grading_parts(question: dict[str, Any]) -> list[dict[str, Any]]:
     _rubric_stem, rubric_parts = _split_labeled_text(question.get("rubric"))
     answers_by_label = {part["label"]: part["text"] for part in answer_parts}
     rubrics_by_label = {part["label"]: part["text"] for part in rubric_parts}
-    return [
+    parts = [
         {
             "label": part["label"],
             "question": part["text"],
@@ -3684,9 +3720,32 @@ def _question_grading_parts(question: dict[str, Any]) -> list[dict[str, Any]]:
                 answers_by_label.get(part["label"], ""),
                 rubrics_by_label.get(part["label"], ""),
             ),
+            "points_source": "explicit",
         }
         for part in prompt_parts
     ]
+    declared_total = max(0.0, _as_float(question.get("points")))
+    explicit_total = round(sum(_as_float(part.get("points")) for part in parts), 2)
+    missing_indexes = [
+        index for index, part in enumerate(parts) if _as_float(part.get("points")) <= 0
+    ]
+    remaining = max(0.0, round(declared_total - explicit_total, 2))
+    allocations = _distribute_points(remaining, len(missing_indexes))
+    for index, allocation in zip(missing_indexes, allocations):
+        parts[index]["points"] = allocation
+        parts[index]["points_source"] = (
+            "allocated_from_question_total" if allocation > 0 else "unscored"
+        )
+    return parts
+
+
+def _question_scoring_max(question: dict[str, Any]) -> float:
+    declared_total = max(0.0, _as_float(question.get("points")))
+    part_total = round(
+        sum(_as_float(part.get("points")) for part in _question_grading_parts(question)),
+        2,
+    )
+    return max(declared_total, part_total)
 
 
 def _grading_reference(homework: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3697,7 +3756,9 @@ def _grading_reference(homework: dict[str, Any]) -> list[dict[str, Any]]:
             "question_type": _question_type(item.get("question_type")),
             "question": _compose_labeled_text(item.get("prompt"), item.get("subquestions")),
             "options": _normalize_options(item.get("options")),
-            "points": item.get("points"),
+            "points": _question_scoring_max(item),
+            "declared_points": max(0.0, _as_float(item.get("points"))),
+            "scoring_status": "scored" if _question_scoring_max(item) > 0 else "unscored",
             "standard_answer": _compose_labeled_text(
                 item.get("answer"), item.get("answer_subquestions")
             ),
@@ -3843,7 +3904,7 @@ def _normalize_grading(
             reference = references.get(question_id)
             if reference is None or question_id in normalized_by_id:
                 continue
-            max_score = _as_float(reference.get("points"), _as_float(raw.get("max_score")))
+            max_score = _question_scoring_max(reference)
             score = max(0.0, min(max_score, _as_float(raw.get("score"))))
             expected_parts = _question_grading_parts(reference)
             raw_parts = raw.get("subquestion_results", [])
@@ -3868,8 +3929,6 @@ def _normalize_grading(
                 student_part_answer = _clean_text(raw_part.get("student_answer"), 4000)
                 part_score = max(0.0, _as_float(raw_part.get("score")))
                 part_max_score = _as_float(expected.get("points"))
-                if part_max_score <= 0:
-                    part_max_score = _as_float(raw_part.get("max_score"), part_score)
                 part_score = min(part_score, part_max_score) if part_max_score > 0 else 0.0
                 answered = _as_bool(raw_part.get("answered", bool(student_part_answer)))
                 completeness = completeness_by_label.get(label, {})
@@ -3915,7 +3974,12 @@ def _normalize_grading(
                 "student_answer": _clean_text(raw.get("student_answer", ""), 8000),
                 "score": score,
                 "max_score": max_score,
-                "is_correct": score >= max_score and max_score > 0,
+                "is_scored": max_score > 0,
+                "is_correct": (
+                    score >= max_score and max_score > 0
+                    if max_score > 0
+                    else _as_bool(raw.get("is_correct", False))
+                ),
                 "feedback": feedback,
                 "evidence": evidence,
                 "subquestion_results": subquestion_results,
@@ -3931,7 +3995,8 @@ def _normalize_grading(
             "number": reference.get("number", ""),
             "student_answer": "",
             "score": 0.0,
-            "max_score": _as_float(reference.get("points")),
+            "max_score": _question_scoring_max(reference),
+            "is_scored": _question_scoring_max(reference) > 0,
             "is_correct": False,
             "feedback": "批改模型未返回本题结果，需要教师复查",
             "evidence": "模型输出缺少该题的 question_id，不能据此判定学生未作答",
@@ -3939,7 +4004,14 @@ def _normalize_grading(
         }
     items = [normalized_by_id[str(item.get("id"))] for item in question_order]
     total = round(sum(float(item["score"]) for item in items), 2)
-    maximum = round(sum(_as_float(item.get("points")) for item in homework.get("questions", [])), 2)
+    maximum = round(
+        sum(
+            _question_scoring_max(item)
+            for item in homework.get("questions", [])
+            if isinstance(item, dict)
+        ),
+        2,
+    )
     summary = _clean_text(value.get("summary", ""), 2000)
     if missing_ids:
         missing_numbers = [str(references[item].get("number", "?")) for item in missing_ids]
@@ -4109,6 +4181,7 @@ def _grading_review_prompt(
 answer_source=uploaded_images 表示学生已经提交了该题答案图片，不得因为结构化文字为空而称其“未作答”。
 question_id 是图片与题目的唯一关联依据，题号可重复；同一图片也可合理地用于多道题。
 必须重新核对 required_subquestions 中的每个小问：图片中只有小问序号而没有实际内容就是未作答，必须 answered=false、score=0；严禁从其他小问或标准答案补写。检查独立完整性结果是否与原图一致，并检查 subquestion_results 是否逐项齐全、各小问分数之和是否等于大题得分。
+同时核对分值来源：明确分值优先；从大题总分分配的分值按 required_subquestions 提供值执行；scoring_status=unscored 的题只做定性判断，不得虚构分值或计入总分。
 前一模型若漏题、错识、错判未作答、加总错误或扣分不合理，passed=false 并逐条说明。
 必须检查本批次每道题。只返回 JSON：{"passed":true,"confidence":0.0,"issues":[],"recommendation":""}。
 本批题目、标准答案与评分标准：
@@ -4219,6 +4292,7 @@ answer_source=uploaded_images 时，表示学生已经拍照作答；即使 dire
 只有 answer_source=unanswered 且确实没有图片或非空直接答案时，才可判定未作答。
 required_subquestions 非空时，必须先逐小问核对图片并返回全部 subquestion_results。独立完整性检查中 answered=false 的小问必须保持未作答且得 0 分；不得从其他小问的内容或标准答案补全。answered=null 表示不确定，必须重新查看原图。
 每个 subquestion_results 必须含 label、answered、student_answer、score、max_score、feedback；大题 score 必须等于各小问 score 之和。
+分值规则：points_source=explicit 的小问使用原始明确分值；allocated_from_question_total 表示从大题总分的剩余分值中平均分配；scoring_status=unscored 表示原题完全没有分值，只判断作答是否正确并给出评语，score 和 max_score 都返回 0，不计入总分，严禁自行编造分值。
 只返回 JSON：{"extracted_answer":"完整转写","items":[{"question_id":"...","number":"...","student_answer":"...","score":0,"max_score":0,"is_correct":false,"subquestion_results":[{"label":"1","answered":true,"student_answer":"...","score":0,"max_score":0,"feedback":"..."}],"feedback":"...","evidence":"判分依据"}],"summary":"本批总评"}。
 本批题目、标准答案与评分标准：
 """
@@ -4327,7 +4401,11 @@ required_subquestions 非空时，必须先逐小问核对图片并返回全部 
             "items": all_items,
             "total_score": round(sum(_as_float(item.get("score")) for item in all_items), 2),
             "max_score": round(
-                sum(_as_float(item.get("points")) for item in homework.get("questions", [])),
+                sum(
+                    _question_scoring_max(item)
+                    for item in homework.get("questions", [])
+                    if isinstance(item, dict)
+                ),
                 2,
             ),
             "summary": "；".join(_unique_texts(
