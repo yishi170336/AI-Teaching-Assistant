@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Button, Checkbox, Empty, Input, Modal, Popconfirm, Progress, Segmented, Spin, Tag, Upload, message } from 'antd'
+import { Button, Checkbox, Empty, Input, Modal, Popconfirm, Progress, Segmented, Select, Spin, Tag, Upload, message } from 'antd'
 import type { UploadFile } from 'antd'
 import {
   AlertTriangle,
@@ -15,8 +15,11 @@ import {
   FileCheck2,
   FileText,
   GraduationCap,
+  ImagePlus,
   LoaderCircle,
   LibraryBig,
+  Pencil,
+  Plus,
   Printer,
   RefreshCw,
   Send,
@@ -29,17 +32,22 @@ import {
   createHomework,
   createHomeworkFromQuestionBank,
   createQuestionBank,
+  deleteDocumentQuestionAsset,
   deleteQuestionBank,
   deleteQuestionBankQuestion,
   deleteHomework,
   fetchHomeworks,
   fetchQuestionBanks,
   Homework,
+  HomeworkQuestion,
+  HomeworkQuestionUpdate,
   HomeworkSubmission,
   publishHomework,
   QuestionBank,
   reprocessQuestionBank,
   reprocessHomework,
+  updateDocumentQuestion,
+  uploadDocumentQuestionAsset,
 } from '../lib/api'
 import HomeworkPaper from '../components/HomeworkPaper'
 import MathMarkdown from '../components/MathMarkdown'
@@ -81,14 +89,92 @@ const questionBankStatus = {
 
 const bankQuestionKey = (bankId: string, questionId: string) => `${bankId}:${questionId}`
 
-function QuestionPreview({ homework }: { homework: Homework }) {
+type EditableQuestionContext = {
+  kind: 'homework' | 'question-bank'
+  documentId: string
+  question: HomeworkQuestion
+}
+
+const questionTypeOptions = [
+  { value: 'choice', label: '选择题' },
+  { value: 'fill_blank', label: '填空题' },
+  { value: 'true_false', label: '判断题' },
+  { value: 'short_answer', label: '简答题' },
+  { value: 'calculation', label: '计算题' },
+  { value: 'design', label: '设计题' },
+  { value: 'other', label: '其他题型' },
+]
+
+function questionTypeLabel(value: string) {
+  return questionTypeOptions.find((item) => item.value === value)?.label || '题目'
+}
+
+function QuestionManagementList({
+  questions,
+  deletingQuestionId = '',
+  onEditQuestion,
+  onDeleteQuestion,
+}: {
+  questions: HomeworkQuestion[]
+  deletingQuestionId?: string
+  onEditQuestion: (question: HomeworkQuestion) => void
+  onDeleteQuestion?: (questionId: string) => void
+}) {
+  return (
+    <section className="question-bank-question-manager">
+      <header className="teacher-section-heading">
+        <div><span>QUESTION MANAGEMENT</span><h3>题目管理</h3></div>
+        <small>可修正文题、答案、图注，或补充和替换图片</small>
+      </header>
+      {questions.length ? (
+        <div className="question-bank-manage-list">
+          {questions.map((question) => (
+            <article key={question.id}>
+              <div className="question-bank-manage-number">{question.number}</div>
+              <div className="question-bank-manage-copy">
+                <span>{question.section_title || '题目'} · {questionTypeLabel(question.question_type)}</span>
+                <MathMarkdown content={question.prompt || '未识别到题干'} />
+                <small>{question.figures?.length || 0} 张题图 · {question.answer_figures?.length || 0} 张答案图 · {question.answer || question.answer_subquestions?.length ? '含参考答案' : '未识别到答案'}</small>
+              </div>
+              <div className="question-manage-actions">
+                <Button type="text" icon={<Pencil size={14} />} onClick={() => onEditQuestion(question)}>编辑</Button>
+                {onDeleteQuestion && (
+                  <Popconfirm
+                    title="从题库中删除这道题？"
+                    description="只影响题库，已经布置的作业不会受影响。"
+                    okText="删除"
+                    cancelText="取消"
+                    okButtonProps={{ danger: true }}
+                    onConfirm={() => onDeleteQuestion(question.id)}
+                  >
+                    <Button danger type="text" icon={<Trash2 size={14} />} loading={deletingQuestionId === question.id} />
+                  </Popconfirm>
+                )}
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无题目" />}
+    </section>
+  )
+}
+
+function QuestionPreview({
+  homework,
+  onEditQuestion,
+}: {
+  homework: Homework
+  onEditQuestion: (question: HomeworkQuestion) => void
+}) {
   const [mode, setMode] = useState<'questions' | 'answers'>('questions')
   const printPaper = (nextMode: 'questions' | 'answers') => {
     setMode(nextMode)
     window.setTimeout(() => window.print(), 80)
   }
   return (
-    <section className="teacher-question-section">
+    <>
+      <QuestionManagementList questions={homework.questions} onEditQuestion={onEditQuestion} />
+      <section className="teacher-question-section">
       <header className="teacher-section-heading">
         <div>
           <span>STRUCTURED HOMEWORK</span>
@@ -106,7 +192,8 @@ function QuestionPreview({ homework }: { homework: Homework }) {
       </header>
       <p className="homework-reflow-note">仅保留题号、题干、小问、选项、题图和参考答案；教材讲解、目录与无关内容不会进入作业。</p>
       <HomeworkPaper homework={homework} mode={mode} printable />
-    </section>
+      </section>
+    </>
   )
 }
 
@@ -122,16 +209,26 @@ function SubmissionPanel({ submission }: { submission: HomeworkSubmission }) {
         <div className="submission-student-mark"><GraduationCap size={18} /></div>
         <div>
           <strong>{submission.student_name || '学生 1'}</strong>
-          <span>{formatTime(submission.created_at)} 提交 · {submission.answer_images.length} 张图片</span>
+          <span>{formatTime(submission.created_at)} 提交 · {submission.answers?.length || 0} 道结构化答案 · {submission.answer_images.length} 张图片</span>
         </div>
         <Tag color={status.color}>{status.label}</Tag>
       </header>
       <div className="submission-body">
+        {submission.answers?.length > 0 && (
+          <div className="submission-direct-answers">
+            {submission.answers.map((answer) => (
+              <article key={answer.question_id}>
+                <strong>第 {answer.number || '?'} 题</strong>
+                <span>{answer.selected_options?.length ? answer.selected_options.join('、') : answer.answer || answer.subquestion_answers?.map((part) => `（${part.label}）${part.text}`).join('；') || '图片作答'}</span>
+              </article>
+            ))}
+          </div>
+        )}
         <div className="submission-images">
           {submission.answer_images.map((asset, index) => (
             <a href={asset.url} target="_blank" rel="noreferrer" key={asset.file}>
               <img src={asset.url} alt={`学生答案 ${index + 1}`} />
-              <span><Eye size={12} /> 查看原图 {index + 1}</span>
+              <span><Eye size={12} /> 第 {asset.question_number || '?'} 题 · 查看原图</span>
             </a>
           ))}
         </div>
@@ -181,10 +278,12 @@ function SubmissionPanel({ submission }: { submission: HomeworkSubmission }) {
 function QuestionBankPreview({
   bank,
   deletingQuestionId,
+  onEditQuestion,
   onDeleteQuestion,
 }: {
   bank: QuestionBank
   deletingQuestionId: string
+  onEditQuestion: (question: HomeworkQuestion) => void
   onDeleteQuestion: (questionId: string) => void
 }) {
   const [mode, setMode] = useState<'questions' | 'answers'>('questions')
@@ -213,36 +312,12 @@ function QuestionBankPreview({
   }
   return (
     <div className="question-bank-detail-body">
-      <section className="question-bank-question-manager">
-        <header className="teacher-section-heading">
-          <div><span>QUESTION MANAGEMENT</span><h3>题目管理</h3></div>
-          <small>可逐题删除误识别或不需要的内容</small>
-        </header>
-        {bank.questions.length ? (
-          <div className="question-bank-manage-list">
-            {bank.questions.map((question) => (
-              <article key={question.id}>
-                <div className="question-bank-manage-number">{question.number}</div>
-                <div className="question-bank-manage-copy">
-                  <span>{question.section_title || '题目'} · {question.question_type === 'choice' ? '选择题' : '题目'}</span>
-                  <MathMarkdown content={question.prompt || '未识别到题干'} />
-                  <small>{question.figures?.length || 0} 张题图 · {question.answer || question.answer_figures?.length ? '含参考答案' : '未识别到答案'}</small>
-                </div>
-                <Popconfirm
-                  title="从题库中删除这道题？"
-                  description="只影响题库，已经布置的作业不会受影响。"
-                  okText="删除"
-                  cancelText="取消"
-                  okButtonProps={{ danger: true }}
-                  onConfirm={() => onDeleteQuestion(question.id)}
-                >
-                  <Button danger type="text" icon={<Trash2 size={14} />} loading={deletingQuestionId === question.id} />
-                </Popconfirm>
-              </article>
-            ))}
-          </div>
-        ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="题库中暂无题目" />}
-      </section>
+      <QuestionManagementList
+        questions={bank.questions}
+        deletingQuestionId={deletingQuestionId}
+        onEditQuestion={onEditQuestion}
+        onDeleteQuestion={onDeleteQuestion}
+      />
       {bank.questions.length > 0 && (
         <section className="question-bank-paper-preview">
           <header className="teacher-section-heading">
@@ -257,6 +332,230 @@ function QuestionBankPreview({
         </section>
       )}
     </div>
+  )
+}
+
+function QuestionEditorModal({
+  context,
+  onClose,
+  onDocumentChange,
+}: {
+  context: EditableQuestionContext | null
+  onClose: () => void
+  onDocumentChange: (document: Homework | QuestionBank) => void
+}) {
+  const [draft, setDraft] = useState<HomeworkQuestion | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [assetAction, setAssetAction] = useState('')
+
+  useEffect(() => {
+    setDraft(context ? JSON.parse(JSON.stringify(context.question)) as HomeworkQuestion : null)
+  }, [context])
+
+  if (!context || !draft) return null
+
+  const syncDocument = (document: Homework | QuestionBank) => {
+    onDocumentChange(document)
+    const nextQuestion = document.questions.find((question) => question.id === context.question.id)
+    if (nextQuestion) setDraft(JSON.parse(JSON.stringify(nextQuestion)) as HomeworkQuestion)
+  }
+  const updatePart = (
+    field: 'subquestions' | 'answer_subquestions',
+    index: number,
+    key: 'label' | 'text',
+    value: string,
+  ) => {
+    const parts = [...(draft[field] || [])]
+    parts[index] = { ...parts[index], [key]: value }
+    setDraft({ ...draft, [field]: parts })
+  }
+  const removePart = (field: 'subquestions' | 'answer_subquestions', index: number) => {
+    setDraft({ ...draft, [field]: (draft[field] || []).filter((_, itemIndex) => itemIndex !== index) })
+  }
+  const updateOption = (index: number, key: 'label' | 'text', value: string) => {
+    const options = [...(draft.options || [])]
+    options[index] = { ...options[index], [key]: value }
+    setDraft({ ...draft, options })
+  }
+  const save = async () => {
+    setSaving(true)
+    const payload: HomeworkQuestionUpdate = {
+      section_key: draft.section_key,
+      section_title: draft.section_title,
+      number: draft.number,
+      question_type: draft.question_type,
+      prompt: draft.prompt,
+      subquestions: draft.subquestions || [],
+      options: draft.options || [],
+      option_columns: draft.option_columns,
+      figure_position: draft.figure_position,
+      points: Number(draft.points) || 0,
+      answer: draft.answer || '',
+      answer_subquestions: draft.answer_subquestions || [],
+      rubric: draft.rubric || '',
+      figures: (draft.figures || []).map((asset) => ({
+        file: asset.file,
+        caption: asset.caption || '',
+        position: asset.position || '',
+      })),
+      answer_figures: (draft.answer_figures || []).map((asset) => ({
+        file: asset.file,
+        caption: asset.caption || '',
+        position: asset.position || '',
+      })),
+    }
+    try {
+      const document = await updateDocumentQuestion(
+        context.kind,
+        context.documentId,
+        context.question.id,
+        payload,
+      )
+      syncDocument(document)
+      message.success('题目、答案和图注已保存')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '题目保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+  const uploadAsset = async (
+    target: 'figures' | 'answer_figures',
+    file: File,
+    replaceFile = '',
+  ) => {
+    const action = `${target}:${replaceFile || 'new'}`
+    setAssetAction(action)
+    try {
+      const document = await uploadDocumentQuestionAsset(
+        context.kind,
+        context.documentId,
+        context.question.id,
+        target,
+        file,
+        replaceFile
+          ? (draft[target] || []).find((asset) => asset.file === replaceFile)?.caption || ''
+          : '',
+        replaceFile,
+      )
+      syncDocument(document)
+      message.success(replaceFile ? '图片已替换' : '图片已添加')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '图片上传失败')
+    } finally {
+      setAssetAction('')
+    }
+  }
+  const deleteAsset = async (target: 'figures' | 'answer_figures', file: string) => {
+    setAssetAction(`${target}:${file}`)
+    try {
+      const document = await deleteDocumentQuestionAsset(
+        context.kind,
+        context.documentId,
+        context.question.id,
+        target,
+        file,
+      )
+      syncDocument(document)
+      message.success('图片已删除')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '图片删除失败')
+    } finally {
+      setAssetAction('')
+    }
+  }
+  const renderAssets = (target: 'figures' | 'answer_figures', title: string) => (
+    <section className="question-editor-assets">
+      <header><div><ImagePlus size={16} /><strong>{title}</strong></div><small>可修改图注、替换错误图片或补图</small></header>
+      <div className="question-editor-asset-grid">
+        {(draft[target] || []).map((asset, index) => (
+          <article key={asset.file}>
+            <img src={asset.url} alt={asset.caption || title} />
+            <Input
+              value={asset.caption || ''}
+              placeholder="填写图号或图注"
+              onChange={(event) => {
+                const assets = [...(draft[target] || [])]
+                assets[index] = { ...assets[index], caption: event.target.value }
+                setDraft({ ...draft, [target]: assets })
+              }}
+            />
+            <div>
+              <Upload
+                accept="image/*"
+                showUploadList={false}
+                beforeUpload={(file) => { void uploadAsset(target, file, asset.file); return false }}
+              >
+                <Button size="small" loading={assetAction === `${target}:${asset.file}`}>替换图片</Button>
+              </Upload>
+              <Popconfirm title="删除这张图片？" okText="删除" cancelText="取消" onConfirm={() => void deleteAsset(target, asset.file)}>
+                <Button danger size="small" type="text">删除</Button>
+              </Popconfirm>
+            </div>
+          </article>
+        ))}
+        <Upload
+          accept="image/*"
+          showUploadList={false}
+          beforeUpload={(file) => { void uploadAsset(target, file); return false }}
+        >
+          <button className="question-editor-add-image" type="button">
+            <ImagePlus size={22} /><strong>上传{title}</strong><span>PNG、JPG、WEBP、BMP</span>
+          </button>
+        </Upload>
+      </div>
+    </section>
+  )
+
+  return (
+    <Modal
+      open
+      onCancel={onClose}
+      onOk={() => void save()}
+      okText="保存修改"
+      cancelText="关闭"
+      confirmLoading={saving}
+      width={960}
+      className="question-editor-modal"
+      title={`编辑第 ${draft.number || '?'} 题`}
+      destroyOnHidden
+    >
+      <div className="question-editor-form">
+        <div className="question-editor-row columns-4">
+          <label><span>题号</span><Input value={draft.number} onChange={(event) => setDraft({ ...draft, number: event.target.value })} /></label>
+          <label><span>题型</span><Select value={draft.question_type} options={questionTypeOptions} onChange={(value) => setDraft({ ...draft, question_type: value })} /></label>
+          <label><span>分值</span><Input type="number" min={0} value={draft.points} onChange={(event) => setDraft({ ...draft, points: Number(event.target.value) })} /></label>
+          <label><span>选项列数</span><Select value={draft.option_columns || 1} options={[1, 2, 4].map((value) => ({ value, label: `${value} 列` }))} onChange={(value) => setDraft({ ...draft, option_columns: value })} /></label>
+        </div>
+        <div className="question-editor-row columns-2">
+          <label><span>章节标识</span><Input value={draft.section_key} onChange={(event) => setDraft({ ...draft, section_key: event.target.value })} /></label>
+          <label><span>章节标题</span><Input value={draft.section_title} onChange={(event) => setDraft({ ...draft, section_title: event.target.value })} /></label>
+        </div>
+        <label className="question-editor-field"><span>题干（支持 Markdown / LaTeX）</span><TextArea autoSize={{ minRows: 4, maxRows: 12 }} value={draft.prompt} onChange={(event) => setDraft({ ...draft, prompt: event.target.value })} /></label>
+
+        <section className="question-editor-list-field">
+          <header><strong>题目小问</strong><Button size="small" icon={<Plus size={13} />} onClick={() => setDraft({ ...draft, subquestions: [...(draft.subquestions || []), { label: String((draft.subquestions?.length || 0) + 1), text: '' }] })}>增加小问</Button></header>
+          {(draft.subquestions || []).map((part, index) => <div key={`${part.label}-${index}`}><Input className="part-label" value={part.label} onChange={(event) => updatePart('subquestions', index, 'label', event.target.value)} /><TextArea autoSize value={part.text} onChange={(event) => updatePart('subquestions', index, 'text', event.target.value)} /><Button danger type="text" onClick={() => removePart('subquestions', index)}>删除</Button></div>)}
+        </section>
+
+        {draft.question_type === 'choice' && (
+          <section className="question-editor-list-field">
+            <header><strong>选择题选项</strong><Button size="small" icon={<Plus size={13} />} onClick={() => setDraft({ ...draft, options: [...(draft.options || []), { label: String.fromCharCode(65 + (draft.options?.length || 0)), text: '' }] })}>增加选项</Button></header>
+            {(draft.options || []).map((option, index) => <div key={`${option.label}-${index}`}><Input className="part-label" value={option.label} onChange={(event) => updateOption(index, 'label', event.target.value)} /><Input value={option.text} onChange={(event) => updateOption(index, 'text', event.target.value)} /><Button danger type="text" onClick={() => setDraft({ ...draft, options: draft.options.filter((_, itemIndex) => itemIndex !== index) })}>删除</Button></div>)}
+          </section>
+        )}
+
+        <label className="question-editor-field"><span>参考答案（支持 Markdown / LaTeX）</span><TextArea autoSize={{ minRows: 4, maxRows: 12 }} value={draft.answer || ''} onChange={(event) => setDraft({ ...draft, answer: event.target.value })} /></label>
+        <section className="question-editor-list-field">
+          <header><strong>答案小问</strong><Button size="small" icon={<Plus size={13} />} onClick={() => setDraft({ ...draft, answer_subquestions: [...(draft.answer_subquestions || []), { label: String((draft.answer_subquestions?.length || 0) + 1), text: '' }] })}>增加答案小问</Button></header>
+          {(draft.answer_subquestions || []).map((part, index) => <div key={`${part.label}-${index}`}><Input className="part-label" value={part.label} onChange={(event) => updatePart('answer_subquestions', index, 'label', event.target.value)} /><TextArea autoSize value={part.text} onChange={(event) => updatePart('answer_subquestions', index, 'text', event.target.value)} /><Button danger type="text" onClick={() => removePart('answer_subquestions', index)}>删除</Button></div>)}
+        </section>
+        <label className="question-editor-field"><span>评分标准</span><TextArea autoSize={{ minRows: 2, maxRows: 8 }} value={draft.rubric || ''} onChange={(event) => setDraft({ ...draft, rubric: event.target.value })} /></label>
+        <label className="question-editor-field compact"><span>题图位置</span><Select value={draft.figure_position || 'after_question'} options={[{ value: 'before_question', label: '题干前' }, { value: 'after_question', label: '题干后' }, { value: 'after_options', label: '选项后' }]} onChange={(value) => setDraft({ ...draft, figure_position: value })} /></label>
+        {renderAssets('figures', '题图')}
+        {renderAssets('answer_figures', '答案图')}
+      </div>
+    </Modal>
   )
 }
 
@@ -281,6 +580,19 @@ export default function TeacherPage() {
   const [actionId, setActionId] = useState('')
   const [bankActionId, setBankActionId] = useState('')
   const [deletingQuestionId, setDeletingQuestionId] = useState('')
+  const [editingQuestion, setEditingQuestion] = useState<EditableQuestionContext | null>(null)
+
+  const applyEditedDocument = (document: Homework | QuestionBank) => {
+    if (editingQuestion?.kind === 'homework') {
+      setHomeworks((current) => current.map((item) => item.id === document.id ? document as Homework : item))
+    } else {
+      setQuestionBanks((current) => current.map((item) => item.id === document.id ? document as QuestionBank : item))
+    }
+    if (editingQuestion) {
+      const question = document.questions.find((item) => item.id === editingQuestion.question.id)
+      if (question) setEditingQuestion({ ...editingQuestion, question })
+    }
+  }
 
   const loadHomeworks = useCallback(async (withSpinner = false) => {
     if (withSpinner) setLoading(true)
@@ -755,6 +1067,7 @@ export default function TeacherPage() {
               <QuestionBankPreview
                 bank={bankDetail}
                 deletingQuestionId={deletingQuestionId}
+                onEditQuestion={(question) => setEditingQuestion({ kind: 'question-bank', documentId: bankDetail.id, question })}
                 onDeleteQuestion={(questionId) => void removeBankQuestion(bankDetail.id, questionId)}
               />
             )}
@@ -815,7 +1128,12 @@ export default function TeacherPage() {
               </div>
             )}
             {detail.processing_warnings.length > 0 && <div className="homework-warnings">{detail.processing_warnings.map((warning) => <span key={warning}>{warning}</span>)}</div>}
-            {detail.questions.length > 0 && <QuestionPreview homework={detail} />}
+            {detail.questions.length > 0 && (
+              <QuestionPreview
+                homework={detail}
+                onEditQuestion={(question) => setEditingQuestion({ kind: 'homework', documentId: detail.id, question })}
+              />
+            )}
 
             <section className="teacher-submission-section">
               <header className="teacher-section-heading"><div><span>SUBMISSIONS</span><h3>学生提交与批改</h3></div><small>当前演示为 1 名学生</small></header>
@@ -826,6 +1144,11 @@ export default function TeacherPage() {
           </div>
         )}
       </Modal>
+      <QuestionEditorModal
+        context={editingQuestion}
+        onClose={() => setEditingQuestion(null)}
+        onDocumentChange={applyEditedDocument}
+      />
     </div>
   )
 }

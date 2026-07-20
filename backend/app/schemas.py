@@ -234,6 +234,86 @@ class HomeworkFromQuestionBankRequest(BaseModel):
         return value.strip()
 
 
+class HomeworkQuestionPartEdit(BaseModel):
+    label: str = Field(min_length=1, max_length=24)
+    text: str = Field(default="", max_length=12000)
+
+    @field_validator("label", "text")
+    @classmethod
+    def strip_question_part_fields(cls, value: str) -> str:
+        return value.strip()
+
+
+class HomeworkOptionEdit(BaseModel):
+    label: str = Field(min_length=1, max_length=12)
+    text: str = Field(default="", max_length=8000)
+
+    @field_validator("label", "text")
+    @classmethod
+    def strip_option_fields(cls, value: str) -> str:
+        return value.strip()
+
+
+class HomeworkAssetEdit(BaseModel):
+    file: str = Field(min_length=1, max_length=160)
+    caption: str = Field(default="", max_length=160)
+    position: str = Field(default="", max_length=40)
+
+    @field_validator("file", "caption", "position")
+    @classmethod
+    def strip_asset_fields(cls, value: str) -> str:
+        return value.strip()
+
+
+class HomeworkQuestionUpdateRequest(BaseModel):
+    section_key: str | None = Field(default=None, max_length=40)
+    section_title: str | None = Field(default=None, max_length=240)
+    number: str | None = Field(default=None, max_length=80)
+    question_type: Literal[
+        "choice", "fill_blank", "short_answer", "calculation", "design", "true_false", "other"
+    ] | None = None
+    prompt: str | None = Field(default=None, max_length=24000)
+    subquestions: list[HomeworkQuestionPartEdit] | None = Field(default=None, max_length=40)
+    options: list[HomeworkOptionEdit] | None = Field(default=None, max_length=20)
+    option_columns: int | None = Field(default=None, ge=1, le=4)
+    figure_position: Literal["before_question", "after_question", "after_options"] | None = None
+    points: float | None = Field(default=None, ge=0, le=10000)
+    answer: str | None = Field(default=None, max_length=24000)
+    answer_subquestions: list[HomeworkQuestionPartEdit] | None = Field(default=None, max_length=40)
+    rubric: str | None = Field(default=None, max_length=12000)
+    figures: list[HomeworkAssetEdit] | None = Field(default=None, max_length=30)
+    answer_figures: list[HomeworkAssetEdit] | None = Field(default=None, max_length=30)
+
+    @field_validator("section_key", "section_title", "number", "prompt", "answer", "rubric")
+    @classmethod
+    def strip_question_fields(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else value
+
+
+class HomeworkSubmissionAnswer(BaseModel):
+    question_id: str = Field(min_length=32, max_length=32)
+    answer: str = Field(default="", max_length=12000)
+    selected_options: list[str] = Field(default_factory=list, max_length=20)
+    subquestion_answers: list[HomeworkQuestionPartEdit] = Field(default_factory=list, max_length=40)
+
+    @field_validator("question_id")
+    @classmethod
+    def valid_submission_question_id(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-f0-9]{32}", value):
+            raise ValueError("题目标识不合法")
+        return value
+
+    @field_validator("answer")
+    @classmethod
+    def strip_submission_answer(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("selected_options")
+    @classmethod
+    def normalize_selected_options(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+
 class KBStatus(BaseModel):
     id: str
     state: Literal["ready", "building", "error", "missing"]

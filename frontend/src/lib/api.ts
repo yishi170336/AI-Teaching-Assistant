@@ -174,6 +174,8 @@ export type HomeworkAsset = {
   source_top?: number
   source_left?: number
   position?: 'before_question' | 'after_question' | 'after_options' | string
+  question_id?: string
+  question_number?: string
 }
 
 export type HomeworkOption = { label: string; text: string }
@@ -200,6 +202,34 @@ export type HomeworkQuestion = {
   answer_subquestions?: HomeworkQuestionPart[]
   answer_figures?: HomeworkAsset[]
   rubric?: string
+}
+
+export type HomeworkStudentAnswer = {
+  question_id: string
+  number?: string
+  question_type?: string
+  answer: string
+  selected_options: string[]
+  subquestion_answers: HomeworkQuestionPart[]
+}
+
+export type HomeworkQuestionUpdate = Partial<Pick<HomeworkQuestion,
+  | 'section_key'
+  | 'section_title'
+  | 'number'
+  | 'question_type'
+  | 'prompt'
+  | 'subquestions'
+  | 'options'
+  | 'option_columns'
+  | 'figure_position'
+  | 'points'
+  | 'answer'
+  | 'answer_subquestions'
+  | 'rubric'
+>> & {
+  figures?: Array<Pick<HomeworkAsset, 'file' | 'caption' | 'position'>>
+  answer_figures?: Array<Pick<HomeworkAsset, 'file' | 'caption' | 'position'>>
 }
 
 export type HomeworkGradingItem = {
@@ -234,6 +264,7 @@ export type HomeworkSubmission = {
   student_id: string
   student_name: string
   status: HomeworkSubmissionStatus
+  answers: HomeworkStudentAnswer[]
   answer_images: HomeworkAsset[]
   extracted_answer: string
   grading: HomeworkGrading | null
@@ -633,6 +664,75 @@ export async function deleteQuestionBankQuestion(bankId: string, questionId: str
   await homeworkResponse(response, '题目删除失败')
 }
 
+export type EditableQuestionDocument = 'homework' | 'question-bank'
+
+function questionDocumentPath(kind: EditableQuestionDocument, documentId: string) {
+  const collection = kind === 'homework' ? 'homeworks' : 'question-banks'
+  return `/api/${collection}/${encodeURIComponent(documentId)}`
+}
+
+export async function updateDocumentQuestion(
+  kind: EditableQuestionDocument,
+  documentId: string,
+  questionId: string,
+  updates: HomeworkQuestionUpdate,
+): Promise<Homework | QuestionBank> {
+  const response = await fetch(
+    `${questionDocumentPath(kind, documentId)}/questions/${encodeURIComponent(questionId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    },
+  )
+  const result = await homeworkResponse<{ homework?: Homework; question_bank?: QuestionBank }>(response, '题目保存失败')
+  const document = kind === 'homework' ? result.homework : result.question_bank
+  if (!document) throw new Error('题目保存后未返回文档数据')
+  return document
+}
+
+export async function uploadDocumentQuestionAsset(
+  kind: EditableQuestionDocument,
+  documentId: string,
+  questionId: string,
+  target: 'figures' | 'answer_figures',
+  file: File,
+  caption: string,
+  replaceFile = '',
+): Promise<Homework | QuestionBank> {
+  const data = new FormData()
+  data.append('file', file)
+  data.append('target', target)
+  data.append('caption', caption)
+  data.append('replace_file', replaceFile)
+  const response = await fetch(
+    `${questionDocumentPath(kind, documentId)}/questions/${encodeURIComponent(questionId)}/assets`,
+    { method: 'POST', body: data },
+  )
+  const result = await homeworkResponse<{ homework?: Homework; question_bank?: QuestionBank }>(response, '题目图片上传失败')
+  const document = kind === 'homework' ? result.homework : result.question_bank
+  if (!document) throw new Error('图片上传后未返回文档数据')
+  return document
+}
+
+export async function deleteDocumentQuestionAsset(
+  kind: EditableQuestionDocument,
+  documentId: string,
+  questionId: string,
+  target: 'figures' | 'answer_figures',
+  assetName: string,
+): Promise<Homework | QuestionBank> {
+  const query = new URLSearchParams({ target })
+  const response = await fetch(
+    `${questionDocumentPath(kind, documentId)}/questions/${encodeURIComponent(questionId)}/assets/${encodeURIComponent(assetName)}?${query}`,
+    { method: 'DELETE' },
+  )
+  const result = await homeworkResponse<{ homework?: Homework; question_bank?: QuestionBank }>(response, '题目图片删除失败')
+  const document = kind === 'homework' ? result.homework : result.question_bank
+  if (!document) throw new Error('图片删除后未返回文档数据')
+  return document
+}
+
 export async function publishHomework(homeworkId: string): Promise<Homework> {
   const response = await fetch(`/api/homeworks/${encodeURIComponent(homeworkId)}/publish`, {
     method: 'POST',
@@ -658,11 +758,14 @@ export async function deleteHomework(homeworkId: string): Promise<void> {
 export async function submitHomework(
   homeworkId: string,
   studentId: string,
-  files: File[],
+  answers: HomeworkStudentAnswer[],
+  questionFiles: Array<{ questionId: string; file: File }>,
 ): Promise<HomeworkSubmission> {
   const data = new FormData()
   data.append('student_id', studentId)
-  files.forEach((file) => data.append('files', file))
+  data.append('answers', JSON.stringify(answers))
+  data.append('file_question_ids', JSON.stringify(questionFiles.map((item) => item.questionId)))
+  questionFiles.forEach((item) => data.append('files', item.file))
   const response = await fetch(
     `/api/homeworks/${encodeURIComponent(homeworkId)}/submissions`,
     { method: 'POST', body: data },

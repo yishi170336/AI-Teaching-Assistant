@@ -258,10 +258,17 @@ def _question_type(value: Any) -> str:
         "计算题": "calculation",
         "short_answer": "short_answer",
         "简答题": "short_answer",
+        "fill_blank": "fill_blank",
+        "填空题": "fill_blank",
+        "true_false": "true_false",
+        "判断题": "true_false",
         "design": "design",
         "设计题": "design",
     }
-    allowed = {"choice", "calculation", "short_answer", "design", "other"}
+    allowed = {
+        "choice", "fill_blank", "true_false", "calculation",
+        "short_answer", "design", "other",
+    }
     return aliases.get(raw, raw if raw in allowed else "other")
 
 
@@ -650,6 +657,258 @@ class HomeworkStore:
             item["updated_at"] = _now()
             self._write(state)
 
+    @staticmethod
+    def _question_collection(record_kind: str) -> str:
+        if record_kind == "homework":
+            return "homeworks"
+        if record_kind == "question_bank":
+            return "question_banks"
+        raise ValueError("题目所属文档类型不合法")
+
+    def update_document_question(
+        self,
+        *,
+        record_kind: str,
+        document_id: str,
+        question_id: str,
+        updates: dict[str, Any],
+    ) -> dict[str, Any]:
+        document_id = self.validate_homework_id(document_id)
+        if not HOMEWORK_ID_PATTERN.fullmatch(question_id):
+            raise ValueError("题目标识不合法")
+        collection = self._question_collection(record_kind)
+        allowed_fields = {
+            "section_key", "section_title", "number", "question_type", "prompt",
+            "subquestions", "options", "option_columns", "figure_position", "points",
+            "answer", "answer_subquestions", "rubric", "figures", "answer_figures",
+        }
+        unknown = set(updates) - allowed_fields
+        if unknown:
+            raise ValueError(f"包含不支持的题目字段：{', '.join(sorted(unknown))}")
+        with self._lock:
+            state = self._read()
+            document = next(
+                (item for item in state[collection] if item.get("id") == document_id),
+                None,
+            )
+            if document is None:
+                raise FileNotFoundError("题目所属文档不存在")
+            question = next(
+                (
+                    item
+                    for item in document.get("questions", [])
+                    if item.get("id") == question_id
+                ),
+                None,
+            )
+            if question is None:
+                raise FileNotFoundError("题目不存在")
+
+            for field in ("section_key", "section_title", "number"):
+                if field in updates:
+                    limit = 40 if field == "section_key" else 240 if field == "section_title" else 80
+                    question[field] = _clean_text(updates[field], limit)
+            if "question_type" in updates:
+                question["question_type"] = _question_type(updates["question_type"])
+            if "prompt" in updates:
+                question["prompt"] = _clean_text(updates["prompt"], 24000)
+            if "subquestions" in updates:
+                question["subquestions"] = _normalize_labeled_parts(updates["subquestions"])
+            if "options" in updates:
+                question["options"] = _normalize_options(updates["options"])
+            if "option_columns" in updates:
+                question["option_columns"] = _option_columns(updates["option_columns"])
+            if "figure_position" in updates:
+                question["figure_position"] = _figure_position(updates["figure_position"])
+            if "points" in updates:
+                question["points"] = _as_float(updates["points"])
+            if "answer" in updates:
+                question["answer"] = _clean_text(updates["answer"], 24000)
+            if "answer_subquestions" in updates:
+                question["answer_subquestions"] = _normalize_labeled_parts(
+                    updates["answer_subquestions"]
+                )
+            if "rubric" in updates:
+                question["rubric"] = _clean_text(updates["rubric"], 12000)
+            for field in ("figures", "answer_figures"):
+                if field not in updates:
+                    continue
+                current = {
+                    str(asset.get("file")): asset
+                    for asset in question.get(field, [])
+                    if isinstance(asset, dict) and asset.get("file")
+                }
+                edited: list[dict[str, Any]] = []
+                for raw_asset in updates[field]:
+                    if not isinstance(raw_asset, dict):
+                        continue
+                    asset_name = Path(str(raw_asset.get("file", ""))).name
+                    if not ASSET_NAME_PATTERN.fullmatch(asset_name) or asset_name not in current:
+                        raise ValueError("只能编辑当前题目已有的图片")
+                    edited.append({
+                        **current[asset_name],
+                        "caption": _clean_text(raw_asset.get("caption"), 160),
+                        "position": _clean_text(raw_asset.get("position"), 40)
+                        or current[asset_name].get("position", ""),
+                    })
+                question[field] = edited
+            document["max_score"] = round(
+                sum(_as_float(item.get("points")) for item in document.get("questions", [])),
+                2,
+            )
+            document["updated_at"] = _now()
+            self._write(state)
+            return json.loads(json.dumps(question, ensure_ascii=False))
+
+    def save_question_asset(
+        self,
+        *,
+        record_kind: str,
+        document_id: str,
+        question_id: str,
+        target: str,
+        filename: str,
+        content_type: str | None,
+        data: bytes,
+        caption: str = "",
+        replace_file: str = "",
+    ) -> dict[str, Any]:
+        document_id = self.validate_homework_id(document_id)
+        if not HOMEWORK_ID_PATTERN.fullmatch(question_id):
+            raise ValueError("题目标识不合法")
+        if target not in {"figures", "answer_figures"}:
+            raise ValueError("图片位置必须是题图或答案图")
+        safe_name = Path(filename).name or "question-image.png"
+        suffix = Path(safe_name).suffix.lower()
+        if suffix not in ANSWER_IMAGE_SUFFIXES:
+            raise ValueError("题目图片只支持 PNG、JPG、WEBP 或 BMP")
+        try:
+            with Image.open(io.BytesIO(data)) as source:
+                width, height = source.size
+                source.verify()
+        except (OSError, ValueError) as exc:
+            raise ValueError("上传的题目图片无法识别") from exc
+
+        collection = self._question_collection(record_kind)
+        asset_root = self._homework_dir(document_id) / "assets"
+        asset_root.mkdir(parents=True, exist_ok=True)
+        stored_name = (
+            f"manual-{question_id[:8]}-{target.replace('_', '-')}-{uuid4().hex[:10]}{suffix}"
+        )
+        stored_path = asset_root / stored_name
+        old_file = ""
+        with self._lock:
+            state = self._read()
+            document = next(
+                (item for item in state[collection] if item.get("id") == document_id),
+                None,
+            )
+            if document is None:
+                raise FileNotFoundError("题目所属文档不存在")
+            question = next(
+                (item for item in document.get("questions", []) if item.get("id") == question_id),
+                None,
+            )
+            if question is None:
+                raise FileNotFoundError("题目不存在")
+            assets = [
+                dict(asset)
+                for asset in question.get(target, [])
+                if isinstance(asset, dict) and asset.get("file")
+            ]
+            replace_index: int | None = None
+            if replace_file:
+                replace_name = Path(replace_file).name
+                replace_index = next(
+                    (
+                        index
+                        for index, asset in enumerate(assets)
+                        if asset.get("file") == replace_name
+                    ),
+                    None,
+                )
+                if replace_index is None:
+                    raise FileNotFoundError("待替换图片不属于当前题目")
+                old_file = replace_name
+            asset = {
+                "file": stored_name,
+                "name": safe_name,
+                "content_type": content_type
+                or mimetypes.guess_type(safe_name)[0]
+                or "image/png",
+                "size": len(data),
+                "width": width,
+                "height": height,
+                "position": "before_answer" if target == "answer_figures" else "after_question",
+                "caption": _clean_text(caption, 160),
+            }
+            stored_path.write_bytes(data)
+            try:
+                if replace_index is None:
+                    assets.append(asset)
+                else:
+                    assets[replace_index] = asset
+                question[target] = assets
+                document["updated_at"] = _now()
+                self._write(state)
+            except Exception:
+                if stored_path.is_file():
+                    stored_path.unlink()
+                raise
+        if old_file:
+            old_path = (asset_root / old_file).resolve()
+            if old_path.parent == asset_root.resolve() and old_path.is_file():
+                old_path.unlink()
+        return asset
+
+    def delete_question_asset(
+        self,
+        *,
+        record_kind: str,
+        document_id: str,
+        question_id: str,
+        target: str,
+        asset_name: str,
+    ) -> bool:
+        document_id = self.validate_homework_id(document_id)
+        if not HOMEWORK_ID_PATTERN.fullmatch(question_id):
+            raise ValueError("题目标识不合法")
+        if target not in {"figures", "answer_figures"}:
+            raise ValueError("图片位置必须是题图或答案图")
+        safe_asset = Path(asset_name).name
+        if not ASSET_NAME_PATTERN.fullmatch(safe_asset):
+            raise ValueError("题目素材名称不合法")
+        collection = self._question_collection(record_kind)
+        with self._lock:
+            state = self._read()
+            document = next(
+                (item for item in state[collection] if item.get("id") == document_id),
+                None,
+            )
+            if document is None:
+                raise FileNotFoundError("题目所属文档不存在")
+            question = next(
+                (item for item in document.get("questions", []) if item.get("id") == question_id),
+                None,
+            )
+            if question is None:
+                raise FileNotFoundError("题目不存在")
+            before = len(question.get(target, []))
+            question[target] = [
+                asset
+                for asset in question.get(target, [])
+                if not isinstance(asset, dict) or asset.get("file") != safe_asset
+            ]
+            if len(question[target]) == before:
+                return False
+            document["updated_at"] = _now()
+            self._write(state)
+        path = (self._homework_dir(document_id) / "assets" / safe_asset).resolve()
+        asset_root = (self._homework_dir(document_id) / "assets").resolve()
+        if path.parent == asset_root and path.is_file():
+            path.unlink()
+        return True
+
     def delete_question_bank(self, bank_id: str) -> bool:
         bank_id = self.validate_homework_id(bank_id)
         with self._lock:
@@ -962,32 +1221,130 @@ class HomeworkStore:
         homework_id: str,
         student_id: str,
         files: list[tuple[str, str | None, bytes]],
+        answers: list[dict[str, Any]] | None = None,
+        file_question_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         raw = self.get_raw_homework(homework_id)
         if raw.get("status") != "published":
             raise RuntimeError("作业尚未发布")
         self.validate_student_id(student_id)
-        if not files:
-            raise ValueError("请至少上传一张作答图片")
-        normalized_files: list[tuple[str, str, str | None, bytes]] = []
+        questions = {
+            str(question.get("id")): question
+            for question in raw.get("questions", [])
+            if isinstance(question, dict) and question.get("id")
+        }
+        structured_mode = answers is not None or file_question_ids is not None
+        normalized_answers: list[dict[str, Any]] = []
+        seen_answers: set[str] = set()
+        for raw_answer in answers or []:
+            if not isinstance(raw_answer, dict):
+                continue
+            question_id = str(raw_answer.get("question_id", ""))
+            question = questions.get(question_id)
+            if question is None:
+                raise ValueError("提交答案中包含未知题目")
+            if question_id in seen_answers:
+                raise ValueError("同一道题不能重复提交结构化答案")
+            seen_answers.add(question_id)
+            selected_options = list(dict.fromkeys(
+                _clean_text(value, 12)
+                for value in raw_answer.get("selected_options", [])
+                if _clean_text(value, 12)
+            ))
+            question_type = _question_type(question.get("question_type"))
+            if question_type == "choice":
+                option_labels = {
+                    option["label"] for option in _normalize_options(question.get("options"))
+                }
+                if any(value not in option_labels for value in selected_options):
+                    raise ValueError(
+                        f"第 {_clean_text(question.get('number'), 80) or '?'} 题包含无效选项"
+                    )
+            if question_type == "true_false" and any(
+                value not in {"正确", "错误"} for value in selected_options
+            ):
+                raise ValueError(
+                    f"第 {_clean_text(question.get('number'), 80) or '?'} 题判断答案不合法"
+                )
+            normalized_answers.append({
+                "question_id": question_id,
+                "number": _clean_text(question.get("number"), 80),
+                "question_type": question_type,
+                "answer": _clean_text(raw_answer.get("answer"), 12000),
+                "selected_options": selected_options,
+                "subquestion_answers": _normalize_labeled_parts(
+                    raw_answer.get("subquestion_answers", [])
+                ),
+            })
+
+        mapped_question_ids = list(file_question_ids or [])
+        if file_question_ids is not None and len(mapped_question_ids) != len(files):
+            raise ValueError("每张答案图片必须对应一道题")
+        normalized_files: list[tuple[str, str, str | None, bytes, str]] = []
         for index, (filename, content_type, data) in enumerate(files, 1):
             safe_name = Path(filename).name or f"answer-{index}.jpg"
             suffix = Path(safe_name).suffix.lower()
             if suffix not in ANSWER_IMAGE_SUFFIXES:
                 raise ValueError(f"学生答案只支持图片：{suffix or '未知'}")
-            normalized_files.append((safe_name, suffix, content_type, data))
+            question_id = mapped_question_ids[index - 1] if file_question_ids is not None else ""
+            if question_id and question_id not in questions:
+                raise ValueError("答案图片对应的题目不存在")
+            normalized_files.append((safe_name, suffix, content_type, data, question_id))
+        if not normalized_answers and not normalized_files:
+            raise ValueError("请至少填写一道题或上传一张作答图片")
+
+        if structured_mode:
+            answers_by_question = {
+                item["question_id"]: item for item in normalized_answers
+            }
+            files_by_question = {
+                question_id
+                for *_file, question_id in normalized_files
+                if question_id
+            }
+            missing: list[str] = []
+            for question_id, question in questions.items():
+                question_type = _question_type(question.get("question_type"))
+                response = answers_by_question.get(question_id, {})
+                requires_photo = question_type in {"calculation", "design", "other"}
+                if requires_photo:
+                    complete = question_id in files_by_question
+                elif question_type in {"choice", "true_false"}:
+                    complete = bool(response.get("selected_options"))
+                else:
+                    expected_parts = _normalize_labeled_parts(question.get("subquestions"))
+                    if expected_parts:
+                        response_parts = {
+                            part["label"]: part["text"]
+                            for part in response.get("subquestion_answers", [])
+                        }
+                        complete = all(
+                            response_parts.get(part["label"], "").strip()
+                            for part in expected_parts
+                        )
+                    else:
+                        complete = bool(_clean_text(response.get("answer"), 12000))
+                if not complete:
+                    missing.append(_clean_text(question.get("number"), 80) or "?")
+            if missing:
+                raise ValueError(f"请完成第 {'、'.join(missing[:20])} 题后再提交")
         submission_id = uuid4().hex
         submission_dir = self.root / "submissions" / submission_id
         submission_dir.mkdir(parents=True, exist_ok=False)
         images: list[dict[str, Any]] = []
-        for index, (safe_name, suffix, content_type, data) in enumerate(normalized_files, 1):
+        for index, (safe_name, suffix, content_type, data, question_id) in enumerate(
+            normalized_files, 1
+        ):
             stored_name = f"answer-{index:02d}{suffix}"
             (submission_dir / stored_name).write_bytes(data)
+            question = questions.get(question_id, {})
             images.append({
                 "file": stored_name,
                 "name": safe_name,
                 "content_type": content_type or mimetypes.guess_type(safe_name)[0] or "image/jpeg",
                 "size": len(data),
+                "question_id": question_id,
+                "question_number": _clean_text(question.get("number"), 80),
             })
         timestamp = _now()
         submission = {
@@ -996,6 +1353,7 @@ class HomeworkStore:
             "student_id": student_id,
             "student_name": "学生 1",
             "status": "grading",
+            "answers": normalized_answers,
             "answer_images": images,
             "extracted_answer": "",
             "grading": None,
@@ -3221,14 +3579,19 @@ def process_question_bank(
     )
 
 
-def _answer_contact_sheet(paths: Iterable[Path], output_path: Path) -> Path:
+def _answer_contact_sheet(
+    paths: Iterable[Path | tuple[Path, str]], output_path: Path
+) -> Path:
     images: list[Image.Image] = []
+    labels: list[str] = []
     try:
-        for path in paths:
+        for entry in paths:
+            path, label = entry if isinstance(entry, tuple) else (entry, "")
             with Image.open(path) as source:
                 image = source.convert("RGB")
                 image.thumbnail((1600, 2200))
                 images.append(image.copy())
+                labels.append(_clean_text(label, 120))
         if not images:
             raise ValueError("没有可批改的答案图片")
         width = max(image.width for image in images) + 40
@@ -3245,7 +3608,12 @@ def _answer_contact_sheet(paths: Iterable[Path], output_path: Path) -> Path:
         draw = ImageDraw.Draw(sheet)
         y = 18
         for index, image in enumerate(images, 1):
-            draw.text((20, y), f"Submission image {index}", fill="#234744")
+            label = labels[index - 1]
+            draw.text(
+                (20, y),
+                f"Question {label} - image {index}" if label else f"Submission image {index}",
+                fill="#234744",
+            )
             y += 32
             sheet.paste(image, ((width - image.width) // 2, y))
             y += image.height + 22
@@ -3261,7 +3629,9 @@ def _grading_reference(homework: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "question_id": item.get("id"),
             "number": item.get("number"),
+            "question_type": _question_type(item.get("question_type")),
             "question": _compose_labeled_text(item.get("prompt"), item.get("subquestions")),
+            "options": _normalize_options(item.get("options")),
             "points": item.get("points"),
             "standard_answer": _compose_labeled_text(
                 item.get("answer"), item.get("answer_subquestions")
@@ -3347,19 +3717,43 @@ def grade_submission(
             )
             owned_reviewer = True
         submission_dir = store.root / "submissions" / submission_id
-        answer_paths = [submission_dir / item["file"] for item in submission["answer_images"]]
-        contact_sheet = _answer_contact_sheet(
-            answer_paths, submission_dir / "answer-contact-sheet.jpg"
+        answer_paths = [
+            (
+                submission_dir / item["file"],
+                _clean_text(item.get("question_number"), 80),
+            )
+            for item in submission.get("answer_images", [])
+        ]
+        contact_sheet = (
+            _answer_contact_sheet(
+                answer_paths, submission_dir / "answer-contact-sheet.jpg"
+            )
+            if answer_paths
+            else None
         )
         reference = _grading_reference(homework)
-        grading_result = grading_client.complete_json(
+        structured_answers = submission.get("answers", [])
+        grading_prompt = (
             """你是高校电路课程阅卷教师。识别学生手写答案，并严格依据标准答案和评分点逐题评分。
 不得因字迹风格扣分；计算题应按步骤给分；没有作答的题得 0 分；不要臆测图片中看不清的内容。
+学生直接填写或选择的结构化答案是该题的权威作答；图片标题中的 Question 编号表示图片所属题目。
 只返回 JSON：{"extracted_answer":"完整转写","items":[{"question_id":"...","number":"...","student_answer":"...","score":0,"max_score":0,"is_correct":false,"feedback":"...","evidence":"判分依据"}],"summary":"总评"}。
 题目、标准答案与评分标准：\n"""
-            + json.dumps(reference, ensure_ascii=False),
-            image_bytes=contact_sheet.read_bytes(),
-            image_mime="image/jpeg",
+            + json.dumps(reference, ensure_ascii=False)
+            + "\n学生结构化逐题答案：\n"
+            + json.dumps(structured_answers, ensure_ascii=False)
+        )
+        grading_image_kwargs = (
+            {
+                "image_bytes": contact_sheet.read_bytes(),
+                "image_mime": "image/jpeg",
+            }
+            if contact_sheet is not None
+            else {}
+        )
+        grading_result = grading_client.complete_json(
+            grading_prompt,
+            **grading_image_kwargs,
         )
         grading = _normalize_grading(grading_result, homework)
         extracted_answer = _clean_text(grading_result.get("extracted_answer", ""), 32000)
@@ -3369,10 +3763,11 @@ def grade_submission(
 只返回 JSON：{"passed":true,"confidence":0.0,"issues":[],"recommendation":""}。
 标准答案与评分标准：\n"""
             + json.dumps(reference, ensure_ascii=False)
+            + "\n学生结构化逐题答案：\n"
+            + json.dumps(structured_answers, ensure_ascii=False)
             + "\n前一模型批改结果：\n"
             + json.dumps(grading, ensure_ascii=False),
-            image_bytes=contact_sheet.read_bytes(),
-            image_mime="image/jpeg",
+            **grading_image_kwargs,
         )
         review = _normalize_review(review_result)
         status = "graded" if review["passed"] else "review_required"

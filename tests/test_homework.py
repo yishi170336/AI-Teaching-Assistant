@@ -254,6 +254,189 @@ def test_question_bank_questions_can_be_deleted_individually(tmp_path):
     assert store.delete_question_bank_question(bank_id, question_id) is False
 
 
+def test_teacher_can_edit_question_and_manage_question_images(tmp_path):
+    store = HomeworkStore(tmp_path / "homework")
+    bank_id, question_id = extracted_question_bank(store)
+
+    updated = store.update_document_question(
+        record_kind="question_bank",
+        document_id=bank_id,
+        question_id=question_id,
+        updates={
+            "number": "1.2.3",
+            "question_type": "fill_blank",
+            "prompt": "修正后的题干：$I=\\underline{\\qquad}$。",
+            "answer": "$2\\,\\mathrm{mA}$",
+            "points": 6,
+        },
+    )
+    assert updated["number"] == "1.2.3"
+    assert updated["question_type"] == "fill_blank"
+    assert updated["points"] == 6
+
+    added = store.save_question_asset(
+        record_kind="question_bank",
+        document_id=bank_id,
+        question_id=question_id,
+        target="figures",
+        filename="replacement.png",
+        content_type="image/png",
+        data=sample_image_bytes(),
+        caption="图1.2.3",
+    )
+    bank = store.get_raw_question_bank(bank_id)
+    question = next(item for item in bank["questions"] if item["id"] == question_id)
+    assert any(asset["file"] == added["file"] for asset in question["figures"])
+    assert store.question_bank_asset_file(bank_id, added["file"]).is_file()
+
+    replaced = store.save_question_asset(
+        record_kind="question_bank",
+        document_id=bank_id,
+        question_id=question_id,
+        target="figures",
+        filename="new.png",
+        content_type="image/png",
+        data=sample_image_bytes(),
+        caption="图1.2.3（修正版）",
+        replace_file=added["file"],
+    )
+    assert not (store._homework_dir(bank_id) / "assets" / added["file"]).exists()
+    assert store.delete_question_asset(
+        record_kind="question_bank",
+        document_id=bank_id,
+        question_id=question_id,
+        target="figures",
+        asset_name=replaced["file"],
+    ) is True
+
+
+def test_structured_submission_maps_direct_answers_and_images_to_questions(tmp_path):
+    store = HomeworkStore(tmp_path / "homework")
+    created = store.create_homework(
+        title="逐题作答",
+        instructions="",
+        due_at="",
+        filename="questions.png",
+        content_type="image/png",
+        data=sample_image_bytes(),
+    )
+    choice_id = "a" * 32
+    calculation_id = "b" * 32
+    fill_id = "c" * 32
+    store.update_homework(
+        created["id"],
+        status="draft",
+        questions=[
+            {
+                "id": choice_id,
+                "sequence": 1,
+                "number": "1",
+                "question_type": "choice",
+                "prompt": "选择正确答案。",
+                "options": [{"label": "A", "text": "正确"}, {"label": "B", "text": "错误"}],
+                "points": 2,
+            },
+            {
+                "id": calculation_id,
+                "sequence": 2,
+                "number": "2",
+                "question_type": "calculation",
+                "prompt": "写出计算过程。",
+                "options": [],
+                "points": 8,
+            },
+            {
+                "id": fill_id,
+                "sequence": 3,
+                "number": "3",
+                "question_type": "fill_blank",
+                "prompt": "完成两个填空。",
+                "subquestions": [
+                    {"label": "1", "text": "第一空"},
+                    {"label": "2", "text": "第二空"},
+                ],
+                "options": [],
+                "points": 4,
+            },
+        ],
+    )
+    store.publish(created["id"])
+
+    submission = store.create_submission(
+        homework_id=created["id"],
+        student_id="learner-test",
+        files=[("question-2.png", "image/png", sample_image_bytes())],
+        answers=[
+            {"question_id": choice_id, "selected_options": ["A"]},
+            {"question_id": calculation_id, "answer": "见上传图片"},
+            {
+                "question_id": fill_id,
+                "subquestion_answers": [
+                    {"label": "1", "text": "答案一"},
+                    {"label": "2", "text": "答案二"},
+                ],
+            },
+        ],
+        file_question_ids=[calculation_id],
+    )
+    assert submission["answers"][0]["selected_options"] == ["A"]
+    assert submission["answer_images"][0]["question_id"] == calculation_id
+    assert submission["answer_images"][0]["question_number"] == "2"
+
+    with pytest.raises(ValueError, match="第 2 题"):
+        store.create_submission(
+            homework_id=created["id"],
+            student_id="learner-test",
+            files=[],
+            answers=[
+                {"question_id": choice_id, "selected_options": ["A"]},
+                {
+                    "question_id": fill_id,
+                    "subquestion_answers": [
+                        {"label": "1", "text": "答案一"},
+                        {"label": "2", "text": "答案二"},
+                    ],
+                },
+            ],
+            file_question_ids=[],
+        )
+
+    with pytest.raises(ValueError, match="第 3 题"):
+        store.create_submission(
+            homework_id=created["id"],
+            student_id="learner-test",
+            files=[("question-2.png", "image/png", sample_image_bytes())],
+            answers=[
+                {"question_id": choice_id, "selected_options": ["A"]},
+                {"question_id": calculation_id, "answer": "见上传图片"},
+                {
+                    "question_id": fill_id,
+                    "subquestion_answers": [{"label": "1", "text": "只答一空"}],
+                },
+            ],
+            file_question_ids=[calculation_id],
+        )
+
+    with pytest.raises(ValueError, match="无效选项"):
+        store.create_submission(
+            homework_id=created["id"],
+            student_id="learner-test",
+            files=[("question-2.png", "image/png", sample_image_bytes())],
+            answers=[
+                {"question_id": choice_id, "selected_options": ["Z"]},
+                {"question_id": calculation_id, "answer": "见上传图片"},
+                {
+                    "question_id": fill_id,
+                    "subquestion_answers": [
+                        {"label": "1", "text": "答案一"},
+                        {"label": "2", "text": "答案二"},
+                    ],
+                },
+            ],
+            file_question_ids=[calculation_id],
+        )
+
+
 def test_cross_page_figures_are_reassigned_by_nearby_native_captions():
     left_figure = [151.0, 102.0, 423.0, 209.0]
     right_figure = [462.0, 96.0, 847.0, 207.0]

@@ -97,7 +97,7 @@ class Settings:
     max_attachment_mb: int = int(os.getenv("MAX_ATTACHMENT_MB", "20"))
     max_homework_upload_mb: int = int(os.getenv("MAX_HOMEWORK_UPLOAD_MB", "100"))
     max_homework_answer_images: int = int(
-        os.getenv("MAX_HOMEWORK_ANSWER_IMAGES", "8")
+        os.getenv("MAX_HOMEWORK_ANSWER_IMAGES", "40")
     )
     max_chat_attachments: int = int(os.getenv("MAX_CHAT_ATTACHMENTS", "5"))
     max_chat_document_images: int = int(os.getenv("MAX_CHAT_DOCUMENT_IMAGES", "6"))

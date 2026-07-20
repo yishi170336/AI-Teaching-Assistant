@@ -24,6 +24,8 @@ from backend.app.rag.multimodal import BuildModelConfig
 from backend.app.schemas import (
     ChatRequest,
     HomeworkFromQuestionBankRequest,
+    HomeworkQuestionUpdateRequest,
+    HomeworkSubmissionAnswer,
     KnowledgeBaseRebuildRequest,
     LearningPlanPptRequest,
     MistakeCreateRequest,
@@ -981,6 +983,92 @@ async def get_question_bank(bank_id: str) -> dict[str, Any]:
     return {"question_bank": bank}
 
 
+@app.patch("/api/question-banks/{bank_id}/questions/{question_id}")
+async def update_question_bank_question(
+    bank_id: str,
+    question_id: str,
+    request: HomeworkQuestionUpdateRequest,
+) -> dict[str, Any]:
+    try:
+        await asyncio.to_thread(
+            homework_store.update_document_question,
+            record_kind="question_bank",
+            document_id=bank_id,
+            question_id=question_id,
+            updates=request.model_dump(exclude_none=True),
+        )
+        bank = homework_store.get_question_bank(bank_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "question_bank": bank}
+
+
+@app.post("/api/question-banks/{bank_id}/questions/{question_id}/assets")
+async def upload_question_bank_question_asset(
+    bank_id: str,
+    question_id: str,
+    file: UploadFile = File(...),
+    target: str = Form("figures"),
+    caption: str = Form(""),
+    replace_file: str = Form(""),
+) -> dict[str, Any]:
+    filename = Path(file.filename or "question-image.png").name
+    content_type = file.content_type
+    try:
+        content = await _read_bounded_upload(
+            file, settings.max_attachment_mb * 1024 * 1024, "题目图片"
+        )
+    finally:
+        await file.close()
+    try:
+        await asyncio.to_thread(
+            homework_store.save_question_asset,
+            record_kind="question_bank",
+            document_id=bank_id,
+            question_id=question_id,
+            target=target,
+            filename=filename,
+            content_type=content_type,
+            data=content,
+            caption=caption,
+            replace_file=replace_file,
+        )
+        bank = homework_store.get_question_bank(bank_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "question_bank": bank}
+
+
+@app.delete("/api/question-banks/{bank_id}/questions/{question_id}/assets/{asset_name}")
+async def delete_question_bank_question_asset(
+    bank_id: str,
+    question_id: str,
+    asset_name: str,
+    target: str = "figures",
+) -> dict[str, Any]:
+    try:
+        deleted = await asyncio.to_thread(
+            homework_store.delete_question_asset,
+            record_kind="question_bank",
+            document_id=bank_id,
+            question_id=question_id,
+            target=target,
+            asset_name=asset_name,
+        )
+        bank = homework_store.get_question_bank(bank_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="题目图片不存在")
+    return {"ok": True, "question_bank": bank}
+
+
 @app.post("/api/question-banks/{bank_id}/reprocess")
 async def reprocess_question_bank(
     bank_id: str,
@@ -1073,6 +1161,92 @@ async def get_homework(
     return {"homework": homework}
 
 
+@app.patch("/api/homeworks/{homework_id}/questions/{question_id}")
+async def update_homework_question(
+    homework_id: str,
+    question_id: str,
+    request: HomeworkQuestionUpdateRequest,
+) -> dict[str, Any]:
+    try:
+        await asyncio.to_thread(
+            homework_store.update_document_question,
+            record_kind="homework",
+            document_id=homework_id,
+            question_id=question_id,
+            updates=request.model_dump(exclude_none=True),
+        )
+        homework = homework_store.get_homework(homework_id, role="teacher")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "homework": homework}
+
+
+@app.post("/api/homeworks/{homework_id}/questions/{question_id}/assets")
+async def upload_homework_question_asset(
+    homework_id: str,
+    question_id: str,
+    file: UploadFile = File(...),
+    target: str = Form("figures"),
+    caption: str = Form(""),
+    replace_file: str = Form(""),
+) -> dict[str, Any]:
+    filename = Path(file.filename or "question-image.png").name
+    content_type = file.content_type
+    try:
+        content = await _read_bounded_upload(
+            file, settings.max_attachment_mb * 1024 * 1024, "题目图片"
+        )
+    finally:
+        await file.close()
+    try:
+        await asyncio.to_thread(
+            homework_store.save_question_asset,
+            record_kind="homework",
+            document_id=homework_id,
+            question_id=question_id,
+            target=target,
+            filename=filename,
+            content_type=content_type,
+            data=content,
+            caption=caption,
+            replace_file=replace_file,
+        )
+        homework = homework_store.get_homework(homework_id, role="teacher")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "homework": homework}
+
+
+@app.delete("/api/homeworks/{homework_id}/questions/{question_id}/assets/{asset_name}")
+async def delete_homework_question_asset(
+    homework_id: str,
+    question_id: str,
+    asset_name: str,
+    target: str = "figures",
+) -> dict[str, Any]:
+    try:
+        deleted = await asyncio.to_thread(
+            homework_store.delete_question_asset,
+            record_kind="homework",
+            document_id=homework_id,
+            question_id=question_id,
+            target=target,
+            asset_name=asset_name,
+        )
+        homework = homework_store.get_homework(homework_id, role="teacher")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="题目图片不存在")
+    return {"ok": True, "homework": homework}
+
+
 @app.post("/api/homeworks/{homework_id}/publish")
 async def publish_homework(homework_id: str) -> dict[str, Any]:
     try:
@@ -1149,17 +1323,40 @@ async def get_homework_asset(homework_id: str, asset_name: str) -> FileResponse:
 async def submit_homework(
     homework_id: str,
     background_tasks: BackgroundTasks,
-    files: list[UploadFile] = File(...),
+    files: list[UploadFile] | None = File(None),
     student_id: str = Form(...),
+    answers: str = Form(""),
+    file_question_ids: str = Form(""),
 ) -> dict[str, Any]:
-    if len(files) > settings.max_homework_answer_images:
+    uploads = files or []
+    if len(uploads) > settings.max_homework_answer_images:
         raise HTTPException(
             status_code=400,
             detail=f"一次最多上传 {settings.max_homework_answer_images} 张答案图片",
         )
+    parsed_answers: list[dict[str, Any]] | None = None
+    parsed_file_question_ids: list[str] | None = None
+    try:
+        if answers:
+            raw_answers = json.loads(answers)
+            if not isinstance(raw_answers, list):
+                raise ValueError("逐题答案必须是数组")
+            parsed_answers = [
+                HomeworkSubmissionAnswer.model_validate(item).model_dump()
+                for item in raw_answers
+            ]
+        if file_question_ids:
+            raw_file_ids = json.loads(file_question_ids)
+            if not isinstance(raw_file_ids, list):
+                raise ValueError("图片题目映射必须是数组")
+            parsed_file_question_ids = [str(value) for value in raw_file_ids]
+            if any(not re.fullmatch(r"[a-f0-9]{32}", value) for value in parsed_file_question_ids):
+                raise ValueError("图片对应的题目标识不合法")
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"逐题答案格式不合法：{exc}") from exc
     saved: list[tuple[str, str | None, bytes]] = []
     try:
-        for upload in files:
+        for upload in uploads:
             filename = Path(upload.filename or "answer.jpg").name
             suffix = Path(filename).suffix.lower()
             if suffix not in ANSWER_IMAGE_SUFFIXES:
@@ -1169,7 +1366,7 @@ async def submit_homework(
             )
             saved.append((filename, upload.content_type, content))
     finally:
-        for upload in files:
+        for upload in uploads:
             await upload.close()
     try:
         submission = await asyncio.to_thread(
@@ -1177,6 +1374,8 @@ async def submit_homework(
             homework_id=homework_id,
             student_id=student_id,
             files=saved,
+            answers=parsed_answers,
+            file_question_ids=parsed_file_question_ids,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

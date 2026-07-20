@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Button, Empty, Modal, Progress, Spin, Tag, Upload, message } from 'antd'
+import { Button, Empty, Input, Modal, Progress, Radio, Spin, Tag, Upload, message } from 'antd'
 import type { UploadFile } from 'antd'
 import {
   AlertTriangle,
@@ -16,10 +16,143 @@ import {
   Sparkles,
   UploadCloud,
 } from 'lucide-react'
-import { fetchHomeworks, Homework, submitHomework } from '../lib/api'
+import {
+  fetchHomeworks,
+  Homework,
+  HomeworkQuestion,
+  HomeworkStudentAnswer,
+  submitHomework,
+} from '../lib/api'
 import HomeworkPaper from '../components/HomeworkPaper'
 
 const { Dragger } = Upload
+const { TextArea } = Input
+
+type StudentAnswerDraft = {
+  answer: string
+  selected_options: string[]
+  subquestion_answers: Array<{ label: string; text: string }>
+}
+
+const photoQuestionTypes = new Set(['calculation', 'design', 'other'])
+
+function emptyDraft(question: HomeworkQuestion): StudentAnswerDraft {
+  return {
+    answer: '',
+    selected_options: [],
+    subquestion_answers: (question.subquestions || []).map((part) => ({ label: part.label, text: '' })),
+  }
+}
+
+function responseIsComplete(
+  question: HomeworkQuestion,
+  response: StudentAnswerDraft,
+  files: UploadFile[],
+) {
+  if (photoQuestionTypes.has(question.question_type)) return files.some((file) => file.originFileObj)
+  if (question.question_type === 'choice' || question.question_type === 'true_false') {
+    return response.selected_options.length > 0
+  }
+  if (question.subquestions?.length) {
+    return question.subquestions.every((part) => response.subquestion_answers.some(
+      (answer) => answer.label === part.label && answer.text.trim(),
+    ))
+  }
+  return Boolean(response.answer.trim() || files.some((file) => file.originFileObj))
+}
+
+function QuestionResponseEditor({
+  question,
+  response,
+  files,
+  onChange,
+  onFilesChange,
+}: {
+  question: HomeworkQuestion
+  response: StudentAnswerDraft
+  files: UploadFile[]
+  onChange: (next: StudentAnswerDraft) => void
+  onFilesChange: (files: UploadFile[]) => void
+}) {
+  const updatePart = (label: string, text: string) => onChange({
+    ...response,
+    subquestion_answers: response.subquestion_answers.map((part) => (
+      part.label === label ? { ...part, text } : part
+    )),
+  })
+  const requiresPhoto = photoQuestionTypes.has(question.question_type)
+  return (
+    <section className={`student-question-response ${requiresPhoto ? 'photo-required' : 'direct-answer'}`}>
+      <header>
+        <div>
+          {requiresPhoto ? <Camera size={16} /> : <FileCheck2 size={16} />}
+          <strong>{requiresPhoto ? '本题上传作答' : '在此填写答案'}</strong>
+        </div>
+        <Tag color={responseIsComplete(question, response, files) ? 'success' : 'gold'}>
+          {responseIsComplete(question, response, files) ? '已完成' : '待作答'}
+        </Tag>
+      </header>
+
+      {question.question_type === 'choice' && (
+        <Radio.Group
+          className="student-choice-response"
+          value={response.selected_options[0]}
+          onChange={(event) => onChange({ ...response, selected_options: [event.target.value] })}
+        >
+          {(question.options || []).map((option) => (
+            <Radio.Button value={option.label} key={option.label}>{option.label}</Radio.Button>
+          ))}
+        </Radio.Group>
+      )}
+      {question.question_type === 'true_false' && (
+        <Radio.Group
+          value={response.selected_options[0]}
+          onChange={(event) => onChange({ ...response, selected_options: [event.target.value] })}
+        >
+          <Radio value="正确">正确</Radio><Radio value="错误">错误</Radio>
+        </Radio.Group>
+      )}
+      {!requiresPhoto && !['choice', 'true_false'].includes(question.question_type) && (
+        question.subquestions?.length ? (
+          <div className="student-subquestion-responses">
+            {question.subquestions.map((part) => (
+              <label key={part.label}>
+                <span>（{part.label}）</span>
+                {question.question_type === 'fill_blank'
+                  ? <Input value={response.subquestion_answers.find((item) => item.label === part.label)?.text || ''} onChange={(event) => updatePart(part.label, event.target.value)} placeholder="填写答案" />
+                  : <TextArea autoSize={{ minRows: 2, maxRows: 6 }} value={response.subquestion_answers.find((item) => item.label === part.label)?.text || ''} onChange={(event) => updatePart(part.label, event.target.value)} placeholder="填写本小问答案" />}
+              </label>
+            ))}
+          </div>
+        ) : question.question_type === 'fill_blank'
+          ? <Input value={response.answer} onChange={(event) => onChange({ ...response, answer: event.target.value })} placeholder="在此填写答案" />
+          : <TextArea autoSize={{ minRows: 3, maxRows: 8 }} value={response.answer} onChange={(event) => onChange({ ...response, answer: event.target.value })} placeholder="在此填写答案" />
+      )}
+      {requiresPhoto && (
+        <>
+          <TextArea
+            autoSize={{ minRows: 2, maxRows: 5 }}
+            value={response.answer}
+            onChange={(event) => onChange({ ...response, answer: event.target.value })}
+            placeholder="可补充文字说明（选填）"
+          />
+          <Dragger
+            accept="image/*"
+            multiple
+            maxCount={4}
+            fileList={files}
+            beforeUpload={() => false}
+            onChange={({ fileList }) => onFilesChange(fileList.slice(0, 4))}
+          >
+            <p className="ant-upload-drag-icon"><UploadCloud size={25} /></p>
+            <p className="ant-upload-text">拍照或选择第 {question.number} 题答案</p>
+            <p className="ant-upload-hint">本题单独上传，最多 4 张</p>
+          </Dragger>
+        </>
+      )}
+    </section>
+  )
+}
 
 function formatDeadline(value: string) {
   if (!value) return '长期有效'
@@ -88,7 +221,8 @@ export default function HomeworkView({ studentId }: { studentId: string }) {
   const [homeworks, setHomeworks] = useState<Homework[]>([])
   const [loading, setLoading] = useState(true)
   const [detailId, setDetailId] = useState<string | null>(null)
-  const [answerFiles, setAnswerFiles] = useState<UploadFile[]>([])
+  const [answers, setAnswers] = useState<Record<string, StudentAnswerDraft>>({})
+  const [questionFiles, setQuestionFiles] = useState<Record<string, UploadFile[]>>({})
   const [submitting, setSubmitting] = useState(false)
 
   const load = useCallback(async (withSpinner = false) => {
@@ -117,18 +251,48 @@ export default function HomeworkView({ studentId }: { studentId: string }) {
   }), [homeworks])
 
   const openHomework = (homeworkId: string) => {
-    setAnswerFiles([])
+    const homework = homeworks.find((item) => item.id === homeworkId)
+    const existing = new Map(
+      (homework?.submission?.answers || []).map((answer) => [answer.question_id, answer]),
+    )
+    setAnswers(Object.fromEntries((homework?.questions || []).map((question) => {
+      const saved = existing.get(question.id)
+      return [question.id, saved ? {
+        answer: saved.answer || '',
+        selected_options: saved.selected_options || [],
+        subquestion_answers: saved.subquestion_answers?.length
+          ? saved.subquestion_answers
+          : emptyDraft(question).subquestion_answers,
+      } : emptyDraft(question)]
+    })))
+    setQuestionFiles({})
     setDetailId(homeworkId)
   }
 
   const submit = async () => {
     if (!detail) return
-    const files = answerFiles.flatMap((file) => file.originFileObj ? [file.originFileObj] : [])
-    if (!files.length) return message.warning('请上传至少一张作答照片')
+    const missing = detail.questions.filter((question) => !responseIsComplete(
+      question,
+      answers[question.id] || emptyDraft(question),
+      questionFiles[question.id] || [],
+    ))
+    if (missing.length) {
+      return message.warning(`请先完成第 ${missing.slice(0, 10).map((question) => question.number).join('、')} 题`)
+    }
+    const structuredAnswers: HomeworkStudentAnswer[] = detail.questions.map((question) => ({
+      question_id: question.id,
+      ...(answers[question.id] || emptyDraft(question)),
+    }))
+    const mappedFiles = detail.questions.flatMap((question) => (
+      (questionFiles[question.id] || []).flatMap((file) => file.originFileObj
+        ? [{ questionId: question.id, file: file.originFileObj }]
+        : [])
+    ))
+    if (mappedFiles.length > 40) return message.warning('整份作业最多上传 40 张答案图片')
     setSubmitting(true)
     try {
-      await submitHomework(detail.id, studentId, files)
-      setAnswerFiles([])
+      await submitHomework(detail.id, studentId, structuredAnswers, mappedFiles)
+      setQuestionFiles({})
       message.success('答案已提交，正在自动批改与复核')
       await load()
     } catch (error) {
@@ -214,33 +378,44 @@ export default function HomeworkView({ studentId }: { studentId: string }) {
             </header>
 
             <section className="student-question-paper">
-              <div className="student-paper-notice"><ShieldCheck size={16} /><span>题干、小问、选项和公式已按原附件层级重新排版，题图放回对应题目；学生端不显示参考答案。</span></div>
-              <HomeworkPaper homework={detail} mode="questions" printable />
+              <div className="student-paper-notice"><ShieldCheck size={16} /><span>选择题和填空题可在题目下直接作答；计算题、设计题等大题请在各题下方分别拍照上传，学生端不显示参考答案。</span></div>
+              <HomeworkPaper
+                homework={detail}
+                mode="questions"
+                printable
+                renderQuestionResponse={(question) => (
+                  <QuestionResponseEditor
+                    question={question}
+                    response={answers[question.id] || emptyDraft(question)}
+                    files={questionFiles[question.id] || []}
+                    onChange={(next) => setAnswers((current) => ({ ...current, [question.id]: next }))}
+                    onFilesChange={(files) => setQuestionFiles((current) => ({ ...current, [question.id]: files }))}
+                  />
+                )}
+              />
             </section>
 
             <section className="student-answer-submit">
-              <header><div><Camera size={19} /><span><strong>拍照提交答案</strong><small>按作答顺序上传，确保字迹和电路图清晰</small></span></div><Tag>最多 8 张</Tag></header>
-              <Dragger
-                accept="image/*"
-                multiple
-                maxCount={8}
-                fileList={answerFiles}
-                beforeUpload={() => false}
-                onChange={({ fileList }) => setAnswerFiles(fileList.slice(0, 8))}
-              >
-                <p className="ant-upload-drag-icon"><UploadCloud size={30} /></p>
-                <p className="ant-upload-text">点击拍照或选择答案图片</p>
-                <p className="ant-upload-hint">支持 PNG、JPG、WEBP、BMP</p>
-              </Dragger>
-              <Button type="primary" size="large" block icon={<Camera size={17} />} loading={submitting} disabled={!answerFiles.length} onClick={() => void submit()}>
+              <header><div><CheckCircle2 size={19} /><span><strong>检查并提交整份作业</strong><small>系统会保留每个选择、填空内容以及每张图片对应的题号</small></span></div><Tag>逐题归档</Tag></header>
+              <div className="student-answer-completion">
+                {detail.questions.map((question) => {
+                  const complete = responseIsComplete(
+                    question,
+                    answers[question.id] || emptyDraft(question),
+                    questionFiles[question.id] || [],
+                  )
+                  return <span className={complete ? 'complete' : ''} key={question.id}>{question.number}</span>
+                })}
+              </div>
+              <Button type="primary" size="large" block icon={<Camera size={17} />} loading={submitting} onClick={() => void submit()}>
                 {detail.submission ? '重新提交并批改' : '提交答案并开始批改'}
               </Button>
             </section>
 
             {detail.submission && (
               <section className="student-submission-preview">
-                <header><span><Eye size={16} /> 已提交的答案图片</span><small>{formatDeadline(detail.submission.created_at)}</small></header>
-                <div>{detail.submission.answer_images.map((asset, index) => <a href={asset.url} target="_blank" rel="noreferrer" key={asset.file}><img src={asset.url} alt={`答案 ${index + 1}`} /></a>)}</div>
+                <header><span><Eye size={16} /> 已提交的逐题答案图片</span><small>{formatDeadline(detail.submission.created_at)}</small></header>
+                <div>{detail.submission.answer_images.map((asset, index) => <a href={asset.url} target="_blank" rel="noreferrer" key={asset.file}><img src={asset.url} alt={`第 ${asset.question_number || '?'} 题答案 ${index + 1}`} /><span>第 {asset.question_number || '?'} 题</span></a>)}</div>
               </section>
             )}
             <StudentGrading homework={detail} />

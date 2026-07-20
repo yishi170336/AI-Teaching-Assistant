@@ -1,5 +1,6 @@
 import MathMarkdown from './MathMarkdown'
 import type { Homework, HomeworkAsset, HomeworkQuestion, HomeworkQuestionPart } from '../lib/api'
+import type { ReactNode } from 'react'
 
 type PaperMode = 'questions' | 'answers'
 
@@ -78,7 +79,13 @@ function QuestionFigures({ figures, label }: { figures: HomeworkAsset[]; label: 
   )
 }
 
-function ReflowedQuestion({ question }: { question: HomeworkQuestion }) {
+function ReflowedQuestion({
+  question,
+  renderQuestionResponse,
+}: {
+  question: HomeworkQuestion
+  renderQuestionResponse?: (question: HomeworkQuestion) => ReactNode
+}) {
   const position = question.figure_position || 'after_question'
   const figures = question.figures || []
   const options = question.options || []
@@ -102,6 +109,7 @@ function ReflowedQuestion({ question }: { question: HomeworkQuestion }) {
           </div>
         )}
         {position === 'after_options' && <QuestionFigures figures={figures} label={`第 ${question.number} 题`} />}
+        {renderQuestionResponse?.(question)}
         {question.points > 0 && <span className="homework-paper-points">（{question.points} 分）</span>}
       </div>
     </article>
@@ -138,10 +146,12 @@ export default function HomeworkPaper({
   homework,
   mode,
   printable = false,
+  renderQuestionResponse,
 }: {
   homework: Homework
   mode: PaperMode
   printable?: boolean
+  renderQuestionResponse?: (question: HomeworkQuestion) => ReactNode
 }) {
   const sections = groupedSections(homework.questions)
   const dueDate = homework.due_at ? new Date(homework.due_at) : null
@@ -163,7 +173,7 @@ export default function HomeworkPaper({
           <section className="homework-paper-section" key={`${section.key}-${section.questions[0]?.sequence ?? 0}`}>
             <h2>{section.title}</h2>
             {section.questions.map((question) => mode === 'questions'
-              ? <ReflowedQuestion key={question.id} question={question} />
+              ? <ReflowedQuestion key={question.id} question={question} renderQuestionResponse={renderQuestionResponse} />
               : <ReflowedAnswer key={question.id} question={question} />)}
           </section>
         ))}
