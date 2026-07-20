@@ -1344,6 +1344,99 @@ def test_failed_review_triggers_one_grading_correction_and_second_review(tmp_pat
     assert all(call[2] == "image/jpeg" for call in grader.calls + reviewer.calls)
 
 
+def test_blank_subquestion_is_detected_from_image_and_forced_to_zero(tmp_path):
+    store = HomeworkStore(tmp_path / "homework")
+    created = store.create_homework(
+        title="逐小问完整性检查",
+        instructions="",
+        due_at="",
+        filename="questions.png",
+        content_type="image/png",
+        data=sample_image_bytes(),
+    )
+    question_id = "8" * 32
+    question = {
+        "id": question_id,
+        "sequence": 1,
+        "number": "4",
+        "question_type": "calculation",
+        "prompt": "求下列参数：（8分）\n(1) 求下限和上限截止频率。\n(2) 求中频电压增益。\n(3) 写出全频段增益表达式。",
+        "answer": "(1)（3分）截止频率答案。\n(2)（2分）中频增益答案。\n(3)（3分）表达式答案。",
+        "rubric": "(1) 结果正确得3分。\n(2) 结果正确得2分。\n(3) 表达式正确得3分。",
+        "points": 8,
+    }
+    reference = _grading_reference({"questions": [question]})
+    assert [part["label"] for part in reference[0]["required_subquestions"]] == [
+        "1", "2", "3",
+    ]
+    assert [part["points"] for part in reference[0]["required_subquestions"]] == [
+        3, 2, 3,
+    ]
+    store.update_homework(created["id"], status="draft", questions=[question])
+    store.publish(created["id"])
+    submission = store.create_submission(
+        homework_id=created["id"],
+        student_id="learner-test",
+        files=[("answer.png", "image/png", sample_image_bytes())],
+        answers=[{"question_id": question_id, "answer": ""}],
+        file_question_ids=[question_id],
+    )
+    store.start_submission_grading(submission["id"])
+    reviewer = FakeVisionClient(
+        {
+            "questions": [{
+                "question_id": question_id,
+                "parts": [
+                    {"label": "1", "answered": True, "evidence": "写有截止频率计算"},
+                    {"label": "2", "answered": False, "evidence": "只有(2)序号，后方为空白"},
+                    {"label": "3", "answered": True, "evidence": "写有增益表达式"},
+                ],
+            }],
+        },
+        {"passed": True, "confidence": 0.99, "issues": [], "recommendation": ""},
+    )
+    grader = FakeVisionClient({
+        "extracted_answer": "(1) 截止频率计算\n(2)\n(3) 增益表达式",
+        "items": [{
+            "question_id": question_id,
+            "student_answer": "(1)正确；(2)中频增益正确；(3)部分正确",
+            "score": 6,
+            "max_score": 8,
+            "is_correct": False,
+            "subquestion_results": [
+                {"label": "1", "answered": True, "student_answer": "截止频率", "score": 3, "max_score": 3, "feedback": "正确"},
+                {"label": "2", "answered": True, "student_answer": "-10^4", "score": 2, "max_score": 2, "feedback": "正确"},
+                {"label": "3", "answered": True, "student_answer": "表达式", "score": 1, "max_score": 3, "feedback": "部分正确"},
+            ],
+            "feedback": "第(1)(2)问正确，第(3)问部分正确",
+            "evidence": "图片识别结果",
+        }],
+        "summary": "逐小问批改",
+    })
+
+    grade_submission(
+        store,
+        submission["id"],
+        grading_client=grader,
+        review_client=reviewer,
+    )
+
+    graded = store.get_raw_submission(submission["id"])
+    item = graded["grading"]["items"][0]
+    second = item["subquestion_results"][1]
+    assert graded["status"] == "graded"
+    assert item["score"] == 4
+    assert second["label"] == "2"
+    assert second["answered"] is False
+    assert second["score"] == 0
+    assert "第（2）问未作答" in item["feedback"]
+    assert "只有(2)序号" in second["completeness_evidence"]
+    assert len(grader.calls) == 1
+    assert len(reviewer.calls) == 2
+    assert "只有小问序号、括号、横线或空白" in reviewer.calls[0][0]
+    assert '"answered": false' in grader.calls[0][0]
+
+
 def test_each_mapped_photo_question_is_graded_independently_even_with_reused_image(tmp_path):
     store = HomeworkStore(tmp_path / "homework")
     created = store.create_homework(

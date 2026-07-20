@@ -3653,6 +3653,42 @@ def _answer_contact_sheet(
             image.close()
 
 
+def _part_point_value(*values: Any) -> float:
+    for value in values:
+        text = _clean_text(value, 4000)
+        match = re.search(r"(?:[（(]\s*)?(\d+(?:\.\d+)?)\s*分", text[:500])
+        if match:
+            return _as_float(match.group(1))
+    return 0.0
+
+
+def _question_grading_parts(question: dict[str, Any]) -> list[dict[str, Any]]:
+    prompt_parts = _normalize_labeled_parts(question.get("subquestions"))
+    if not prompt_parts:
+        _stem, prompt_parts = _split_labeled_text(question.get("prompt"))
+    if not prompt_parts:
+        return []
+    answer_parts = _normalize_labeled_parts(question.get("answer_subquestions"))
+    if not answer_parts:
+        _answer_stem, answer_parts = _split_labeled_text(question.get("answer"))
+    _rubric_stem, rubric_parts = _split_labeled_text(question.get("rubric"))
+    answers_by_label = {part["label"]: part["text"] for part in answer_parts}
+    rubrics_by_label = {part["label"]: part["text"] for part in rubric_parts}
+    return [
+        {
+            "label": part["label"],
+            "question": part["text"],
+            "standard_answer": answers_by_label.get(part["label"], ""),
+            "rubric": rubrics_by_label.get(part["label"], ""),
+            "points": _part_point_value(
+                answers_by_label.get(part["label"], ""),
+                rubrics_by_label.get(part["label"], ""),
+            ),
+        }
+        for part in prompt_parts
+    ]
+
+
 def _grading_reference(homework: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
@@ -3666,17 +3702,137 @@ def _grading_reference(homework: dict[str, Any]) -> list[dict[str, Any]]:
                 item.get("answer"), item.get("answer_subquestions")
             ),
             "rubric": item.get("rubric"),
+            "required_subquestions": _question_grading_parts(item),
         }
         for item in homework.get("questions", [])
     ]
 
 
-def _normalize_grading(value: dict[str, Any], homework: dict[str, Any]) -> dict[str, Any]:
+def _answer_completeness_prompt(reference: list[dict[str, Any]]) -> str:
+    questions = [
+        {
+            "question_id": item.get("question_id"),
+            "number": item.get("number"),
+            "question": item.get("question"),
+            "required_subquestions": [
+                {"label": part.get("label"), "question": part.get("question")}
+                for part in item.get("required_subquestions", [])
+            ],
+        }
+        for item in reference
+        if item.get("required_subquestions")
+    ]
+    return (
+        """你是学生手写答案完整性检查员。只判断图片中每个小问是否存在学生实际写下的作答，不求解、不评分，也不得参考或猜测标准答案。
+逐一核对题目要求的 (1)、(2)、(3) 等标签和图片中的空间位置。只有小问序号、括号、横线或空白，answered=false；其他小问附近的公式或文字不得挪给空白小问；不能因为上下小问都作答就推断中间小问也作答。
+图片旋转后也要按书写方向检查。看不清时 answered=null，不得猜成 true。
+必须返回每道题的每个 required_subquestions 标签，且 question_id、label 原样复制。
+只返回 JSON：{"questions":[{"question_id":"...","parts":[{"label":"1","answered":true,"evidence":"图片中该小问实际书写内容的简短描述"}]}]}。
+待核对的题目与小问：
+"""
+        + json.dumps(questions, ensure_ascii=False)
+    )
+
+
+def _normalize_answer_completeness(
+    value: dict[str, Any], reference: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    raw_questions = value.get("questions", [])
+    if not isinstance(raw_questions, list):
+        raw_questions = []
+    raw_by_id = {
+        str(item.get("question_id")): item
+        for item in raw_questions
+        if isinstance(item, dict) and item.get("question_id")
+    }
+    result: list[dict[str, Any]] = []
+    for question in reference:
+        expected_parts = question.get("required_subquestions", [])
+        if not expected_parts:
+            continue
+        question_id = str(question.get("question_id", ""))
+        raw_question = raw_by_id.get(question_id, {})
+        raw_parts = raw_question.get("parts", [])
+        if not isinstance(raw_parts, list):
+            raw_parts = []
+        raw_by_label = {
+            _part_label(part.get("label")): part
+            for part in raw_parts
+            if isinstance(part, dict) and _part_label(part.get("label"))
+        }
+        parts: list[dict[str, Any]] = []
+        for expected in expected_parts:
+            label = _part_label(expected.get("label"))
+            raw = raw_by_label.get(label)
+            answered: bool | None = None
+            evidence = "完整性模型未返回该小问，需在批改时重新核对原图"
+            if raw is not None:
+                raw_answered = raw.get("answered")
+                if isinstance(raw_answered, bool):
+                    answered = raw_answered
+                evidence = _clean_text(raw.get("evidence"), 1000) or evidence
+            parts.append({
+                "label": label,
+                "answered": answered,
+                "evidence": evidence,
+            })
+        result.append({
+            "question_id": question_id,
+            "number": question.get("number", ""),
+            "parts": parts,
+        })
+    return result
+
+
+def _missing_subquestion_result_keys(
+    value: dict[str, Any], reference: list[dict[str, Any]]
+) -> set[str]:
+    raw_items = value.get("items", [])
+    if not isinstance(raw_items, list):
+        raw_items = []
+    raw_by_id = {
+        str(item.get("question_id")): item
+        for item in raw_items
+        if isinstance(item, dict) and item.get("question_id")
+    }
+    missing: set[str] = set()
+    for question in reference:
+        question_id = str(question.get("question_id", ""))
+        expected_labels = {
+            _part_label(part.get("label"))
+            for part in question.get("required_subquestions", [])
+            if _part_label(part.get("label"))
+        }
+        if not expected_labels:
+            continue
+        raw = raw_by_id.get(question_id, {})
+        raw_parts = raw.get("subquestion_results", [])
+        if not isinstance(raw_parts, list):
+            raw_parts = []
+        returned_labels = {
+            _part_label(part.get("label"))
+            for part in raw_parts
+            if isinstance(part, dict) and _part_label(part.get("label"))
+        }
+        missing.update(f"{question_id}:{label}" for label in expected_labels - returned_labels)
+    return missing
+
+
+def _normalize_grading(
+    value: dict[str, Any],
+    homework: dict[str, Any],
+    answer_completeness: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     question_order = [
         item for item in homework.get("questions", [])
         if isinstance(item, dict) and item.get("id")
     ]
     references = {str(item.get("id")): item for item in question_order}
+    completeness_by_id = {
+        str(item.get("question_id")): item
+        for item in answer_completeness or []
+        if isinstance(item, dict) and item.get("question_id")
+    }
     raw_items = value.get("items", [])
     normalized_by_id: dict[str, dict[str, Any]] = {}
     if isinstance(raw_items, list):
@@ -3689,15 +3845,80 @@ def _normalize_grading(value: dict[str, Any], homework: dict[str, Any]) -> dict[
                 continue
             max_score = _as_float(reference.get("points"), _as_float(raw.get("max_score")))
             score = max(0.0, min(max_score, _as_float(raw.get("score"))))
+            expected_parts = _question_grading_parts(reference)
+            raw_parts = raw.get("subquestion_results", [])
+            if not isinstance(raw_parts, list):
+                raw_parts = []
+            raw_parts_by_label = {
+                _part_label(part.get("label")): part
+                for part in raw_parts
+                if isinstance(part, dict) and _part_label(part.get("label"))
+            }
+            completeness_parts = completeness_by_id.get(question_id, {}).get("parts", [])
+            completeness_by_label = {
+                _part_label(part.get("label")): part
+                for part in completeness_parts
+                if isinstance(part, dict) and _part_label(part.get("label"))
+            }
+            subquestion_results: list[dict[str, Any]] = []
+            forced_blank_labels: list[str] = []
+            for expected in expected_parts:
+                label = _part_label(expected.get("label"))
+                raw_part = raw_parts_by_label.get(label, {})
+                student_part_answer = _clean_text(raw_part.get("student_answer"), 4000)
+                part_score = max(0.0, _as_float(raw_part.get("score")))
+                part_max_score = _as_float(expected.get("points"))
+                if part_max_score <= 0:
+                    part_max_score = _as_float(raw_part.get("max_score"), part_score)
+                part_score = min(part_score, part_max_score) if part_max_score > 0 else 0.0
+                answered = _as_bool(raw_part.get("answered", bool(student_part_answer)))
+                completeness = completeness_by_label.get(label, {})
+                if completeness.get("answered") is False:
+                    answered = False
+                    part_score = 0.0
+                    forced_blank_labels.append(label)
+                feedback = _clean_text(raw_part.get("feedback"), 1000)
+                if not raw_part:
+                    answered = False
+                    part_score = 0.0
+                    feedback = "批改模型未返回该小问结果，需要教师复查"
+                elif not answered and not feedback:
+                    feedback = "该小问未作答，计 0 分"
+                subquestion_results.append({
+                    "label": label,
+                    "answered": answered,
+                    "student_answer": student_part_answer,
+                    "score": part_score,
+                    "max_score": part_max_score,
+                    "feedback": feedback,
+                    "completeness_evidence": _clean_text(
+                        completeness.get("evidence"), 1000
+                    ),
+                })
+            if expected_parts:
+                score = max(0.0, min(
+                    max_score,
+                    sum(_as_float(part.get("score")) for part in subquestion_results),
+                ))
+            feedback = _clean_text(raw.get("feedback", ""), 2000)
+            evidence = _clean_text(raw.get("evidence", ""), 2000)
+            if forced_blank_labels:
+                blank_note = (
+                    f"答题完整性检查确认第（{'）、（'.join(forced_blank_labels)}）问未作答，"
+                    "对应小问强制计 0 分"
+                )
+                feedback = f"{feedback}；{blank_note}".strip("；")
+                evidence = f"{evidence}；{blank_note}".strip("；")
             normalized_by_id[question_id] = {
                 "question_id": question_id,
                 "number": reference.get("number", raw.get("number", "")),
                 "student_answer": _clean_text(raw.get("student_answer", ""), 8000),
                 "score": score,
                 "max_score": max_score,
-                "is_correct": _as_bool(raw.get("is_correct", score >= max_score and max_score > 0)),
-                "feedback": _clean_text(raw.get("feedback", ""), 2000),
-                "evidence": _clean_text(raw.get("evidence", ""), 2000),
+                "is_correct": score >= max_score and max_score > 0,
+                "feedback": feedback,
+                "evidence": evidence,
+                "subquestion_results": subquestion_results,
             }
     missing_ids: list[str] = []
     for reference in question_order:
@@ -3714,6 +3935,7 @@ def _normalize_grading(value: dict[str, Any], homework: dict[str, Any]) -> dict[
             "is_correct": False,
             "feedback": "批改模型未返回本题结果，需要教师复查",
             "evidence": "模型输出缺少该题的 question_id，不能据此判定学生未作答",
+            "subquestion_results": [],
         }
     items = [normalized_by_id[str(item.get("id"))] for item in question_order]
     total = round(sum(float(item["score"]) for item in items), 2)
@@ -3880,11 +4102,13 @@ def _grading_review_prompt(
     reference: list[dict[str, Any]],
     student_payload: list[dict[str, Any]],
     grading: dict[str, Any],
+    answer_completeness: list[dict[str, Any]],
 ) -> str:
     return (
         """你是独立的作业批改审查员。请结合随请求提供的学生答案图片，检查前一模型的答案转写、步骤分和得分。
 answer_source=uploaded_images 表示学生已经提交了该题答案图片，不得因为结构化文字为空而称其“未作答”。
 question_id 是图片与题目的唯一关联依据，题号可重复；同一图片也可合理地用于多道题。
+必须重新核对 required_subquestions 中的每个小问：图片中只有小问序号而没有实际内容就是未作答，必须 answered=false、score=0；严禁从其他小问或标准答案补写。检查独立完整性结果是否与原图一致，并检查 subquestion_results 是否逐项齐全、各小问分数之和是否等于大题得分。
 前一模型若漏题、错识、错判未作答、加总错误或扣分不合理，passed=false 并逐条说明。
 必须检查本批次每道题。只返回 JSON：{"passed":true,"confidence":0.0,"issues":[],"recommendation":""}。
 本批题目、标准答案与评分标准：
@@ -3892,6 +4116,8 @@ question_id 是图片与题目的唯一关联依据，题号可重复；同一�
         + json.dumps(reference, ensure_ascii=False)
         + "\n学生逐题作答来源：\n"
         + json.dumps(student_payload, ensure_ascii=False)
+        + "\n独立的小问作答完整性检查：\n"
+        + json.dumps(answer_completeness, ensure_ascii=False)
         + "\n前一模型本批批改结果：\n"
         + json.dumps(grading, ensure_ascii=False)
     )
@@ -3971,6 +4197,17 @@ def grade_submission(
                 if contact_sheet is not None
                 else {}
             )
+            answer_completeness: list[dict[str, Any]] = []
+            if contact_sheet is not None and any(
+                item.get("required_subquestions") for item in reference
+            ):
+                completeness_result = review_client.complete_json(
+                    _answer_completeness_prompt(reference),
+                    **image_kwargs,
+                )
+                answer_completeness = _normalize_answer_completeness(
+                    completeness_result, reference
+                )
             grading_prompt = (
                 """你是高校电路课程阅卷教师。识别学生答案，并严格依据标准答案和评分点逐题评分。
 不得因字迹风格扣分；计算题应按步骤给分；看不清的内容不得臆测。
@@ -3980,18 +4217,24 @@ answer_source=uploaded_images 时，表示学生已经拍照作答；即使 dire
 图片标题同时给出 question_id、题号和文件名；question_id 是唯一关联依据，题号可能在不同大题组中重复。
 同一张图片允许被学生用于多道题；当前请求只按本批次的题目独立判断，不做重复图片检测。
 只有 answer_source=unanswered 且确实没有图片或非空直接答案时，才可判定未作答。
-只返回 JSON：{"extracted_answer":"完整转写","items":[{"question_id":"...","number":"...","student_answer":"...","score":0,"max_score":0,"is_correct":false,"feedback":"...","evidence":"判分依据"}],"summary":"本批总评"}。
+required_subquestions 非空时，必须先逐小问核对图片并返回全部 subquestion_results。独立完整性检查中 answered=false 的小问必须保持未作答且得 0 分；不得从其他小问的内容或标准答案补全。answered=null 表示不确定，必须重新查看原图。
+每个 subquestion_results 必须含 label、answered、student_answer、score、max_score、feedback；大题 score 必须等于各小问 score 之和。
+只返回 JSON：{"extracted_answer":"完整转写","items":[{"question_id":"...","number":"...","student_answer":"...","score":0,"max_score":0,"is_correct":false,"subquestion_results":[{"label":"1","answered":true,"student_answer":"...","score":0,"max_score":0,"feedback":"..."}],"feedback":"...","evidence":"判分依据"}],"summary":"本批总评"}。
 本批题目、标准答案与评分标准：
 """
                 + json.dumps(reference, ensure_ascii=False)
                 + "\n学生逐题作答来源：\n"
                 + json.dumps(student_payload, ensure_ascii=False)
+                + "\n独立的小问作答完整性检查：\n"
+                + json.dumps(answer_completeness, ensure_ascii=False)
             )
             grading_result = grading_client.complete_json(
                 grading_prompt,
                 **image_kwargs,
             )
-            batch_grading = _normalize_grading(grading_result, batch_homework)
+            batch_grading = _normalize_grading(
+                grading_result, batch_homework, answer_completeness
+            )
             expected_ids = {str(item.get("id")) for item in batch_questions}
             initial_returned_ids = {
                 str(item.get("question_id"))
@@ -3999,11 +4242,16 @@ answer_source=uploaded_images 时，表示学生已经拍照作答；即使 dire
                 if isinstance(item, dict) and item.get("question_id")
             }
             initial_missing_ids = expected_ids - initial_returned_ids
+            initial_missing_parts = _missing_subquestion_result_keys(
+                grading_result, reference
+            )
             review = _normalize_review(review_client.complete_json(
-                _grading_review_prompt(reference, student_payload, batch_grading),
+                _grading_review_prompt(
+                    reference, student_payload, batch_grading, answer_completeness
+                ),
                 **image_kwargs,
             ))
-            if not review["passed"] or initial_missing_ids:
+            if not review["passed"] or initial_missing_ids or initial_missing_parts:
                 correction_count += 1
                 correction_prompt = (
                     grading_prompt
@@ -4017,6 +4265,12 @@ answer_source=uploaded_images 时，表示学生已经拍照作答；即使 dire
                         if initial_missing_ids
                         else ""
                     )
+                    + (
+                        "\n系统还检测到上一轮缺少这些小问结果：\n"
+                        + json.dumps(sorted(initial_missing_parts), ensure_ascii=False)
+                        if initial_missing_parts
+                        else ""
+                    )
                     + """
 请重新查看学生原图，依据审查意见纠正答案转写、漏题、步骤分或得分。审查意见仅用于定位问题，最终仍须以原图、标准答案和评分标准为准。
 这是唯一一次自动纠正机会，必须返回本批次全部题目且 question_id 完全一致；返回格式与上一轮要求相同。"""
@@ -4025,9 +4279,13 @@ answer_source=uploaded_images 时，表示学生已经拍照作答；即使 dire
                     correction_prompt,
                     **image_kwargs,
                 )
-                batch_grading = _normalize_grading(grading_result, batch_homework)
+                batch_grading = _normalize_grading(
+                    grading_result, batch_homework, answer_completeness
+                )
                 review = _normalize_review(review_client.complete_json(
-                    _grading_review_prompt(reference, student_payload, batch_grading),
+                    _grading_review_prompt(
+                        reference, student_payload, batch_grading, answer_completeness
+                    ),
                     **image_kwargs,
                 ))
 
@@ -4037,6 +4295,7 @@ answer_source=uploaded_images 时，表示学生已经拍照作答；即使 dire
                 if isinstance(item, dict) and item.get("question_id")
             }
             missing_ids = expected_ids - returned_ids
+            missing_parts = _missing_subquestion_result_keys(grading_result, reference)
             if missing_ids:
                 missing_numbers = [
                     str(item.get("number", "?"))
@@ -4045,6 +4304,10 @@ answer_source=uploaded_images 时，表示学生已经拍照作答；即使 dire
                 ]
                 forced_review_issues.append(
                     f"批改模型纠正后仍漏回第 {'、'.join(missing_numbers)} 题，不能判定为学生未作答"
+                )
+            if missing_parts:
+                forced_review_issues.append(
+                    "批改模型纠正后仍缺少小问结果：" + "、".join(sorted(missing_parts))
                 )
             all_items.extend(batch_grading["items"])
             if batch_grading.get("summary"):

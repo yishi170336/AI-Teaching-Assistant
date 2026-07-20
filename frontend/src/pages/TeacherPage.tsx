@@ -282,7 +282,13 @@ function SubmissionPanel({
                 <div key={`${item.question_id}-${item.number}`}>
                   <span>第 {item.number} 题</span>
                   <strong>{item.score} / {item.max_score} 分</strong>
-                  <p>{item.feedback || item.evidence}</p>
+                  <p>
+                    {item.subquestion_results?.length
+                      ? item.subquestion_results.map((part) => (
+                        `（${part.label}）${part.answered ? `${part.score}/${part.max_score}分` : `未作答，0/${part.max_score}分`}`
+                      )).join('；') + `。${item.feedback || item.evidence}`
+                      : item.feedback || item.evidence}
+                  </p>
                 </div>
               ))}
             </div>

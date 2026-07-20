@@ -241,6 +241,15 @@ export type HomeworkGradingItem = {
   is_correct: boolean
   feedback: string
   evidence: string
+  subquestion_results?: Array<{
+    label: string
+    answered: boolean
+    student_answer: string
+    score: number
+    max_score: number
+    feedback: string
+    completeness_evidence: string
+  }>
 }
 
 export type HomeworkGrading = {
