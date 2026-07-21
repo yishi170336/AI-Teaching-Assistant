@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,10 +32,11 @@ ANSWER_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 HOMEWORK_ID_PATTERN = re.compile(r"[a-f0-9]{32}")
 ASSET_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,160}")
 STUDENT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,96}")
-PAGE_PREFILTER_BATCH_SIZE = 12
+PAGE_PREFILTER_BATCH_SIZE = 4
 PAGE_PREFILTER_MIN_PAGES = 8
 PAGE_PREFILTER_NEIGHBOR_RADIUS = 1
 PAGE_PREFILTER_EXCLUDE_CONFIDENCE = 0.86
+PAGE_PREFILTER_SCHEMA_VERSION = 2
 
 
 def _now() -> str:
@@ -1530,8 +1532,10 @@ def _page_prefilter_contact_sheet(pages: list[dict[str, Any]]) -> bytes:
     """Create a low-resolution page overview for inexpensive batch classification."""
     if not pages:
         raise ValueError("页面粗筛批次不能为空")
-    columns = 3
-    tile_width, tile_height = 480, 660
+    columns = 2 if len(pages) <= 4 else 3
+    tile_width, tile_height = (
+        (720, 1040) if columns == 2 else (480, 660)
+    )
     label_height = 34
     rows = (len(pages) + columns - 1) // columns
     sheet = Image.new(
@@ -1592,7 +1596,9 @@ def _page_prefilter_prompt(pages: list[dict[str, Any]]) -> str:
 1. 以联系表上方的“PDF PAGE N”为真实页码，必须覆盖本批所有页码：{page_numbers}。
 2. 宁可把不确定页面标为 uncertain，也不能把可能含题目、例题题干、题图或答案的页面误判为 non_question。
 3. 普通知识讲解中的公式、示意图不等于题目；但带完整题号和明确求解要求的例题属于 question。
-4. 只返回分类结果，不提取题干、答案或坐标。
+4. 电路类型对照表、公式汇总表、性能指标表、器件特性曲线或仅带“图x.x/表x.x”的知识总结页仍是 non_question；只有明确出现“例x.x.x/习题x.x.x/题x.x.x”等题号并带“求、计算、判断、证明、设计、试说明”等作答要求时才是 question。
+5. 只有明确出现“解：/答：/参考答案/习题解答”，且能归属于某个题号时才是 answer；连续理论推导不能仅因公式很多就判为答案。
+6. 只返回分类结果，不提取题干、答案或坐标。
 
 可用的 PDF 原生文本摘要（扫描页可能为空）：
 {json.dumps(text_previews, ensure_ascii=False)}
@@ -1654,6 +1660,8 @@ def _select_candidate_pages(
     *,
     batch_size: int = PAGE_PREFILTER_BATCH_SIZE,
     neighbor_radius: int = PAGE_PREFILTER_NEIGHBOR_RADIUS,
+    max_workers: int = 1,
+    cache_path: Path | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Use batched low-resolution AI classification before expensive extraction."""
     if len(pages) < PAGE_PREFILTER_MIN_PAGES:
@@ -1665,8 +1673,41 @@ def _select_candidate_pages(
     warnings: list[str] = []
     classifications: dict[int, dict[str, Any]] = {}
     safe_batch_size = max(1, batch_size)
-    for offset in range(0, len(pages), safe_batch_size):
-        batch = pages[offset:offset + safe_batch_size]
+    model_name = _clean_text(getattr(client, "model", ""), 120)
+    cache_key = {
+        "schema_version": PAGE_PREFILTER_SCHEMA_VERSION,
+        "model": model_name,
+        "page_count": len(pages),
+        "batch_size": safe_batch_size,
+    }
+    if cache_path is not None and cache_path.is_file():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            raw_classifications = cached.get("classifications", {})
+            if (
+                all(cached.get(key) == expected for key, expected in cache_key.items())
+                and isinstance(raw_classifications, dict)
+            ):
+                classifications = {
+                    int(page_number): classification
+                    for page_number, classification in raw_classifications.items()
+                    if isinstance(classification, dict)
+                }
+                if set(classifications) != {int(page["page"]) for page in pages}:
+                    classifications = {}
+                else:
+                    warnings.append("已复用同一原文件的 AI 页面粗筛缓存")
+        except (OSError, ValueError, json.JSONDecodeError):
+            classifications = {}
+
+    batches = [
+        pages[offset:offset + safe_batch_size]
+        for offset in range(0, len(pages), safe_batch_size)
+    ]
+
+    def classify_batch(
+        batch: list[dict[str, Any]],
+    ) -> tuple[dict[int, dict[str, Any]], str]:
         expected = {int(page["page"]) for page in batch}
         try:
             result = client.complete_json(
@@ -1674,20 +1715,47 @@ def _select_candidate_pages(
                 image_bytes=_page_prefilter_contact_sheet(batch),
                 image_mime="image/jpeg",
             )
-            classifications.update(_normalized_page_prefilter(result, expected))
+            return _normalized_page_prefilter(result, expected), ""
         except Exception as exc:
-            warnings.append(
+            warning = (
                 f"第{min(expected)}-{max(expected)}页 AI 粗筛失败，已保守纳入："
                 f"{_clean_text(exc, 180)}"
             )
-            classifications.update({
+            return ({
                 page_number: {
                     "kind": "uncertain",
                     "confidence": 0.0,
                     "reason": "AI 粗筛失败",
                 }
                 for page_number in expected
-            })
+            }, warning)
+
+    if not classifications:
+        worker_count = max(1, min(max_workers, len(batches)))
+        if worker_count == 1:
+            batch_results = [classify_batch(batch) for batch in batches]
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                batch_results = list(executor.map(classify_batch, batches))
+        for batch_classifications, warning in batch_results:
+            classifications.update(batch_classifications)
+            if warning:
+                warnings.append(warning)
+        if cache_path is not None:
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = cache_path.with_suffix(".tmp")
+                temporary.write_text(
+                    json.dumps(
+                        {**cache_key, "classifications": classifications},
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                temporary.replace(cache_path)
+            except OSError as exc:
+                warnings.append(f"页面粗筛缓存保存失败：{_clean_text(exc, 180)}")
 
     candidate_numbers = {
         page_number
@@ -3613,7 +3681,12 @@ def process_homework(
             processing_message=f"已渲染 {len(pages)} 页，AI 正在批量粗筛题目与答案页",
         )
         page_map = {int(page["page"]): page for page in pages}
-        candidate_pages, prefilter_warnings = _select_candidate_pages(client, pages)
+        candidate_pages, prefilter_warnings = _select_candidate_pages(
+            client,
+            pages,
+            max_workers=4,
+            cache_path=homework_dir / "page-prefilter.json",
+        )
         updater(
             homework_id,
             candidate_page_count=len(candidate_pages),

@@ -115,8 +115,13 @@ def test_ai_page_prefilter_keeps_candidates_and_neighbor_pages(tmp_path):
         },
     )
 
+    cache_path = tmp_path / "page-prefilter.json"
     selected, warnings = _select_candidate_pages(
-        client, pages, batch_size=6, neighbor_radius=1
+        client,
+        pages,
+        batch_size=6,
+        neighbor_radius=1,
+        cache_path=cache_path,
     )
 
     assert [page["page"] for page in selected] == [2, 3, 4, 5]
@@ -127,6 +132,18 @@ def test_ai_page_prefilter_keeps_candidates_and_neighbor_pages(tmp_path):
     assert all(call[1].startswith(b"\xff\xd8") for call in client.calls)
     assert all(call[2] == "image/jpeg" for call in client.calls)
     assert "12 页中选出 2 页" in warnings[-1]
+
+    cached_client = FakeVisionClient()
+    cached_selected, cached_warnings = _select_candidate_pages(
+        cached_client,
+        pages,
+        batch_size=6,
+        neighbor_radius=1,
+        cache_path=cache_path,
+    )
+    assert [page["page"] for page in cached_selected] == [2, 3, 4, 5]
+    assert cached_client.calls == []
+    assert "已复用同一原文件的 AI 页面粗筛缓存" in cached_warnings
 
 
 def test_second_page_review_only_runs_for_ambiguous_or_incomplete_results():
