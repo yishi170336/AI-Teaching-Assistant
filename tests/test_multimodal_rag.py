@@ -324,7 +324,7 @@ def test_chapter_knowledge_summaries_exclude_front_matter_appendix_and_answer_in
     ]
 
 
-def test_chapter_knowledge_summaries_filter_exercise_prompts_and_cap_labels():
+def test_chapter_knowledge_summaries_filter_exercise_prompts_without_fixed_cap():
     chunks = [
         TextChunk(
             id=f"concept-{index}", text=name, source="lesson.pdf",
@@ -341,7 +341,7 @@ def test_chapter_knowledge_summaries_filter_exercise_prompts_and_cap_labels():
 
     chapters = build_chapter_knowledge_summaries(chunks)
 
-    assert chapters[0]["concept_count"] == 80
+    assert chapters[0]["concept_count"] == 90
     assert all("判断下列" not in item["name"] for item in chapters[0]["concepts"])
 
 

@@ -21,7 +21,6 @@ from backend.app.rag.pdf_extract_kit import DetectedRegion, PDFExtractKitAdapter
 from backend.app.rag.models import PageDocument, TextChunk
 from backend.app.rag.ontology import (
     COMPONENT_CONCEPTS,
-    COURSE_CONCEPTS,
     component_display_name,
     component_role,
     extract_course_concepts,
@@ -58,7 +57,6 @@ CHAPTER_SENTENCE_FRAGMENTS = (
 SECTION_SENTENCE_FRAGMENTS = (
     "如图", "所示", "试求", "试画", "试分析", "已知", "计算", "求出", "判断",
 )
-CHAPTER_CONCEPT_LIMIT = 80
 CHAPTER_EXERCISE_CONCEPT_PATTERN = re.compile(
     r"[？?]|图题\s*\d|判断下列|回答下列|试证明|哪些能够|怎样用|电路.*所示"
 )
@@ -1302,10 +1300,16 @@ def enhance_pdf(
     if audit_path.exists():
         try:
             cached_audit = json.loads(audit_path.read_text(encoding="utf-8"))
+            expected_method = (
+                f"llm:{cleaning_client.config.provider}/{cleaning_client.config.model}"
+                if cleaning_client
+                else "rule"
+            )
             decisions = {
                 int(item["page"]): item
                 for item in cached_audit
                 if isinstance(item, dict)
+                and item.get("method") == expected_method
                 and item.get("cleaning_policy_version") == PAGE_CLEANING_POLICY_VERSION
                 and item.get("document_hash") == document_hash
                 and item.get("page_text_hash") == page_text_hashes.get(int(item["page"]))
@@ -2068,20 +2072,14 @@ def build_chapter_knowledge_summaries(
     result: list[dict[str, Any]] = []
     for summary in grouped.values():
         pages = sorted(summary["pages"])
-        minimum_evidence = 5 if len(pages) >= 30 else 3 if len(pages) >= 10 else 1
         concepts = sorted(
-            (
-                item
-                for item in summary["concepts"].values()
-                if int(item["evidence_count"]) >= minimum_evidence
-                or item["name"] in COURSE_CONCEPTS
-            ),
+            summary["concepts"].values(),
             key=lambda item: (
                 -int(item["evidence_count"]),
                 int(item["first_seen"]),
                 str(item["name"]),
             ),
-        )[:CHAPTER_CONCEPT_LIMIT]
+        )
         result.append({
             "id": summary["id"],
             "name": summary["name"],
