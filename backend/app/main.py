@@ -905,7 +905,10 @@ async def create_homework(
     return {
         "ok": True,
         "homework": homework,
-        "message": "附件已上传，qwen3-vl-plus 与 PDF-Extract-Kit 正在拆分题目",
+        "message": (
+            f"附件已上传，{settings.qwen_homework_extraction_model} "
+            "与 PDF-Extract-Kit 正在拆分题目"
+        ),
     }
 
 

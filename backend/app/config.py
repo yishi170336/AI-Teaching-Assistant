@@ -46,7 +46,7 @@ class Settings:
     )
     qwen_cleaning_model: str = os.getenv("QWEN_CLEANING_MODEL", "qwen3.7-plus")
     qwen_homework_extraction_model: str = os.getenv(
-        "QWEN_HOMEWORK_EXTRACTION_MODEL", "qwen3-vl-plus"
+        "QWEN_HOMEWORK_EXTRACTION_MODEL", "qwen3-vl-flash"
     )
     qwen_homework_grading_model: str = os.getenv(
         "QWEN_HOMEWORK_GRADING_MODEL", "qwen3-vl-plus"

@@ -141,6 +141,7 @@ def extracted_question_bank(store: HomeworkStore) -> tuple[str, str]:
             "warnings": [],
         }
     )
+    extraction.model = "qwen3-vl-flash-test"
     process_question_bank(
         store,
         created["id"],
@@ -214,6 +215,7 @@ def test_question_bank_is_durable_and_selected_questions_become_independent_home
 
     bank = store.get_question_bank(bank_id)
     assert bank["status"] == "ready"
+    assert bank["extraction_model"] == "qwen3-vl-flash-test"
     assert bank["question_count"] == 1
     assert bank["questions"][0]["answer"] == "B"
     assert bank["questions"][0]["figures"][0]["url"].startswith(

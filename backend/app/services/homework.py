@@ -3319,7 +3319,8 @@ def process_homework(
         if client is None:
             if not settings.qwen_api_key:
                 raise RuntimeError(
-                    f"未配置 QWEN_API_KEY，无法使用 qwen3-vl-plus 拆分{document_label}"
+                    "未配置 QWEN_API_KEY，无法使用 "
+                    f"{settings.qwen_homework_extraction_model} 拆分{document_label}"
                 )
             client = QwenVisionClient(
                 api_key=settings.qwen_api_key,
@@ -3327,6 +3328,13 @@ def process_homework(
                 base_url=settings.qwen_base_url,
             )
             owned_client = True
+        updater(
+            homework_id,
+            extraction_model=(
+                _clean_text(getattr(client, "model", ""), 120)
+                or settings.qwen_homework_extraction_model
+            ),
+        )
         adapter = layout_adapter or PDFExtractKitAdapter()
         homework_dir = store._homework_dir(homework_id)
         assets_dir = homework_dir / "assets"
