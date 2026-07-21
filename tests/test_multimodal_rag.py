@@ -24,9 +24,11 @@ from backend.app.rag.multimodal import (
     _is_verified_circuit_result,
     _normalize_circuit_result,
     _normalize_formula_result,
+    _ocr_heading_context,
     _reconcile_formula_with_page_ocr,
     _ocr_scanned_pages,
     _page_cleaning_decisions,
+    _reuse_near_complete_page_ocr_cache,
     _safe_partial_noise_fragment,
     build_chapter_knowledge_summaries,
     build_local_knowledge_graph,
@@ -123,6 +125,51 @@ def test_scanned_page_ocr_recovers_text_hierarchy_concepts_and_cache(tmp_path):
     assert cached[0].section == "1.1.3 PN结"
 
 
+def test_ocr_heading_context_rejects_contents_prose_and_answer_labels():
+    chapter = "第二章 双极型晶体管及其放大电路"
+    section = "2.3 晶体管放大电路"
+
+    assert _ocr_heading_context(
+        {"chapter": "第五章 反馈放大电路", "section": "5.1 反馈"},
+        "目\n录\n第三章 场效应晶体管及其放大电路\n第五章 反馈放大电路",
+        chapter,
+        section,
+    ) == (chapter, section)
+    assert _ocr_heading_context(
+        {"chapter": "第二章中我们已经知道，晶体管可以看成双端口网络"},
+        "第二章中我们已经知道，晶体管可以看成双端口网络，如图所示。",
+        "第三章 场效应晶体管及其放大电路",
+        "3.1 MOS场效应管",
+    ) == ("第三章 场效应晶体管及其放大电路", "3.1 MOS场效应管")
+    assert _ocr_heading_context(
+        {"chapter": "第一章 半导体基础知识点及二极管电路"},
+        "二极管的反向击穿分为雪崩击穿和齐纳击穿两类。",
+        "第一章 半导体基础知识及二极管电路",
+        "1.2 二极管",
+    ) == ("第一章 半导体基础知识及二极管电路", "1.2 二极管")
+    assert _ocr_heading_context(
+        {"chapter": "第二章"},
+        "部分习题参考答案\n第一章\n1.1.1 p₀≈10²³ m⁻³",
+        "第七章 脉冲信号的产生与处理电路",
+        "7.8 555定时器",
+    ) == ("部分习题参考答案", "")
+
+
+def test_ocr_heading_context_accepts_real_chapter_and_appendix_openers():
+    assert _ocr_heading_context(
+        {"chapter": "第三章 场效应晶体管及其放大电路"},
+        "第三章 场效应晶体管及其放大电路\n场效应晶体管是压控型器件。\n3.1 MOS场效应管",
+        "第二章 双极型晶体管及其放大电路",
+        "2.9 多级放大电路",
+    ) == ("第三章 场效应晶体管及其放大电路", "3.1 MOS场效应管")
+    assert _ocr_heading_context(
+        {},
+        "附录 电子电路的计算机辅助分析与设计\n附录 1.1 OrCAD简介",
+        "第七章 脉冲信号的产生与处理电路",
+        "7.8 555定时器",
+    ) == ("附录 电子电路的计算机辅助分析与设计", "")
+
+
 def test_full_page_scan_is_not_reindexed_as_a_figure():
     scanned = PageDocument(
         "OCR 正文",
@@ -137,6 +184,26 @@ def test_full_page_scan_is_not_reindexed_as_a_figure():
     assert _is_full_page_scan([0, 0, 500, 700], 500, 700, scanned) is True
     assert _is_full_page_scan([50, 100, 300, 350], 500, 700, scanned) is False
     assert _is_full_page_scan([0, 0, 500, 700], 500, 700, native) is False
+
+
+def test_near_complete_page_ocr_cache_skips_only_a_few_missing_pages():
+    pages = [
+        PageDocument(
+            "[本页主要包含电路图、公式或其他图形内容]",
+            "lesson.pdf",
+            page,
+            "lesson",
+            "lesson",
+        )
+        for page in range(1, 466)
+    ]
+
+    assert _reuse_near_complete_page_ocr_cache(
+        pages, {page: {} for page in range(1, 463)}
+    ) is True
+    assert _reuse_near_complete_page_ocr_cache(
+        pages, {page: {} for page in range(1, 461)}
+    ) is False
 
 
 def test_multimodal_chunk_and_graph_keep_circuit_relationships():
@@ -228,6 +295,54 @@ def test_chapter_knowledge_summaries_group_concepts_with_evidence_and_pages():
     assert pn_junction["evidence_count"] == 2
     assert pn_junction["pages"] == [1, 2]
     assert chapters[1]["concepts"][0]["name"] == "放大电路"
+
+
+def test_chapter_knowledge_summaries_exclude_front_matter_appendix_and_answer_index():
+    chunks = [
+        TextChunk(
+            id=f"chunk-{index}", text=name, source="lesson.pdf", chapter=name,
+            section=name, page_start=index, page_end=index, doc_type="textbook",
+            knowledge_tags=["二极管"],
+        )
+        for index, name in enumerate(
+            (
+                "电子电路基础",
+                "第一章 半导体基础知识及二极管电路",
+                "附录 电子电路的计算机辅助分析与设计",
+                "第二章",
+                "部分习题参考答案",
+                "参考文献",
+            ),
+            start=1,
+        )
+    ]
+
+    chapters = build_chapter_knowledge_summaries(chunks)
+
+    assert [chapter["name"] for chapter in chapters] == [
+        "第一章 半导体基础知识及二极管电路"
+    ]
+
+
+def test_chapter_knowledge_summaries_filter_exercise_prompts_and_cap_labels():
+    chunks = [
+        TextChunk(
+            id=f"concept-{index}", text=name, source="lesson.pdf",
+            chapter="第一章 半导体基础", section="1.1 半导体",
+            page_start=1, page_end=1, doc_type="textbook",
+            knowledge_tags=[name],
+        )
+        for index, name in enumerate(
+            [f"专题概念{number}" for number in range(90)]
+            + ["判断下列说法是否正确？"],
+            start=1,
+        )
+    ]
+
+    chapters = build_chapter_knowledge_summaries(chunks)
+
+    assert chapters[0]["concept_count"] == 80
+    assert all("判断下列" not in item["name"] for item in chapters[0]["concepts"])
 
 
 def test_pdf_section_number_prefixes_are_removed_from_concepts():

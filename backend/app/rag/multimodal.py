@@ -21,6 +21,7 @@ from backend.app.rag.pdf_extract_kit import DetectedRegion, PDFExtractKitAdapter
 from backend.app.rag.models import PageDocument, TextChunk
 from backend.app.rag.ontology import (
     COMPONENT_CONCEPTS,
+    COURSE_CONCEPTS,
     component_display_name,
     component_role,
     extract_course_concepts,
@@ -46,6 +47,21 @@ PAGE_OCR_SCHEMA_VERSION = "1.0-qwen-page-ocr"
 PAGE_OCR_PROMPT = """你是模拟电子技术教材的高保真 OCR 与结构识别器。请完整转写本页，严格保持阅读顺序、标题层级、图题、表题、公式、变量、上下标和单位；不得概括、改写或补写看不清的内容。省略页码和重复的页眉。
 text 必须是按阅读顺序排列的字符串数组，每个元素是一行或一个自然段；chapter 填本页可见的章标题，否则为空；section 填本页最后出现、层级最深的编号教学小节（例如“1.1.3 PN结”），否则为空；concepts 只列正文中明确出现的 2-18 个具体模拟电子技术知识点，不得列书名、章名、泛化词或举例材料。
 仅返回 JSON：{"text":["..."],"chapter":"","section":"","concepts":["..."]}。"""
+
+CHAPTER_MARKER_PATTERN = r"第[零〇一二三四五六七八九十百两0-9]+章"
+CHAPTER_SENTENCE_PREFIXES = (
+    "中", "里", "内", "的", "介绍", "已经", "我们", "可以", "给出", "所述",
+)
+CHAPTER_SENTENCE_FRAGMENTS = (
+    "如图", "所示", "我们已经", "可以看成", "介绍了", "给出了", "已经知道",
+)
+SECTION_SENTENCE_FRAGMENTS = (
+    "如图", "所示", "试求", "试画", "试分析", "已知", "计算", "求出", "判断",
+)
+CHAPTER_CONCEPT_LIMIT = 80
+CHAPTER_EXERCISE_CONCEPT_PATTERN = re.compile(
+    r"[？?]|图题\s*\d|判断下列|回答下列|试证明|哪些能够|怎样用|电路.*所示"
+)
 
 OCR_NON_CONCEPTS = {
     "模拟电子技术", "模拟电子技术基础", "常用半导体器件", "基本放大电路",
@@ -287,6 +303,69 @@ def _ocr_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _normalize_chapter_heading(value: Any) -> str:
+    """Return a real chapter heading, rejecting prose and answer-index labels."""
+
+    heading = re.sub(r"\s+", " ", str(value or "")).strip()
+    heading = re.sub(r"\s*[.．·…]{3,}.*$", "", heading).strip()
+    heading = re.sub(r"\s*[（(]\s*\d+\s*[）)]\s*$", "", heading).strip()
+    match = re.fullmatch(
+        rf"(?P<marker>{CHAPTER_MARKER_PATTERN})\s*(?P<title>.+)",
+        heading,
+    )
+    if not match:
+        return ""
+    title = match.group("title").strip(" -—_:：、")
+    compact_title = re.sub(r"\s+", "", title)
+    if not 2 <= len(compact_title) <= 32:
+        return ""
+    if compact_title.startswith(CHAPTER_SENTENCE_PREFIXES):
+        return ""
+    if any(fragment in compact_title for fragment in CHAPTER_SENTENCE_FRAGMENTS):
+        return ""
+    if re.search(r"[，,。；;！？!?]", title):
+        return ""
+    return f"{match.group('marker')} {title}"
+
+
+def _chapter_marker(value: str) -> str:
+    match = re.match(CHAPTER_MARKER_PATTERN, value)
+    return match.group(0) if match else ""
+
+
+def _special_chapter_heading(lines: list[str], previous_chapter: str) -> str:
+    compact_lead = re.sub(r"\s+", "", "".join(lines[:8]))
+    if "目录" in compact_lead:
+        return previous_chapter or "目录"
+    for line in lines[:8]:
+        if re.fullmatch(r"部分习题参考答案", line):
+            return "部分习题参考答案"
+        if re.fullmatch(r"参考文献", line):
+            return "参考文献"
+        if re.match(r"^附录(?:\s|\d|[一二三四五六七八九十])", line):
+            if previous_chapter.startswith("附录"):
+                return previous_chapter
+            if re.match(r"^附录\s+[^0-9]", line):
+                return line[:48].strip()
+            return "附录"
+    return ""
+
+
+def _normalize_section_heading(value: Any) -> str:
+    heading = re.sub(r"\s+", " ", str(value or "")).strip()
+    match = re.fullmatch(
+        r"(\d{1,2}(?:\s*[.．]\s*\d{1,2}){1,3})\s+([^=。；，,!?！？]{2,30})",
+        heading,
+    )
+    if not match:
+        return ""
+    title = match.group(2).strip(" .．、:：-")
+    if any(fragment in title for fragment in SECTION_SENTENCE_FRAGMENTS):
+        return ""
+    number = re.sub(r"\s*[.．]\s*", ".", match.group(1))
+    return f"{number} {title}"
+
+
 def _ocr_heading_context(
     value: dict[str, Any],
     text: str,
@@ -294,34 +373,54 @@ def _ocr_heading_context(
     previous_section: str,
 ) -> tuple[str, str]:
     lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
-    chapter_pattern = re.compile(r"^第[一二三四五六七八九十百0-9]+章\s*[^。；]{0,40}")
-    visible_chapters = [match.group(0).strip() for line in lines if (match := chapter_pattern.match(line))]
-    raw_chapter = re.sub(r"\s+", " ", str(value.get("chapter", ""))).strip()
-    chapter = visible_chapters[-1] if visible_chapters else (
-        raw_chapter if chapter_pattern.match(raw_chapter) else previous_chapter
-    )
+    special_chapter = _special_chapter_heading(lines, previous_chapter)
+    if special_chapter:
+        return (
+            special_chapter,
+            previous_section if special_chapter == previous_chapter else "",
+        )
+
+    visible_chapter_lines = [
+        (line_index, chapter)
+        for line_index, line in enumerate(lines)
+        if (chapter := _normalize_chapter_heading(line))
+    ]
+    visible_chapters = [chapter for _, chapter in visible_chapter_lines]
+    compact_lead = re.sub(r"\s+", "", "".join(lines[:6]))
+    is_contents_page = "目录" in compact_lead or len({
+        _chapter_marker(chapter) for chapter in visible_chapters
+    }) >= 2
+    if is_contents_page:
+        return previous_chapter, previous_section
+    if (
+        previous_chapter == "目录"
+        and (not visible_chapter_lines or visible_chapter_lines[0][0] > 1)
+    ):
+        return previous_chapter, previous_section
+
+    raw_chapter = _normalize_chapter_heading(value.get("chapter", ""))
+    candidate = visible_chapters[0] if visible_chapters else raw_chapter
+    if candidate and _chapter_marker(candidate) == _chapter_marker(previous_chapter):
+        chapter = previous_chapter or candidate
+    elif visible_chapters:
+        chapter = candidate
+    elif raw_chapter and re.sub(r"\s+", "", raw_chapter) in re.sub(r"\s+", "", "".join(lines[:4])):
+        chapter = raw_chapter
+    else:
+        chapter = previous_chapter
     if chapter and chapter != previous_chapter:
         previous_section = ""
 
-    section_pattern = re.compile(
-        r"^\s*(\d{1,2}(?:\s*[.．]\s*\d{1,2}){1,3})\s+([^=。；]{2,42})\s*$"
-    )
-    visible_sections: list[str] = []
-    for line in lines:
-        match = section_pattern.match(line)
-        if not match:
-            continue
-        number = re.sub(r"\s*[.．]\s*", ".", match.group(1))
-        title = match.group(2).strip(" .．、:：-")
-        visible_sections.append(f"{number} {title}")
-    raw_section = re.sub(r"\s+", " ", str(value.get("section", ""))).strip()
+    visible_sections = [
+        section
+        for line in lines
+        if (section := _normalize_section_heading(line))
+    ]
+    raw_section = _normalize_section_heading(value.get("section", ""))
     if visible_sections:
         section = visible_sections[-1]
-    elif section_pattern.match(raw_section):
-        match = section_pattern.match(raw_section)
-        assert match is not None
-        number = re.sub(r"\s*[.．]\s*", ".", match.group(1))
-        section = f"{number} {match.group(2).strip(' .．、:：-')}"
+    elif raw_section:
+        section = raw_section
     else:
         section = previous_section
     return chapter, section
@@ -357,6 +456,27 @@ def _write_page_ocr_cache(path: Path, entries: dict[int, dict[str, Any]]) -> Non
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def _reuse_near_complete_page_ocr_cache(
+    pages: Iterable[PageDocument],
+    entries: dict[int, dict[str, Any]],
+) -> bool:
+    """Avoid paid retries for a few pages missing from an otherwise complete cache."""
+
+    scanned_pages = {
+        page.page
+        for page in pages
+        if page.text.strip() == SCANNED_PAGE_PLACEHOLDER
+    }
+    if not scanned_pages:
+        return False
+    cached_pages = scanned_pages.intersection(entries)
+    missing_pages = scanned_pages.difference(cached_pages)
+    return (
+        len(cached_pages) / len(scanned_pages) >= 0.99
+        and len(missing_pages) <= 3
+    )
 
 
 def _is_full_page_scan(
@@ -404,6 +524,9 @@ def _ocr_scanned_pages(
                     cache_entries[int(item["page"])] = item
         except (OSError, ValueError, json.JSONDecodeError):
             cache_entries = {}
+    reuse_near_complete_cache = _reuse_near_complete_page_ocr_cache(
+        pages, cache_entries
+    )
 
     recovered: list[PageDocument] = []
     previous_chapter = ""
@@ -419,13 +542,15 @@ def _ocr_scanned_pages(
 
             cached = cache_entries.get(page_document.page)
             if cached:
-                chapter = str(cached.get("chapter", "")).strip() or previous_chapter
-                section = str(cached.get("section", "")).strip() or previous_section
+                cached_text = str(cached["text"]).strip()
+                chapter, section = _ocr_heading_context(
+                    cached, cached_text, previous_chapter, previous_section
+                )
                 concepts = [str(item) for item in cached.get("concepts", []) if str(item).strip()]
                 previous_chapter, previous_section = chapter, section
                 recovered.append(replace(
                     page_document,
-                    text=str(cached["text"]).strip(),
+                    text=cached_text,
                     chapter=chapter or page_document.chapter,
                     section=section or chapter or page_document.section,
                     extra={
@@ -434,6 +559,9 @@ def _ocr_scanned_pages(
                         "ocr_processor": f"qwen-vl:{cached.get('model', '')}",
                     },
                 ))
+                continue
+            if reuse_near_complete_cache:
+                recovered.append(page_document)
                 continue
             if client is None:
                 recovered.append(page_document)
@@ -1174,16 +1302,10 @@ def enhance_pdf(
     if audit_path.exists():
         try:
             cached_audit = json.loads(audit_path.read_text(encoding="utf-8"))
-            expected_method = (
-                f"llm:{cleaning_client.config.provider}/{cleaning_client.config.model}"
-                if cleaning_client
-                else "rule"
-            )
             decisions = {
                 int(item["page"]): item
                 for item in cached_audit
                 if isinstance(item, dict)
-                and item.get("method") == expected_method
                 and item.get("cleaning_policy_version") == PAGE_CLEANING_POLICY_VERSION
                 and item.get("document_hash") == document_hash
                 and item.get("page_text_hash") == page_text_hashes.get(int(item["page"]))
@@ -1895,7 +2017,7 @@ def build_chapter_knowledge_summaries(
     for chunk_index, chunk in enumerate(chunks):
         if chunk.doc_type == "question":
             continue
-        chapter = re.sub(r"\s+", " ", str(chunk.chapter)).strip()
+        chapter = _normalize_chapter_heading(chunk.chapter)
         if not chapter:
             continue
         summary = grouped.setdefault(
@@ -1922,7 +2044,11 @@ def build_chapter_knowledge_summaries(
         summary["pages"].update(chunk_pages)
         for concept in dict.fromkeys(chunk.knowledge_tags):
             concept_name = normalize_concept_name(concept)
-            if not concept_name or not is_course_concept(concept_name):
+            if (
+                not concept_name
+                or not is_course_concept(concept_name)
+                or CHAPTER_EXERCISE_CONCEPT_PATTERN.search(concept_name)
+            ):
                 continue
             concept_summary = summary["concepts"].setdefault(
                 concept_name,
@@ -1942,14 +2068,20 @@ def build_chapter_knowledge_summaries(
     result: list[dict[str, Any]] = []
     for summary in grouped.values():
         pages = sorted(summary["pages"])
+        minimum_evidence = 5 if len(pages) >= 30 else 3 if len(pages) >= 10 else 1
         concepts = sorted(
-            summary["concepts"].values(),
+            (
+                item
+                for item in summary["concepts"].values()
+                if int(item["evidence_count"]) >= minimum_evidence
+                or item["name"] in COURSE_CONCEPTS
+            ),
             key=lambda item: (
                 -int(item["evidence_count"]),
                 int(item["first_seen"]),
                 str(item["name"]),
             ),
-        )
+        )[:CHAPTER_CONCEPT_LIMIT]
         result.append({
             "id": summary["id"],
             "name": summary["name"],
