@@ -28,6 +28,8 @@ from backend.app.services.homework import (
     _recover_missing_question_figures,
     _repair_figure_assignments,
     _repair_small_signal_input_units,
+    _select_candidate_pages,
+    _should_review_page,
     _split_labeled_text,
     grade_submission,
     process_homework,
@@ -80,6 +82,71 @@ def test_invalid_unicode_surrogates_are_replaced_before_persistence(tmp_path):
     assert raw["questions"][0]["prompt"] == "PN 结�测试"
     assert _clean_text("a\udc01b") == "a�b"
     store.index_path.read_bytes().decode("utf-8", errors="strict")
+
+
+def test_ai_page_prefilter_keeps_candidates_and_neighbor_pages(tmp_path):
+    pages = []
+    for page_number in range(1, 13):
+        path = tmp_path / f"page-{page_number:03d}.png"
+        image = Image.new("RGB", (600, 800), "white")
+        ImageDraw.Draw(image).text((30, 30), f"PAGE {page_number}", fill="black")
+        image.save(path)
+        pages.append({"page": page_number, "path": path, "text": ""})
+    client = FakeVisionClient(
+        {
+            "pages": [
+                {
+                    "page": page_number,
+                    "kind": (
+                        "question" if page_number == 3
+                        else "answer" if page_number == 4
+                        else "non_question"
+                    ),
+                    "confidence": 0.99,
+                }
+                for page_number in range(1, 7)
+            ]
+        },
+        {
+            "pages": [
+                {"page": page_number, "kind": "non_question", "confidence": 0.99}
+                for page_number in range(7, 13)
+            ]
+        },
+    )
+
+    selected, warnings = _select_candidate_pages(
+        client, pages, batch_size=6, neighbor_radius=1
+    )
+
+    assert [page["page"] for page in selected] == [2, 3, 4, 5]
+    assert selected[0]["prefilter_neighbor"] is True
+    assert selected[1]["prefilter_kind"] == "question"
+    assert selected[2]["prefilter_kind"] == "answer"
+    assert len(client.calls) == 2
+    assert all(call[1].startswith(b"\xff\xd8") for call in client.calls)
+    assert all(call[2] == "image/jpeg" for call in client.calls)
+    assert "12 页中选出 2 页" in warnings[-1]
+
+
+def test_second_page_review_only_runs_for_ambiguous_or_incomplete_results():
+    complete_item = {
+        "question_type": "calculation",
+        "question_text": "计算输出电压。",
+        "options": [],
+    }
+    confident_page = {"prefilter_kind": "question", "prefilter_confidence": 0.99}
+
+    assert _should_review_page(confident_page, [complete_item]) is False
+    assert _should_review_page(
+        {"prefilter_kind": "mixed", "prefilter_confidence": 0.99},
+        [complete_item],
+    ) is True
+    assert _should_review_page(
+        confident_page,
+        [{"question_type": "choice", "question_text": "请选择。", "options": []}],
+    ) is True
+    assert _should_review_page(confident_page, []) is True
 
 
 def extracted_homework(store: HomeworkStore) -> tuple[str, str]:

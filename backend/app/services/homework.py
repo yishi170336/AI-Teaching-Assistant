@@ -31,6 +31,10 @@ ANSWER_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 HOMEWORK_ID_PATTERN = re.compile(r"[a-f0-9]{32}")
 ASSET_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,160}")
 STUDENT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,96}")
+PAGE_PREFILTER_BATCH_SIZE = 12
+PAGE_PREFILTER_MIN_PAGES = 8
+PAGE_PREFILTER_NEIGHBOR_RADIUS = 1
+PAGE_PREFILTER_EXCLUDE_CONFIDENCE = 0.86
 
 
 def _now() -> str:
@@ -1520,6 +1524,236 @@ def _render_source(source_path: Path, assets_dir: Path) -> list[dict[str, Any]]:
             "native_answer_bboxes": [],
             "native_figure_captions": [],
         }]
+
+
+def _page_prefilter_contact_sheet(pages: list[dict[str, Any]]) -> bytes:
+    """Create a low-resolution page overview for inexpensive batch classification."""
+    if not pages:
+        raise ValueError("页面粗筛批次不能为空")
+    columns = 3
+    tile_width, tile_height = 480, 660
+    label_height = 34
+    rows = (len(pages) + columns - 1) // columns
+    sheet = Image.new(
+        "RGB",
+        (columns * tile_width, rows * tile_height),
+        "#eef3f2",
+    )
+    draw = ImageDraw.Draw(sheet)
+    try:
+        for index, page in enumerate(pages):
+            column, row = index % columns, index // columns
+            left, top = column * tile_width, row * tile_height
+            draw.rectangle(
+                (left + 5, top + 5, left + tile_width - 5, top + tile_height - 5),
+                fill="white",
+                outline="#8aa6a2",
+                width=2,
+            )
+            draw.text(
+                (left + 16, top + 10),
+                f"PDF PAGE {int(page['page'])}",
+                fill="#173f3b",
+            )
+            with Image.open(page["path"]) as source:
+                preview = ImageOps.exif_transpose(source).convert("RGB")
+                preview.thumbnail((tile_width - 24, tile_height - label_height - 22))
+                x = left + (tile_width - preview.width) // 2
+                y = top + label_height + (tile_height - label_height - preview.height) // 2
+                sheet.paste(preview, (x, y))
+                preview.close()
+        output = io.BytesIO()
+        sheet.save(output, format="JPEG", quality=82, optimize=True)
+        return output.getvalue()
+    finally:
+        sheet.close()
+
+
+def _page_prefilter_prompt(pages: list[dict[str, Any]]) -> str:
+    page_numbers = [int(page["page"]) for page in pages]
+    text_previews = [
+        {
+            "page": int(page["page"]),
+            "text": _clean_text(page.get("text"), 1800),
+        }
+        for page in pages
+        if _clean_text(page.get("text"), 1800)
+    ]
+    return f"""你是高校教材题库的页面预筛员。请快速查看这一批 PDF 页面，只判断哪些页值得进入后续高清题目提取，不要转写题目内容。
+
+页面分类：
+- question：含有可独立布置的习题、练习题、思考题、自测题、设计题，或带明确题号和作答要求的例题。
+- answer：含参考答案、习题解答、解题过程或答案续页。
+- mixed：同一页同时含题目/答案与知识讲解，或明显存在跨页题目边界。
+- non_question：封面、版权、目录、前言、纯理论讲解、公式说明、章节总结、参考文献等，不包含可布置题目或对应答案。
+- uncertain：缩略图太小、内容模糊或无法可靠判断。
+
+规则：
+1. 以联系表上方的“PDF PAGE N”为真实页码，必须覆盖本批所有页码：{page_numbers}。
+2. 宁可把不确定页面标为 uncertain，也不能把可能含题目、例题题干、题图或答案的页面误判为 non_question。
+3. 普通知识讲解中的公式、示意图不等于题目；但带完整题号和明确求解要求的例题属于 question。
+4. 只返回分类结果，不提取题干、答案或坐标。
+
+可用的 PDF 原生文本摘要（扫描页可能为空）：
+{json.dumps(text_previews, ensure_ascii=False)}
+
+仅返回 JSON：
+{{"pages":[{{"page":1,"kind":"question|answer|mixed|non_question|uncertain","confidence":0.95,"reason":"简短依据"}}]}}。"""
+
+
+def _normalized_page_prefilter(
+    value: dict[str, Any], expected_pages: set[int]
+) -> dict[int, dict[str, Any]]:
+    aliases = {
+        "question": "question",
+        "题目": "question",
+        "answer": "answer",
+        "答案": "answer",
+        "mixed": "mixed",
+        "混合": "mixed",
+        "non_question": "non_question",
+        "non-question": "non_question",
+        "无关": "non_question",
+        "uncertain": "uncertain",
+        "不确定": "uncertain",
+    }
+    result: dict[int, dict[str, Any]] = {}
+    raw_pages = value.get("pages", [])
+    if isinstance(raw_pages, list):
+        for raw in raw_pages:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                page_number = int(raw.get("page"))
+            except (TypeError, ValueError):
+                continue
+            if page_number not in expected_pages:
+                continue
+            kind = aliases.get(_clean_text(raw.get("kind"), 40).lower(), "uncertain")
+            try:
+                confidence = max(0.0, min(1.0, float(raw.get("confidence", 0))))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            result[page_number] = {
+                "kind": kind,
+                "confidence": confidence,
+                "reason": _clean_text(raw.get("reason"), 160),
+            }
+    for page_number in expected_pages - result.keys():
+        result[page_number] = {
+            "kind": "uncertain",
+            "confidence": 0.0,
+            "reason": "模型未返回该页，保守纳入高清提取",
+        }
+    return result
+
+
+def _select_candidate_pages(
+    client: QwenVisionClient | Any,
+    pages: list[dict[str, Any]],
+    *,
+    batch_size: int = PAGE_PREFILTER_BATCH_SIZE,
+    neighbor_radius: int = PAGE_PREFILTER_NEIGHBOR_RADIUS,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Use batched low-resolution AI classification before expensive extraction."""
+    if len(pages) < PAGE_PREFILTER_MIN_PAGES:
+        for page in pages:
+            page["prefilter_kind"] = "question"
+            page["prefilter_confidence"] = 1.0
+        return pages, []
+
+    warnings: list[str] = []
+    classifications: dict[int, dict[str, Any]] = {}
+    safe_batch_size = max(1, batch_size)
+    for offset in range(0, len(pages), safe_batch_size):
+        batch = pages[offset:offset + safe_batch_size]
+        expected = {int(page["page"]) for page in batch}
+        try:
+            result = client.complete_json(
+                _page_prefilter_prompt(batch),
+                image_bytes=_page_prefilter_contact_sheet(batch),
+                image_mime="image/jpeg",
+            )
+            classifications.update(_normalized_page_prefilter(result, expected))
+        except Exception as exc:
+            warnings.append(
+                f"第{min(expected)}-{max(expected)}页 AI 粗筛失败，已保守纳入："
+                f"{_clean_text(exc, 180)}"
+            )
+            classifications.update({
+                page_number: {
+                    "kind": "uncertain",
+                    "confidence": 0.0,
+                    "reason": "AI 粗筛失败",
+                }
+                for page_number in expected
+            })
+
+    candidate_numbers = {
+        page_number
+        for page_number, classification in classifications.items()
+        if classification["kind"] != "non_question"
+        or float(classification["confidence"]) < PAGE_PREFILTER_EXCLUDE_CONFIDENCE
+    }
+    if not candidate_numbers:
+        warnings.append("AI 页面粗筛未选出候选页，已回退为全页提取")
+        candidate_numbers = {int(page["page"]) for page in pages}
+
+    available_numbers = {int(page["page"]) for page in pages}
+    expanded_numbers = set(candidate_numbers)
+    for page_number in candidate_numbers:
+        expanded_numbers.update(
+            nearby
+            for nearby in range(
+                page_number - max(0, neighbor_radius),
+                page_number + max(0, neighbor_radius) + 1,
+            )
+            if nearby in available_numbers
+        )
+
+    selected: list[dict[str, Any]] = []
+    for page in pages:
+        page_number = int(page["page"])
+        classification = classifications.get(page_number, {})
+        page["prefilter_kind"] = classification.get("kind", "uncertain")
+        page["prefilter_confidence"] = float(classification.get("confidence", 0))
+        page["prefilter_reason"] = classification.get("reason", "")
+        page["prefilter_neighbor"] = (
+            page_number in expanded_numbers and page_number not in candidate_numbers
+        )
+        if page_number in expanded_numbers:
+            selected.append(page)
+    warnings.append(
+        f"AI 页面粗筛：从 {len(pages)} 页中选出 {len(candidate_numbers)} 页，"
+        f"连同相邻页共 {len(selected)} 页进入高清提取"
+    )
+    return selected, warnings
+
+
+def _should_review_page(
+    page: dict[str, Any], page_items: list[dict[str, Any]]
+) -> bool:
+    """Only spend a second vision call on ambiguous or incomplete candidate pages."""
+    if not page_items:
+        return True
+    if page.get("prefilter_kind") in {"mixed", "uncertain"}:
+        return True
+    if float(page.get("prefilter_confidence", 0)) < PAGE_PREFILTER_EXCLUDE_CONFIDENCE:
+        return True
+    for item in page_items:
+        if (
+            _question_type(item.get("question_type")) == "choice"
+            and len(item.get("options", [])) < 2
+        ):
+            return True
+        if not _clean_text(item.get("question_text")) and (
+            _clean_text(item.get("answer_text"))
+            or item.get("answer_subquestions")
+            or item.get("figure_bboxes")
+            or item.get("answer_figure_bboxes")
+        ):
+            return True
+    return False
 
 
 def _native_inline_answer_bboxes(page: fitz.Page) -> list[list[float]]:
@@ -3376,13 +3610,23 @@ def process_homework(
             homework_id,
             page_count=len(pages),
             processing_progress=8,
-            processing_message=f"已渲染 {len(pages)} 页，正在分析版面",
+            processing_message=f"已渲染 {len(pages)} 页，AI 正在批量粗筛题目与答案页",
         )
         page_map = {int(page["page"]): page for page in pages}
+        candidate_pages, prefilter_warnings = _select_candidate_pages(client, pages)
+        updater(
+            homework_id,
+            candidate_page_count=len(candidate_pages),
+            processing_progress=15,
+            processing_message=(
+                f"AI 粗筛完成：{len(pages)} 页中有 {len(candidate_pages)} 页"
+                "需要高清提取"
+            ),
+        )
         all_items: list[dict[str, Any]] = []
-        warnings: list[str] = []
+        warnings: list[str] = list(prefilter_warnings)
         previous_items: list[dict[str, Any]] = []
-        for page_index, page in enumerate(pages, 1):
+        for candidate_index, page in enumerate(candidate_pages, 1):
             with Image.open(page["path"]) as image:
                 regions = _normalized_regions(adapter, image)
                 page["regions"] = regions
@@ -3397,7 +3641,7 @@ def process_homework(
                     logger.warning("Homework page %s extraction failed: %s", page["page"], exc)
                     continue
             page_items = _normalized_page_items(result, int(page["page"]))
-            if len(pages) > 1 and (page_items or previous_items):
+            if len(pages) > 1 and _should_review_page(page, page_items):
                 try:
                     review_result = client.complete_json(
                         _page_review_prompt(page, regions, previous_items, page_items),
@@ -3458,8 +3702,14 @@ def process_homework(
                 warnings.extend(_clean_text(item, 240) for item in raw_warnings if _clean_text(item, 240))
             updater(
                 homework_id,
-                processing_progress=min(82, 8 + round(page_index / len(pages) * 74)),
-                processing_message=f"正在识别第 {page_index}/{len(pages)} 页",
+                processing_progress=min(
+                    82,
+                    15 + round(candidate_index / max(1, len(candidate_pages)) * 67),
+                ),
+                processing_message=(
+                    f"正在高清提取候选页 {candidate_index}/{len(candidate_pages)}"
+                    f"（原 PDF 第 {page['page']}/{len(pages)} 页）"
+                ),
             )
         if not all_items:
             raise RuntimeError("视觉模型没有识别出题目，请检查附件清晰度或模型配置")
@@ -3470,7 +3720,7 @@ def process_homework(
             page_count=len(pages),
             page_contexts=[
                 {"page": page["page"], "text_start": page["text"][:1600]}
-                for page in pages
+                for page in candidate_pages
             ],
         )
         warnings.extend(consolidation_warnings)
