@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import sys
 import threading
 import base64
 from pathlib import Path
@@ -36,6 +37,12 @@ class HybridRetriever:
             if line.strip()
         ]
         self.meta = json.loads((index_dir / "index_meta.json").read_text(encoding="utf-8"))
+        if sys.platform == "darwin" and embedding_model_path.exists():
+            # Loading FAISS before Torch can segfault the macOS process on the
+            # first query. Initialize the shared encoder before FAISS is opened.
+            from backend.app.rag.embedding_runtime import get_embedding_model
+
+            get_embedding_model(embedding_model_path)
         self._qdrant_client = self._open_qdrant()
         self._neo4j_driver = None
         # Open Qdrant before FAISS/Torch native runtimes on Windows.
