@@ -28,7 +28,10 @@ from backend.app.schemas import (
     HomeworkSubmissionAnswer,
     KnowledgeBaseRebuildRequest,
     LearningPlanPptRequest,
+    MistakeAnnotationRequest,
+    MistakeCategoryRequest,
     MistakeCreateRequest,
+    MistakeUpdateRequest,
     ScheduleItemCreateRequest,
     ScheduleItemStatusRequest,
 )
@@ -37,6 +40,7 @@ from backend.app.services.ollama_client import OllamaClient
 from backend.app.services.openai_compatible_client import OpenAICompatibleClient
 from backend.app.services.attachments import ALLOWED_ATTACHMENT_SUFFIXES, AttachmentStore
 from backend.app.services.mistake_book import MistakeBook, related_mistake_context
+from backend.app.services.mistake_insights import MistakeKnowledgeService
 from backend.app.services.schedule import StudentSchedule
 from backend.app.services.learning_plan_ppt import (
     generate_learning_plan_ppt,
@@ -88,6 +92,7 @@ knowledge_bases = KnowledgeBaseManager()
 engine = CircuitTutorEngine(ollama, knowledge_bases)
 attachments = AttachmentStore()
 mistake_book = MistakeBook()
+mistake_knowledge = MistakeKnowledgeService(knowledge_bases)
 student_schedule = StudentSchedule()
 homework_store = HomeworkStore()
 
@@ -389,6 +394,18 @@ def _fallback_knowledge_points(content: str) -> list[str]:
     return matched[:8] or ["电路基础"]
 
 
+def _validate_student_id(student_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", student_id):
+        raise HTTPException(status_code=400, detail="学生标识不合法")
+    return student_id
+
+
+def _validate_mistake_id(mistake_id: str) -> str:
+    if not re.fullmatch(r"[a-f0-9]{32}", mistake_id):
+        raise HTTPException(status_code=400, detail="错题标识不合法")
+    return mistake_id
+
+
 async def _extract_mistake_metadata(payload: MistakeCreateRequest) -> tuple[list[str], str]:
     client: Any | None = None
     should_close = False
@@ -424,8 +441,7 @@ async def _extract_mistake_metadata(payload: MistakeCreateRequest) -> tuple[list
 
 @app.get("/api/mistakes")
 async def list_mistakes(student_id: str) -> dict[str, Any]:
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", student_id):
-        raise HTTPException(status_code=400, detail="学生标识不合法")
+    _validate_student_id(student_id)
     items = await mistake_book.list(student_id)
     history_cache: dict[str, list[dict[str, Any]]] = {}
     restored_items: list[dict[str, Any]] = []
@@ -457,7 +473,11 @@ async def list_mistakes(student_id: str) -> dict[str, Any]:
         if recovered["attachments"] and not item.get("attachments"):
             item["attachments"] = recovered["attachments"]
         restored_items.append(item)
-    return {"mistakes": restored_items}
+    return {
+        "mistakes": restored_items,
+        "categories": await mistake_book.list_categories(student_id),
+        "analysis": mistake_knowledge.analyze(restored_items),
+    }
 
 
 @app.post("/api/mistakes")
@@ -466,23 +486,156 @@ async def add_mistake(payload: MistakeCreateRequest) -> dict[str, Any]:
         _extract_mistake_metadata(payload),
         attachments.resolve(payload.session_id, payload.attachment_ids),
     )
-    item = await mistake_book.add(
-        student_id=payload.student_id,
-        session_id=payload.session_id,
-        question=payload.question,
-        answer=payload.answer,
-        agent=payload.agent,
-        knowledge_points=knowledge_points,
-        summary=summary,
-        attachments=resolved.items,
+    alignment = await asyncio.to_thread(
+        mistake_knowledge.align, payload.knowledge_base, knowledge_points
     )
+    try:
+        item = await mistake_book.add(
+            student_id=payload.student_id,
+            session_id=payload.session_id,
+            question=payload.question,
+            answer=payload.answer,
+            agent=payload.agent,
+            knowledge_points=knowledge_points,
+            summary=summary,
+            attachments=resolved.items,
+            knowledge_base=payload.knowledge_base,
+            source=payload.source or "",
+            question_bank_id=payload.question_bank_id,
+            knowledge_tags=alignment["knowledge_tags"],
+            location=alignment["location"],
+            prerequisites=alignment["prerequisites"],
+            messages=[message.model_dump() for message in payload.messages],
+            category_id=payload.category_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "mistake": item}
+
+
+@app.get("/api/mistakes/categories")
+async def list_mistake_categories(student_id: str) -> dict[str, Any]:
+    _validate_student_id(student_id)
+    return {"categories": await mistake_book.list_categories(student_id)}
+
+
+@app.post("/api/mistakes/categories")
+async def create_mistake_category(payload: MistakeCategoryRequest) -> dict[str, Any]:
+    try:
+        category = await mistake_book.create_category(payload.student_id, payload.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"category": category}
+
+
+@app.patch("/api/mistakes/categories/{category_id}")
+async def rename_mistake_category(
+    category_id: str, payload: MistakeCategoryRequest
+) -> dict[str, Any]:
+    _validate_mistake_id(category_id)
+    try:
+        category = await mistake_book.rename_category(
+            payload.student_id, category_id, payload.name
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if category is None:
+        raise HTTPException(status_code=404, detail="错题分类不存在")
+    return {"category": category}
+
+
+@app.delete("/api/mistakes/categories/{category_id}")
+async def delete_mistake_category(category_id: str, student_id: str) -> dict[str, Any]:
+    _validate_student_id(student_id)
+    _validate_mistake_id(category_id)
+    try:
+        deleted = await mistake_book.delete_category(student_id, category_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="错题分类不存在")
+    return {"ok": True}
+
+
+@app.get("/api/mistakes/analysis")
+async def mistake_analysis(student_id: str) -> dict[str, Any]:
+    _validate_student_id(student_id)
+    return mistake_knowledge.analyze(await mistake_book.list(student_id))
+
+
+@app.patch("/api/mistakes/{mistake_id}")
+async def update_mistake(
+    mistake_id: str, payload: MistakeUpdateRequest
+) -> dict[str, Any]:
+    _validate_mistake_id(mistake_id)
+    try:
+        item = await mistake_book.update(
+            payload.student_id,
+            mistake_id,
+            title=payload.title,
+            category_id=payload.category_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="错题不存在")
+    return {"mistake": item}
+
+
+@app.post("/api/mistakes/{mistake_id}/annotations")
+async def add_mistake_annotation(
+    mistake_id: str, payload: MistakeAnnotationRequest
+) -> dict[str, Any]:
+    _validate_mistake_id(mistake_id)
+    try:
+        annotation = await mistake_book.add_annotation(
+            payload.student_id,
+            mistake_id,
+            payload.content,
+            client_request_id=payload.client_request_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if annotation is None:
+        raise HTTPException(status_code=404, detail="错题不存在")
+    return {"annotation": annotation}
+
+
+@app.patch("/api/mistakes/{mistake_id}/annotations/{annotation_id}")
+async def update_mistake_annotation(
+    mistake_id: str,
+    annotation_id: str,
+    payload: MistakeAnnotationRequest,
+) -> dict[str, Any]:
+    _validate_mistake_id(mistake_id)
+    _validate_mistake_id(annotation_id)
+    try:
+        annotation = await mistake_book.update_annotation(
+            payload.student_id, mistake_id, annotation_id, payload.content
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if annotation is None:
+        raise HTTPException(status_code=404, detail="批注不存在")
+    return {"annotation": annotation}
+
+
+@app.delete("/api/mistakes/{mistake_id}/annotations/{annotation_id}")
+async def delete_mistake_annotation(
+    mistake_id: str, annotation_id: str, student_id: str
+) -> dict[str, Any]:
+    _validate_student_id(student_id)
+    _validate_mistake_id(mistake_id)
+    _validate_mistake_id(annotation_id)
+    if not await mistake_book.delete_annotation(student_id, mistake_id, annotation_id):
+        raise HTTPException(status_code=404, detail="批注不存在")
+    return {"ok": True}
 
 
 @app.delete("/api/mistakes/{mistake_id}")
 async def delete_mistake(mistake_id: str, student_id: str) -> dict[str, Any]:
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", student_id) or not re.fullmatch(r"[a-f0-9]{32}", mistake_id):
-        raise HTTPException(status_code=400, detail="错题标识不合法")
+    _validate_student_id(student_id)
+    _validate_mistake_id(mistake_id)
     if not await mistake_book.delete(student_id, mistake_id):
         raise HTTPException(status_code=404, detail="错题不存在")
     return {"ok": True}
