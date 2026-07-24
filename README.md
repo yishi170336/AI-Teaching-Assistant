@@ -16,7 +16,7 @@
 - 右上角可切换本地 Ollama、DeepSeek、通义千问或自定义兼容 API；配置会保存在当前浏览器，也可通过后端环境变量提供。
 - 左侧“最近学习”读取持久化会话列表，支持点击恢复历史对话；刷新页面后会自动恢复当前会话。
 - 学生端知识图谱默认展示聚合后的“教材—页面—知识点—电路图—去重元件”语义关系；公式、文本片段和网络节点保留在底层图中作为检索证据，不直接铺到画布上。
-- 答疑和出题内容均可加入持久化错题本；归档前自动提取知识点，错题页可按薄弱点发起知识补全与巩固规划。
+- 答疑、AI 出题和外部题库内容均可加入持久化错题本；支持来源追踪、分类、批注、知识图谱对齐、章节/前置知识定位和确定性薄弱点学习规划。实现、接口与迁移约定见 [错题本集成说明](docs/MISTAKE_BOOK.md)。
 - 教师可上传试卷、课后习题、学习指导书、图片或扫描版习题册；`qwen3-vl-flash` 联合 PDF-Extract-Kit 过滤目录、知识讲解等非题目内容，按题提取题号、共同题干、分层小问、选项、所属插图、参考答案与评分点，并重排为可打印的作业内容和参考答案。
 - 学生端“我的作业”支持多张作答照片提交；`qwen3-vl-flash` 识别手写内容并评分，`qwen3-vl-8b-instruct` 独立复核漏题、错读、步骤分与总分，疑点会标记为教师复查。
 
@@ -240,8 +240,14 @@ docker compose up -d qdrant redis
 - `GET /api/kb/{knowledge_base}/graph`
 - `POST /api/kb/rebuild`（使用 `qwen3-vl-flash` 重建已有资料）
 - `GET /api/mistakes?student_id=...`
-- `POST /api/mistakes`（调用当前模型提取知识点后归档）
+- `POST /api/mistakes`（提取知识点、推断可信来源并对齐课程图谱后归档）
+- `PATCH /api/mistakes/{mistake_id}?student_id=...`
 - `DELETE /api/mistakes/{mistake_id}?student_id=...`
+- `GET /api/mistakes/analysis?student_id=...`
+- `GET|POST /api/mistakes/categories`
+- `PATCH|DELETE /api/mistakes/categories/{category_id}`
+- `POST /api/mistakes/{mistake_id}/annotations`
+- `PATCH|DELETE /api/mistakes/{mistake_id}/annotations/{annotation_id}`
 - `GET /api/homeworks?role=teacher|student&student_id=...`
 - `POST /api/homeworks`（上传 PDF/图片并后台拆题）
 - `POST /api/homeworks/{homework_id}/publish`

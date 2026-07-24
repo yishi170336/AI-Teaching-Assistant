@@ -325,6 +325,8 @@ def _normalize_chapter_heading(value: Any) -> str:
     heading = re.sub(r"\s+", " ", str(value or "")).strip()
     heading = re.sub(r"\s*[.．·…]{3,}.*$", "", heading).strip()
     heading = re.sub(r"\s*[（(]\s*\d+\s*[）)]\s*$", "", heading).strip()
+    if re.fullmatch(CHAPTER_MARKER_PATTERN, heading):
+        return heading
     match = re.fullmatch(
         rf"(?P<marker>{CHAPTER_MARKER_PATTERN})\s*(?P<title>.+)",
         heading,
@@ -2041,6 +2043,15 @@ def build_chapter_knowledge_summaries(
             continue
         chapter = _normalize_chapter_heading(chunk.chapter)
         if not chapter:
+            continue
+        # A bare marker is useful when real content inherits only "第一章", but an
+        # isolated marker copied from a contents/answer page is not a chapter
+        # summary by itself. Require some evidence beyond the repeated heading.
+        if (
+            re.fullmatch(CHAPTER_MARKER_PATTERN, chapter)
+            and re.sub(r"\s+", "", chunk.text) == re.sub(r"\s+", "", chapter)
+            and meaningful_section(chunk.section) == chapter
+        ):
             continue
         summary = grouped.setdefault(
             chapter,

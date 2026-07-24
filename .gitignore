@@ -11,6 +11,7 @@ tools/spreadsheet/node_modules/
 data/vector_stores/*/*.tmp
 data/uploads/
 data/session_memory/
+data/mistake_book*.json
 data/presentations/
 tmp/
 logs/

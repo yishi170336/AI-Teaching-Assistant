@@ -53,6 +53,7 @@ import {
   Menu,
   MessageSquareText,
   Plus,
+  Pencil,
   Paperclip,
   Presentation,
   Search,
@@ -73,17 +74,21 @@ import MathMarkdown from '../components/MathMarkdown'
 import HomeworkView from './HomeworkView'
 import {
   addMistake,
+  addMistakeAnnotation,
   addScheduleItem,
   AttachmentInfo,
   cancelKnowledgeBaseBuild,
   ChapterKnowledgeSummary,
+  createMistakeCategory,
   deleteKnowledgeBase,
   deleteMistake,
+  deleteMistakeAnnotation,
+  deleteMistakeCategory,
   deleteScheduleItem,
   deleteSession,
   fetchKnowledgeGraph,
   fetchKnowledgeBases,
-  fetchMistakes,
+  fetchMistakeNotebook,
   fetchSchedule,
   fetchModels,
   fetchSession,
@@ -96,12 +101,18 @@ import {
   ModelConfig,
   ModelProviderId,
   MistakeItem,
+  MistakeAnalysis,
+  MistakeCategory,
+  MistakeSource,
+  renameMistakeCategory,
   ScheduleCategory,
   ScheduleItem,
   ScheduleItemDraft,
   SessionSummary,
   SourceInfo,
   setScheduleItemCompleted,
+  updateMistake,
+  updateMistakeAnnotation,
   uploadKnowledgeFile,
   rebuildKnowledgeBase,
 } from '../lib/api'
@@ -114,6 +125,12 @@ type MistakeDraft = {
   answer: string
   agent: string
   attachments: AttachmentInfo[]
+}
+
+const mistakeSourceLabels: Record<MistakeSource, string> = {
+  question_bank: '题库',
+  ai_generated: 'AI 生成',
+  user_uploaded: '用户上传',
 }
 
 const knowledgeBaseDisplayName = (status: KBStatus | undefined, fallbackId = '') => (
@@ -1479,33 +1496,173 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
 
 function MistakeBookView({
   mistakes,
+  categories,
+  analysis,
+  studentId,
   onDelete,
   onPlan,
+  onChanged,
 }: {
   mistakes: MistakeItem[]
+  categories: MistakeCategory[]
+  analysis?: MistakeAnalysis
+  studentId: string
   onDelete: (id: string) => void
   onPlan: () => void
+  onChanged: () => Promise<void>
 }) {
-  const [selectedMistake, setSelectedMistake] = useState<MistakeItem | null>(null)
-  const pointCounts = useMemo(() => {
-    const counts = new Map<string, number>()
-    mistakes.flatMap((item) => item.knowledge_points).forEach((point) => counts.set(point, (counts.get(point) || 0) + 1))
-    return [...counts.entries()].sort((a, b) => b[1] - a[1])
-  }, [mistakes])
+  const { message: toast } = AntApp.useApp()
+  const [selectedId, setSelectedId] = useState('')
+  const [sourceFilter, setSourceFilter] = useState<'all' | MistakeSource>('all')
+  const [categoryFilter, setCategoryFilter] = useState('all')
+  const [newCategory, setNewCategory] = useState('')
+  const [renamingCategoryId, setRenamingCategoryId] = useState('')
+  const [categoryName, setCategoryName] = useState('')
+  const [titleDraft, setTitleDraft] = useState('')
+  const [annotationDraft, setAnnotationDraft] = useState('')
+  const [annotationRequestId, setAnnotationRequestId] = useState('')
+  const [editingAnnotationId, setEditingAnnotationId] = useState('')
+  const [editingAnnotationContent, setEditingAnnotationContent] = useState('')
+  const [savingAction, setSavingAction] = useState('')
+  const selectedMistake = mistakes.find((item) => item.id === selectedId) || null
+  const visibleMistakes = useMemo(() => mistakes.filter((item) => (
+    (sourceFilter === 'all' || item.source === sourceFilter)
+    && (categoryFilter === 'all' || item.category_id === categoryFilter)
+  )), [mistakes, sourceFilter, categoryFilter])
+
+  const runAction = async (key: string, action: () => Promise<void>, success: string) => {
+    if (savingAction) return
+    setSavingAction(key)
+    try {
+      await action()
+      await onChanged()
+      toast.success(success)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '操作失败，请稍后重试')
+    } finally {
+      setSavingAction('')
+    }
+  }
+
+  const createCategory = async () => {
+    const name = newCategory.trim()
+    if (!name) return
+    await runAction('category-create', async () => {
+      await createMistakeCategory(studentId, name)
+      setNewCategory('')
+    }, '错题分类已创建')
+  }
+
+  const renameCategory = async () => {
+    const name = categoryName.trim()
+    if (!renamingCategoryId || !name) return
+    await runAction('category-rename', async () => {
+      await renameMistakeCategory(studentId, renamingCategoryId, name)
+      setRenamingCategoryId('')
+      setCategoryName('')
+    }, '错题分类已重命名')
+  }
+
+  const saveAnnotation = async () => {
+    if (!selectedMistake || !annotationDraft.trim()) return
+    const requestId = annotationRequestId || `annotation-${Date.now().toString(36)}`
+    setAnnotationRequestId(requestId)
+    await runAction('annotation-create', async () => {
+      await addMistakeAnnotation(studentId, selectedMistake.id, annotationDraft.trim(), requestId)
+      setAnnotationDraft('')
+      setAnnotationRequestId('')
+    }, '批注已保存')
+  }
+
   return (
     <section className="feature-view mistakes-view">
       <div className="feature-heading">
-        <div><span>MISTAKE REVIEW</span><h1>错题本</h1><p>归档时已自动提取知识点，用于查漏补缺和巩固规划。</p></div>
+        <div><span>MISTAKE REVIEW</span><h1>错题本</h1><p>按来源和分类复盘错题，结合课程图谱定位章节与前置知识。</p></div>
         <Button type="primary" icon={<BrainCircuit size={16} />} onClick={onPlan} disabled={!mistakes.length}>生成知识补全规划</Button>
       </div>
-      {pointCounts.length > 0 && <div className="weakness-strip"><strong>高频薄弱点</strong>{pointCounts.slice(0, 8).map(([point, count]) => <Tag key={point}>{point} · {count}</Tag>)}</div>}
-      {mistakes.length ? (
+      {analysis && analysis.total_mistakes > 0 && (
+        <section className="mistake-analysis-panel">
+          <div className="mistake-analysis-head">
+            <div><span>STRUCTURED REVIEW PLAN</span><h2>总体学习规划</h2></div>
+            <p className={analysis.data_sufficient ? '' : 'limited'}>{analysis.notice}</p>
+          </div>
+          <div className="mistake-analysis-grid">
+            {analysis.recommended_order.slice(0, 4).map((area, index) => (
+              <article key={area.knowledge_point}>
+                <span>优先级 {index + 1}</span>
+                <strong>{area.knowledge_point}</strong>
+                <Tag color={area.severity === '重度薄弱' ? 'red' : area.severity === '中度薄弱' ? 'orange' : 'blue'}>{area.severity}</Tag>
+                <p>{area.chapter}{area.section !== '暂未确定' ? ` · ${area.section}` : ''}</p>
+                <small>{area.mistake_count} 道关联错题{area.prerequisites.length ? ` · 先复习 ${area.prerequisites.map((item) => item.name).join('、')}` : ''}</small>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+      <div className="mistake-toolbar">
+        <Select
+          value={sourceFilter}
+          onChange={setSourceFilter}
+          options={[
+            { value: 'all', label: '全部来源' },
+            ...Object.entries(mistakeSourceLabels).map(([value, label]) => ({ value, label })),
+          ]}
+        />
+        <Select
+          value={categoryFilter}
+          onChange={setCategoryFilter}
+          options={[{ value: 'all', label: '全部分类' }, ...categories.map((item) => ({ value: item.id, label: item.name }))]}
+        />
+        <Input
+          value={newCategory}
+          onChange={(event) => setNewCategory(event.target.value)}
+          onPressEnter={() => void createCategory()}
+          placeholder="新分类名称"
+          maxLength={40}
+        />
+        <Button icon={<Plus size={14} />} loading={savingAction === 'category-create'} onClick={() => void createCategory()}>新建分类</Button>
+      </div>
+      {categories.some((item) => item.id !== 'uncategorized') && (
+        <div className="mistake-category-manager">
+          {categories.filter((item) => item.id !== 'uncategorized').map((category) => (
+            <div key={category.id}>
+              {renamingCategoryId === category.id ? (
+                <Input
+                  size="small"
+                  autoFocus
+                  value={categoryName}
+                  onChange={(event) => setCategoryName(event.target.value)}
+                  onPressEnter={() => void renameCategory()}
+                  maxLength={40}
+                  suffix={<button aria-label="保存分类名称" onClick={() => void renameCategory()}><Check size={13} /></button>}
+                />
+              ) : (
+                <><span>{category.name}</span><button aria-label="重命名分类" onClick={() => { setRenamingCategoryId(category.id); setCategoryName(category.name) }}><Pencil size={12} /></button></>
+              )}
+              <Popconfirm title="删除分类后，错题将移入未分类。" okText="删除" cancelText="取消" onConfirm={() => void runAction('category-delete', async () => {
+                await deleteMistakeCategory(studentId, category.id)
+                if (categoryFilter === category.id) setCategoryFilter('all')
+              }, '错题分类已删除')}>
+                <button aria-label="删除分类"><Trash2 size={12} /></button>
+              </Popconfirm>
+            </div>
+          ))}
+        </div>
+      )}
+      {visibleMistakes.length ? (
         <div className="mistake-grid">
-          {mistakes.map((item) => (
+          {visibleMistakes.map((item) => (
             <article className="mistake-card" key={item.id}>
-              <div className="mistake-card-head"><span>{item.agent}</span><small>{new Date(item.created_at).toLocaleDateString('zh-CN')}</small></div>
-              <h2>{item.summary}</h2>
-              <div className="mistake-points">{item.knowledge_points.map((point) => <Tag key={point}>{point}</Tag>)}</div>
+              <div className="mistake-card-head"><span>{mistakeSourceLabels[item.source] || '用户上传'} · {item.agent}</span><small>{new Date(item.updated_at || item.created_at).toLocaleDateString('zh-CN')}</small></div>
+              <h2>{item.title || item.summary}</h2>
+              <div className="mistake-points">
+                {(item.knowledge_tags?.length ? item.knowledge_tags : item.knowledge_points.map((point) => ({ tag_id: point, tag_name: point, match_type: 'unmatched' as const, confidence: 0 }))).map((tag) => (
+                  <Tooltip key={tag.tag_id} title={`${tag.match_type === 'exact' ? '图谱精确匹配' : tag.match_type === 'approximate' ? '图谱近似匹配' : '独立标签'} · 置信度 ${Math.round(tag.confidence * 100)}%`}>
+                    <Tag color={tag.match_type === 'exact' ? 'green' : tag.match_type === 'approximate' ? 'gold' : 'default'}>{tag.tag_name}</Tag>
+                  </Tooltip>
+                ))}
+              </div>
+              <p className="mistake-location">{item.location?.chapter || '暂未确定'} · {item.location?.section || '暂未确定'}</p>
               {item.attachments?.length ? (
                 <div className="mistake-attachments">
                   {item.attachments.map((attachment) => (
@@ -1519,7 +1676,13 @@ function MistakeBookView({
               ) : null}
               <div className="mistake-content"><MathMarkdown content={item.question || item.content} /></div>
               <div className="mistake-actions">
-                <button className="mistake-open" onClick={() => setSelectedMistake(item)}>
+                <Select
+                  size="small"
+                  value={item.category_id || 'uncategorized'}
+                  options={categories.map((category) => ({ value: category.id, label: category.name }))}
+                  onChange={(categoryId) => void runAction(`move-${item.id}`, async () => { await updateMistake(studentId, item.id, { category_id: categoryId }) }, '错题分类已更新')}
+                />
+                <button className="mistake-open" onClick={() => { setSelectedId(item.id); setTitleDraft(item.title || item.summary) }}>
                   <BookOpen size={14} /> 查看题目与答案
                 </button>
                 <Popconfirm title="从错题本删除？" okText="删除" cancelText="取消" onConfirm={() => onDelete(item.id)}>
@@ -1529,16 +1692,28 @@ function MistakeBookView({
             </article>
           ))}
         </div>
-      ) : <div className="workspace-empty"><Layers3 size={30} /><strong>错题本还是空的</strong><p>在答疑或出题结果旁点击“加入错题本”，系统会自动识别知识点。</p></div>}
+      ) : <div className="workspace-empty"><Layers3 size={30} /><strong>{mistakes.length ? '当前筛选没有错题' : '错题本还是空的'}</strong><p>{mistakes.length ? '可切换来源或分类查看其他错题。' : '在答疑或出题结果旁点击“加入错题本”，系统会自动识别知识点。'}</p></div>}
       <Modal
         open={Boolean(selectedMistake)}
-        title={selectedMistake?.summary || '错题详情'}
+        title={selectedMistake?.title || selectedMistake?.summary || '错题详情'}
         width={860}
-        onCancel={() => setSelectedMistake(null)}
-        footer={<Button onClick={() => setSelectedMistake(null)}>关闭</Button>}
+        onCancel={() => setSelectedId('')}
+        footer={<Button onClick={() => setSelectedId('')}>关闭</Button>}
       >
         {selectedMistake && (
           <div className="mistake-detail">
+            <section className="mistake-detail-overview">
+              <span className="mistake-detail-label">归档信息</span>
+              <div className="mistake-title-editor">
+                <Input value={titleDraft} maxLength={120} onChange={(event) => setTitleDraft(event.target.value)} />
+                <Button loading={savingAction === 'title'} onClick={() => void runAction('title', async () => { await updateMistake(studentId, selectedMistake.id, { title: titleDraft.trim() }) }, '错题名称已更新')}>保存名称</Button>
+              </div>
+              <p>来源：{mistakeSourceLabels[selectedMistake.source] || '用户上传'}</p>
+              <p>章节：{selectedMistake.location?.chapter || '暂未确定'}；小节：{selectedMistake.location?.section || '暂未确定'}</p>
+              <p>建议先复习：{selectedMistake.prerequisites?.length
+                ? selectedMistake.prerequisites.map((item) => `${item.name}（${item.source === 'knowledge_graph' ? '图谱关系' : '章节顺序推断'}）`).join('、')
+                : '暂时无法判断'}</p>
+            </section>
             <section>
               <span className="mistake-detail-label">题目</span>
               {selectedMistake.attachments?.length ? (
@@ -1561,6 +1736,55 @@ function MistakeBookView({
                   ? <MathMarkdown content={selectedMistake.answer} />
                   : <p>该历史错题没有可恢复的答案。</p>}
               </div>
+            </section>
+            {selectedMistake.messages?.length > 2 && (
+              <section>
+                <span className="mistake-detail-label">完整归档对话</span>
+                <div className="mistake-dialogue">
+                  {selectedMistake.messages.map((message, index) => (
+                    <article key={`${message.role}-${index}`} className={message.role}>
+                      <small>{message.role === 'user' ? '学生' : message.agent || 'AI 助教'}</small>
+                      {message.role === 'assistant' ? <MathMarkdown content={message.content} /> : <p>{message.content}</p>}
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
+            <section>
+              <span className="mistake-detail-label">我的批注</span>
+              <div className="mistake-annotation-list">
+                {selectedMistake.annotations?.map((annotation) => (
+                  <article key={annotation.id}>
+                    {editingAnnotationId === annotation.id ? (
+                      <TextArea value={editingAnnotationContent} maxLength={4000} showCount autoSize={{ minRows: 3, maxRows: 8 }} onChange={(event) => setEditingAnnotationContent(event.target.value)} />
+                    ) : <p>{annotation.content}</p>}
+                    <div>
+                      {editingAnnotationId === annotation.id ? (
+                        <>
+                          <Button size="small" loading={savingAction === 'annotation-update'} onClick={() => void runAction('annotation-update', async () => {
+                            await updateMistakeAnnotation(studentId, selectedMistake.id, annotation.id, editingAnnotationContent.trim())
+                            setEditingAnnotationId('')
+                          }, '批注已更新')}>保存</Button>
+                          <Button size="small" onClick={() => setEditingAnnotationId('')}>取消</Button>
+                        </>
+                      ) : <Button size="small" onClick={() => { setEditingAnnotationId(annotation.id); setEditingAnnotationContent(annotation.content) }}>编辑</Button>}
+                      <Popconfirm title="删除这条批注？" okText="删除" cancelText="取消" onConfirm={() => void runAction('annotation-delete', async () => { await deleteMistakeAnnotation(studentId, selectedMistake.id, annotation.id) }, '批注已删除')}>
+                        <Button size="small" danger>删除</Button>
+                      </Popconfirm>
+                    </div>
+                  </article>
+                ))}
+                {!selectedMistake.annotations?.length && <p className="mistake-annotation-empty">还没有批注，可记录错误原因、正确思路或复习提醒。</p>}
+              </div>
+              <TextArea
+                value={annotationDraft}
+                maxLength={4000}
+                showCount
+                autoSize={{ minRows: 3, maxRows: 8 }}
+                onChange={(event) => { setAnnotationDraft(event.target.value); setAnnotationRequestId('') }}
+                placeholder="记录错误原因、解题反思、正确思路、易错点或后续复习提示…"
+              />
+              <Button type="primary" loading={savingAction === 'annotation-create'} disabled={!annotationDraft.trim()} onClick={() => void saveAnnotation()}>保存批注</Button>
             </section>
           </div>
         )}
@@ -1982,6 +2206,8 @@ function StudentPageContent() {
   const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraph>()
   const [graphLoading, setGraphLoading] = useState(false)
   const [mistakes, setMistakes] = useState<MistakeItem[]>([])
+  const [mistakeCategories, setMistakeCategories] = useState<MistakeCategory[]>([])
+  const [mistakeAnalysis, setMistakeAnalysis] = useState<MistakeAnalysis>()
   const [scheduleItems, setScheduleItems] = useState<ScheduleItem[]>([])
   const studentId = useChatStore((state) => state.studentId)
   const messages = useChatStore((state) => state.messages)
@@ -2030,9 +2256,14 @@ function StudentPageContent() {
 
   const refreshMistakes = async () => {
     try {
-      setMistakes(await fetchMistakes(studentId))
+      const notebook = await fetchMistakeNotebook(studentId)
+      setMistakes(notebook.mistakes || [])
+      setMistakeCategories(notebook.categories || [])
+      setMistakeAnalysis(notebook.analysis)
     } catch {
       setMistakes([])
+      setMistakeCategories([])
+      setMistakeAnalysis(undefined)
     }
   }
 
@@ -2163,8 +2394,20 @@ function StudentPageContent() {
 
   const saveMistake = async ({ question, answer, agent, attachments }: MistakeDraft) => {
     try {
-      const item = await addMistake(studentId, sessionId, question, answer, agent, attachments, modelConfig)
+      const source: MistakeSource = agent === '出题 Agent' ? 'ai_generated' : 'user_uploaded'
+      const item = await addMistake(
+        studentId,
+        sessionId,
+        question,
+        answer,
+        agent,
+        attachments,
+        modelConfig,
+        knowledgeBase,
+        source,
+      )
       setMistakes((current) => [item, ...current.filter((existing) => existing.id !== item.id)])
+      await refreshMistakes()
       toast.success(`已加入错题本，并识别知识点：${item.knowledge_points.join('、')}`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '加入错题本失败')
@@ -2175,6 +2418,7 @@ function StudentPageContent() {
     try {
       await deleteMistake(studentId, id)
       setMistakes((current) => current.filter((item) => item.id !== id))
+      await refreshMistakes()
       toast.success('已从错题本删除')
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '删除错题失败')
@@ -2450,7 +2694,15 @@ function StudentPageContent() {
         ) : activeView === 'graph' ? (
           <KnowledgeGraphView graph={knowledgeGraph} loading={graphLoading} />
         ) : activeView === 'mistakes' ? (
-          <MistakeBookView mistakes={mistakes} onDelete={(id) => void removeMistake(id)} onPlan={planFromMistakes} />
+          <MistakeBookView
+            mistakes={mistakes}
+            categories={mistakeCategories}
+            analysis={mistakeAnalysis}
+            studentId={studentId}
+            onDelete={(id) => void removeMistake(id)}
+            onPlan={planFromMistakes}
+            onChanged={refreshMistakes}
+          />
         ) : activeView === 'schedule' ? (
           <ScheduleView
             items={scheduleItems}

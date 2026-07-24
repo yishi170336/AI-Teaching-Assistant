@@ -128,18 +128,113 @@ export type KnowledgeGraph = {
   stats: { nodes: number; edges: number; concepts: number; documents?: number; pages?: number; circuits?: number; components?: number; chapters?: number }
 }
 
+export type MistakeSource = 'question_bank' | 'ai_generated' | 'user_uploaded'
+
+export type MistakeKnowledgeTag = {
+  tag_id: string
+  tag_name: string
+  tag_source: 'knowledge_graph' | 'custom'
+  knowledge_node_id: string | null
+  match_type: 'exact' | 'approximate' | 'unmatched'
+  confidence: number
+  is_exact: boolean
+  needs_confirmation: boolean
+}
+
+export type MistakePrerequisite = {
+  knowledge_node_id: string | null
+  name: string
+  source: 'knowledge_graph' | 'chapter_order'
+  relation: string
+  confidence: number
+}
+
+export type MistakeAnnotation = {
+  id: string
+  student_id: string
+  mistake_id: string
+  content: string
+  client_request_id?: string
+  created_at: string
+  updated_at: string
+}
+
+export type MistakeCategory = {
+  id: string
+  student_id: string
+  name: string
+  created_at: string
+  updated_at: string
+}
+
+export type MistakeMessage = {
+  role: 'user' | 'assistant'
+  content: string
+  agent?: string
+  model?: string
+  created_at?: string
+}
+
 export type MistakeItem = {
   id: string
+  schema_version?: string
   student_id: string
   session_id: string
   question: string
   answer: string
   content: string
   summary: string
+  title: string
   agent: string
+  knowledge_base: string
   knowledge_points: string[]
+  knowledge_tags: MistakeKnowledgeTag[]
+  location: {
+    chapter: string
+    section: string
+    source: 'knowledge_graph' | 'unmatched' | 'unavailable'
+    confidence: number
+  }
+  prerequisites: MistakePrerequisite[]
+  source: MistakeSource
+  question_bank_id: string
+  category_id: string
+  messages: MistakeMessage[]
+  annotations: MistakeAnnotation[]
   attachments?: AttachmentInfo[]
   created_at: string
+  updated_at: string
+}
+
+export type MistakeWeakArea = {
+  knowledge_point: string
+  mistake_count: number
+  mistake_ids: string[]
+  source_count: number
+  score: number
+  severity: '轻度薄弱' | '中度薄弱' | '重度薄弱'
+  chapter: string
+  section: string
+  prerequisites: MistakePrerequisite[]
+  priority?: number
+}
+
+export type MistakeAnalysis = {
+  total_mistakes: number
+  data_sufficient: boolean
+  notice: string
+  source_counts: Record<string, number>
+  chapter_counts: Record<string, number>
+  annotation_count: number
+  weak_areas: MistakeWeakArea[]
+  recommended_order: MistakeWeakArea[]
+  scoring_rule: Record<string, number>
+}
+
+export type MistakeNotebook = {
+  mistakes: MistakeItem[]
+  categories: MistakeCategory[]
+  analysis: MistakeAnalysis
 }
 
 export type ScheduleCategory = 'exam' | 'study' | 'activity' | 'other'
@@ -500,10 +595,14 @@ export function knowledgeBaseSourceUrl(
   return page ? `${url}#page=${page}` : url
 }
 
-export async function fetchMistakes(studentId: string): Promise<MistakeItem[]> {
+export async function fetchMistakeNotebook(studentId: string): Promise<MistakeNotebook> {
   const response = await fetch(`/api/mistakes?student_id=${encodeURIComponent(studentId)}`)
   if (!response.ok) throw new Error('错题本读取失败')
-  return (await response.json()).mistakes || []
+  return response.json()
+}
+
+export async function fetchMistakes(studentId: string): Promise<MistakeItem[]> {
+  return (await fetchMistakeNotebook(studentId)).mistakes || []
 }
 
 export async function addMistake(
@@ -514,6 +613,9 @@ export async function addMistake(
   agent: string,
   attachments: AttachmentInfo[],
   modelConfig: ModelConfig,
+  knowledgeBase = 'default',
+  source?: MistakeSource,
+  questionBankId = '',
 ): Promise<MistakeItem> {
   const response = await fetch('/api/mistakes', {
     method: 'POST',
@@ -524,6 +626,13 @@ export async function addMistake(
       question,
       answer,
       agent,
+      knowledge_base: knowledgeBase,
+      source,
+      question_bank_id: questionBankId,
+      messages: [
+        { role: 'user', content: question },
+        { role: 'assistant', content: answer, agent },
+      ],
       attachment_ids: attachments.map((attachment) => attachment.id),
       model_provider: modelConfig.provider,
       model: modelConfig.model,
@@ -542,6 +651,104 @@ export async function deleteMistake(studentId: string, mistakeId: string): Promi
     { method: 'DELETE' },
   )
   if (!response.ok) throw new Error('删除错题失败')
+}
+
+export async function updateMistake(
+  studentId: string,
+  mistakeId: string,
+  updates: { title?: string; category_id?: string },
+): Promise<MistakeItem> {
+  const response = await fetch(`/api/mistakes/${encodeURIComponent(mistakeId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ student_id: studentId, ...updates }),
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.detail || '错题更新失败')
+  return result.mistake
+}
+
+export async function createMistakeCategory(studentId: string, name: string): Promise<MistakeCategory> {
+  const response = await fetch('/api/mistakes/categories', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ student_id: studentId, name }),
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.detail || '分类创建失败')
+  return result.category
+}
+
+export async function renameMistakeCategory(
+  studentId: string,
+  categoryId: string,
+  name: string,
+): Promise<MistakeCategory> {
+  const response = await fetch(`/api/mistakes/categories/${encodeURIComponent(categoryId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ student_id: studentId, name }),
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.detail || '分类重命名失败')
+  return result.category
+}
+
+export async function deleteMistakeCategory(studentId: string, categoryId: string): Promise<void> {
+  const response = await fetch(
+    `/api/mistakes/categories/${encodeURIComponent(categoryId)}?student_id=${encodeURIComponent(studentId)}`,
+    { method: 'DELETE' },
+  )
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(result.detail || '分类删除失败')
+}
+
+export async function addMistakeAnnotation(
+  studentId: string,
+  mistakeId: string,
+  content: string,
+  clientRequestId: string,
+): Promise<MistakeAnnotation> {
+  const response = await fetch(`/api/mistakes/${encodeURIComponent(mistakeId)}/annotations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ student_id: studentId, content, client_request_id: clientRequestId }),
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.detail || '批注保存失败')
+  return result.annotation
+}
+
+export async function updateMistakeAnnotation(
+  studentId: string,
+  mistakeId: string,
+  annotationId: string,
+  content: string,
+): Promise<MistakeAnnotation> {
+  const response = await fetch(
+    `/api/mistakes/${encodeURIComponent(mistakeId)}/annotations/${encodeURIComponent(annotationId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ student_id: studentId, content }),
+    },
+  )
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.detail || '批注更新失败')
+  return result.annotation
+}
+
+export async function deleteMistakeAnnotation(
+  studentId: string,
+  mistakeId: string,
+  annotationId: string,
+): Promise<void> {
+  const response = await fetch(
+    `/api/mistakes/${encodeURIComponent(mistakeId)}/annotations/${encodeURIComponent(annotationId)}?student_id=${encodeURIComponent(studentId)}`,
+    { method: 'DELETE' },
+  )
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(result.detail || '批注删除失败')
 }
 
 export async function fetchSchedule(studentId: string): Promise<ScheduleItem[]> {

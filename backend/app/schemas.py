@@ -70,6 +70,19 @@ class SourceInfo(BaseModel):
     doc_type: str = "textbook"
 
 
+class MistakeMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=40000)
+    agent: str = Field(default="", max_length=64)
+    model: str = Field(default="", max_length=128)
+    created_at: str = Field(default="", max_length=64)
+
+    @field_validator("content", "agent", "model", "created_at")
+    @classmethod
+    def strip_message_fields(cls, value: str) -> str:
+        return value.strip()
+
+
 class MistakeCreateRequest(BaseModel):
     student_id: str = Field(min_length=1, max_length=96)
     session_id: str = Field(min_length=1, max_length=96)
@@ -77,6 +90,11 @@ class MistakeCreateRequest(BaseModel):
     answer: str = Field(default="", max_length=40000)
     content: str = Field(default="", max_length=16000, exclude=True)
     agent: str = Field(default="学习 Agent", max_length=64)
+    knowledge_base: str = Field(default="default", min_length=1, max_length=48)
+    source: Literal["question_bank", "ai_generated", "user_uploaded"] | None = None
+    question_bank_id: str = Field(default="", max_length=128)
+    category_id: str = Field(default="uncategorized", min_length=1, max_length=96)
+    messages: list[MistakeMessage] = Field(default_factory=list, max_length=20)
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     model_provider: Literal["ollama", "deepseek", "qwen", "custom"] = "ollama"
     model: str = Field(default="qwen3.5:2b", min_length=1, max_length=128)
@@ -89,6 +107,30 @@ class MistakeCreateRequest(BaseModel):
         value = value.strip()
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", value):
             raise ValueError("标识仅允许字母、数字、连字符和下划线")
+        return value
+
+    @field_validator("knowledge_base")
+    @classmethod
+    def safe_mistake_knowledge_base(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,48}", value):
+            raise ValueError("知识库标识仅允许字母、数字、连字符和下划线")
+        return value
+
+    @field_validator("category_id")
+    @classmethod
+    def safe_mistake_category(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"(?:uncategorized|[a-f0-9]{32})", value):
+            raise ValueError("错题分类标识不合法")
+        return value
+
+    @field_validator("question_bank_id")
+    @classmethod
+    def safe_question_bank_id(cls, value: str) -> str:
+        value = value.strip()
+        if value and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value):
+            raise ValueError("题库题目标识不合法")
         return value
 
     @field_validator("attachment_ids")
@@ -118,7 +160,97 @@ class MistakeCreateRequest(BaseModel):
                 raise ValueError("API Base URL 必须是有效的 HTTP(S) 地址")
         if self.model_provider == "custom" and (not self.api_key or not self.base_url):
             raise ValueError("自定义 API 必须填写 API Key 和 Base URL")
+        if self.source == "question_bank" and not self.question_bank_id:
+            raise ValueError("题库来源必须提供题库题目标识")
+        if self.question_bank_id and self.source not in {None, "question_bank"}:
+            raise ValueError("题库题目标识与错题来源不一致")
         return self
+
+
+class MistakeUpdateRequest(BaseModel):
+    student_id: str = Field(min_length=1, max_length=96)
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    category_id: str | None = Field(default=None, min_length=1, max_length=96)
+
+    @field_validator("student_id")
+    @classmethod
+    def safe_student_id(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", value):
+            raise ValueError("学生标识不合法")
+        return value
+
+    @field_validator("title")
+    @classmethod
+    def strip_title(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @field_validator("category_id")
+    @classmethod
+    def safe_category_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not re.fullmatch(r"(?:uncategorized|[a-f0-9]{32})", value):
+            raise ValueError("错题分类标识不合法")
+        return value
+
+    @model_validator(mode="after")
+    def at_least_one_update(self) -> "MistakeUpdateRequest":
+        if self.title is None and self.category_id is None:
+            raise ValueError("至少提供一个需要更新的字段")
+        return self
+
+
+class MistakeCategoryRequest(BaseModel):
+    student_id: str = Field(min_length=1, max_length=96)
+    name: str = Field(min_length=1, max_length=40)
+
+    @field_validator("student_id")
+    @classmethod
+    def safe_student_id(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", value):
+            raise ValueError("学生标识不合法")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("分类名称不能为空")
+        return value
+
+
+class MistakeAnnotationRequest(BaseModel):
+    student_id: str = Field(min_length=1, max_length=96)
+    content: str = Field(min_length=1, max_length=4000)
+    client_request_id: str = Field(default="", max_length=64)
+
+    @field_validator("student_id")
+    @classmethod
+    def safe_student_id(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", value):
+            raise ValueError("学生标识不合法")
+        return value
+
+    @field_validator("content")
+    @classmethod
+    def strip_content(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("批注内容不能为空")
+        return value
+
+    @field_validator("client_request_id")
+    @classmethod
+    def safe_request_id(cls, value: str) -> str:
+        value = value.strip()
+        if value and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value):
+            raise ValueError("请求标识不合法")
+        return value
 
 
 class ScheduleItemCreateRequest(BaseModel):
