@@ -68,6 +68,7 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCcw,
+  ScanLine,
 } from 'lucide-react'
 import MathMarkdown from '../components/MathMarkdown'
 import HomeworkView from './HomeworkView'
@@ -96,11 +97,15 @@ import {
   ModelConfig,
   ModelProviderId,
   MistakeItem,
+  PhotoRecognition,
+  PracticeExercise,
+  PracticeGrading,
   ScheduleCategory,
   ScheduleItem,
   ScheduleItemDraft,
   SessionSummary,
   SourceInfo,
+  VisionModelConfig,
   setScheduleItemCompleted,
   uploadKnowledgeFile,
   rebuildKnowledgeBase,
@@ -580,6 +585,7 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
     || knowledgeBase
   const current = statuses.find((item) => item.id === activeKnowledgeBase)
   const quizContext = activeAssistant?.agent === '出题 Agent'
+  const noGroundedEvidence = activeAssistant?.evidenceMode === 'general_only'
   const citedSourceIds = new Set(activeCitedSources.map((source) => source.id))
   const citedIndices = new Set(
     activeCitedSources
@@ -590,10 +596,10 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
     <aside className="knowledge-panel">
       <div className="panel-heading">
         <div>
-          <span className="panel-kicker">{quizContext ? 'SOURCE PROBLEM' : 'RAG CANDIDATES'}</span>
-          <h2>{quizContext ? '原题依据' : '召回候选资料'}</h2>
+          <span className="panel-kicker">{quizContext ? 'GROUNDED PRACTICE' : 'GROUNDED EVIDENCE'}</span>
+          <h2>{quizContext ? '命题依据' : '可用教材证据'}</h2>
         </div>
-        <Tooltip title={quizContext ? '出题 Agent 仅使用原题和会话历史，不调用知识库检索' : '这里展示本轮检索召回的候选资料；真正进入答案引用的资料会标记“已引用”'}>
+        <Tooltip title={quizContext ? '先锁定原题结构，再用课程知识库与知识图谱校准公式、适用条件和单位' : '这里只展示通过知识点与正文相关性校验的教材资料；仅靠图谱关联或主题相似的候选不会作为证据'}>
           <HelpCircle size={17} />
         </Tooltip>
       </div>
@@ -601,12 +607,18 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
       <div className="kb-summary-card">
         <span className="kb-icon">{quizContext ? <BrainCircuit size={18} /> : <Database size={18} />}</span>
         <div>
-          <strong>{quizContext ? '原题驱动出题' : knowledgeBaseDisplayName(current, activeKnowledgeBase)}</strong>
-          <span>{quizContext ? '会话上下文 · 不检索知识库' : `${current?.chunks || 0} 个文本块 · ${current?.documents || 0} 份资料`}</span>
+          <strong>{quizContext ? '原题结构 + 课程知识库' : knowledgeBaseDisplayName(current, activeKnowledgeBase)}</strong>
+          <span>
+            {quizContext
+              ? activeSources.length
+                ? `${activeSources.length} 条教材证据 · 图谱辅助对齐`
+                : '未命中教材 · 仅沿用原题结构'
+              : `${current?.chunks || 0} 个文本块 · ${current?.documents || 0} 份资料`}
+          </span>
         </div>
         <span className={`kb-state ${quizContext ? 'ready' : current?.state || 'missing'}`}>
           {quizContext
-            ? '已锁定'
+            ? activeSources.length ? '已校准' : '保守生成'
             : current?.state === 'building'
               ? '构建中'
               : current?.state === 'cancelling'
@@ -619,30 +631,36 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
         </span>
       </div>
 
-      {!quizContext && activeSources.length > 0 && (
+      {activeSources.length > 0 && (
         <div className={`source-usage-summary ${activeCitedSources.length ? '' : 'uncited'}`}>
           <span>本轮召回 {activeSources.length} 条</span>
-          <strong>答案引用 {activeCitedSources.length} 条</strong>
+          <strong>{quizContext ? '用于命题校准' : `答案引用 ${activeCitedSources.length} 条`}</strong>
         </div>
       )}
 
       <div className="source-list">
-        {quizContext ? (
-          <div className="source-empty quiz-reference-empty">
-            <span><WandSparkles size={22} /></span>
-            <strong>保持原题结构</strong>
-            <p>首次出题读取当前原题；“再出一道”会沿用最近题目的拓扑、已知量和分项设问。</p>
-          </div>
-        ) : activeSources.length ? (
+        {activeSources.length ? (
           activeSources.map((source, index) => (
             <SourceCard
               key={`${source.id}-${index}`}
               source={source}
               index={index}
-              isCited={citedSourceIds.has(source.id) || citedIndices.has(index + 1)}
+              isCited={!quizContext && (citedSourceIds.has(source.id) || citedIndices.has(index + 1))}
               fallbackKnowledgeBase={activeKnowledgeBase}
             />
           ))
+        ) : quizContext ? (
+          <div className="source-empty quiz-reference-empty">
+            <span><WandSparkles size={22} /></span>
+            <strong>保持原题结构</strong>
+            <p>未命中教材时仅沿用原题的公式结构和适用条件，不扩展未经资料支持的新定律。</p>
+          </div>
+        ) : noGroundedEvidence ? (
+          <div className="source-empty">
+            <span><Search size={22} /></span>
+            <strong>未找到可引用的教材证据</strong>
+            <p>系统已剔除仅靠图谱关联或主题相似的候选；本轮只能使用明确标记的模型通用知识。</p>
+          </div>
         ) : (
           <div className="source-empty">
             <span><Search size={22} /></span>
@@ -667,41 +685,69 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
   )
 }
 
+type ComposerMode = ChatMode | 'image_answer'
+
+const photoSuffixPattern = /\.(png|jpe?g|webp|bmp)$/i
+
 function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
+  const { message: toast } = AntApp.useApp()
   const [value, setValue] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const mode = useChatStore((state) => state.mode)
   const setMode = useChatStore((state) => state.setMode)
+  const scene = useChatStore((state) => state.scene)
+  const setScene = useChatStore((state) => state.setScene)
+  const activePractice = useChatStore((state) => state.activePractice)
   const streaming = useChatStore((state) => state.streaming)
   const stop = useChatStore((state) => state.stop)
   const pendingAttachments = useChatStore((state) => state.pendingAttachments)
   const addAttachments = useChatStore((state) => state.addAttachments)
   const removeAttachment = useChatStore((state) => state.removeAttachment)
   const hasReadyAttachment = pendingAttachments.some((item) => item.status === 'ready')
+  const hasReadyImage = pendingAttachments.some((item) => item.status === 'ready' && item.kind === 'image')
   const hasUnfinishedAttachment = pendingAttachments.some((item) => item.status !== 'ready')
+  const composerMode: ComposerMode = scene === 'image_answer' ? 'image_answer' : mode
+  const canSubmit = scene === 'image_answer'
+    ? hasReadyImage && !hasUnfinishedAttachment
+    : scene === 'quiz_grade'
+      ? (Boolean(value.trim()) || hasReadyImage) && !hasUnfinishedAttachment
+    : (Boolean(value.trim()) || hasReadyAttachment) && !hasUnfinishedAttachment
 
   const submit = () => {
-    if ((!value.trim() && !hasReadyAttachment) || streaming || hasUnfinishedAttachment) return
+    if (!canSubmit || streaming) return
     onSend(value)
     setValue('')
   }
 
   const selectFiles = (files: File[]) => {
     if (!files.length) return
-    void addAttachments(files)
+    const accepted = scene === 'image_answer' || scene === 'quiz_grade'
+      ? files.filter((file) => (!file.type || file.type.startsWith('image/')) && photoSuffixPattern.test(file.name))
+      : files
+    if (accepted.length !== files.length) toast.warning('图片提交仅支持 PNG、JPEG、WebP 和 BMP')
+    if (accepted.length) void addAttachments(accepted)
   }
 
   return (
     <div className="composer-shell">
       <div className="composer-card">
         <div className="composer-topline">
-          <Segmented<ChatMode>
+          <Segmented<ComposerMode>
             size="small"
-            value={mode}
-            onChange={setMode}
+            value={composerMode}
+            onChange={(nextMode) => {
+              if (nextMode === 'image_answer') {
+                setMode('answer')
+                setScene('image_answer')
+              } else {
+                setScene('chat')
+                setMode(nextMode)
+              }
+            }}
             options={[
               { label: '智能路由', value: 'auto' },
               { label: 'AI 答疑', value: 'answer' },
+              { label: '拍照答题', value: 'image_answer' },
               { label: '同类出题', value: 'quiz' },
               { label: '学习规划', value: 'plan' },
             ]}
@@ -713,7 +759,9 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
             {pendingAttachments.map((item) => (
               <div key={item.localId} className={`pending-attachment ${item.status}`}>
                 <span className="pending-file-icon">
-                  {item.status === 'uploading' ? <LoaderCircle size={15} /> : item.kind === 'image' ? <FileText size={15} /> : <Paperclip size={15} />}
+                  {item.status === 'ready' && item.kind === 'image' && item.attachment
+                    ? <img src={item.attachment.url} alt="" />
+                    : item.status === 'uploading' ? <LoaderCircle size={15} /> : item.kind === 'image' ? <FileText size={15} /> : <Paperclip size={15} />}
                 </span>
                 <span className="pending-file-copy">
                   <strong>{item.name}</strong>
@@ -726,8 +774,37 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
             ))}
           </div>
         )}
+        {scene === 'quiz_grade' && activePractice && (
+          <div className="practice-submit-banner">
+            <span className="practice-submit-icon"><FileCheck2 size={18} /></span>
+            <div>
+              <strong>正在作答：{activePractice.knowledge_point || '同类练习题'}</strong>
+              <small>可输入答案，也可上传手写过程；AI 将按步骤、数值和单位逐项批改。</small>
+            </div>
+            <Button size="small" onClick={() => setScene('chat')}>取消作答</Button>
+          </div>
+        )}
+        {(scene === 'image_answer' || scene === 'quiz_grade') && (
+          <Upload.Dragger
+            className={scene === 'quiz_grade' ? 'photo-upload-dragger practice-upload-dragger' : 'photo-upload-dragger'}
+            multiple
+            showUploadList={false}
+            accept=".png,.jpg,.jpeg,.webp,.bmp"
+            disabled={streaming || pendingAttachments.length >= 5}
+            beforeUpload={(file) => {
+              selectFiles([file])
+              return Upload.LIST_IGNORE
+            }}
+          >
+            <div className="photo-upload-content">
+              <UploadCloud size={22} />
+              <strong>{scene === 'quiz_grade' ? '上传你的手写作答' : '拖拽或点击上传题目图片'}</strong>
+              <span>{scene === 'quiz_grade' ? '按作答顺序上传，支持多页；也可以只在下方输入答案' : '按题目顺序上传，最多 5 张；支持 PNG / JPEG / WebP / BMP'}</span>
+            </div>
+          </Upload.Dragger>
+        )}
         <div className="composer-input-row">
-          <input
+          {scene === 'chat' && <input
             ref={fileInputRef}
             className="sr-only-file"
             type="file"
@@ -737,8 +814,8 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
               selectFiles(Array.from(event.target.files || []))
               event.target.value = ''
             }}
-          />
-          <Tooltip title="添加题目图片或附件">
+          />}
+          {scene === 'chat' && <Tooltip title="添加题目图片或附件">
             <Button
               className="attach-button"
               shape="circle"
@@ -747,7 +824,7 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
               icon={<Paperclip size={17} />}
               aria-label="添加题目图片或附件"
             />
-          </Tooltip>
+          </Tooltip>}
           <TextArea
             value={value}
             onChange={(event) => setValue(event.target.value)}
@@ -765,7 +842,7 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
               }
             }}
             autoSize={{ minRows: 1, maxRows: 5 }}
-            placeholder={mode === 'quiz' ? '粘贴原题，或描述想练习的知识点…' : mode === 'plan' ? '描述学习目标、薄弱点和可用时间…' : '输入电路问题，支持 LaTeX 公式…'}
+            placeholder={scene === 'quiz_grade' ? '输入你的答案或补充说明，例如“图片中第 2 步我取向右为正”…' : scene === 'image_answer' ? '可选：补充题目要求、指定解法或你看清的文字…' : mode === 'quiz' ? '粘贴原题，上传原题图片，或描述想练习的知识点…' : mode === 'plan' ? '描述学习目标、薄弱点和可用时间…' : '输入电路问题，支持 LaTeX 公式…'}
             variant="borderless"
             aria-label="输入电路问题"
           />
@@ -780,7 +857,7 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
                 className="send-button"
                 shape="circle"
                 onClick={submit}
-                disabled={(!value.trim() && !hasReadyAttachment) || hasUnfinishedAttachment}
+                disabled={!canSubmit}
                 icon={<ArrowUp size={18} />}
               />
             </Tooltip>
@@ -796,6 +873,105 @@ function normalizeQuizTitle(content: string) {
   return content.replace(
     /^(#{1,3}\s*同类型新题)(?:\s*[·•・—-]\s*[^\r\n]+)?\s*$/m,
     '$1',
+  )
+}
+
+function PracticeCard({
+  practice,
+  grading,
+  disabled,
+  onStart,
+  onGenerateSimilar,
+}: {
+  practice: PracticeExercise
+  grading?: PracticeGrading
+  disabled: boolean
+  onStart: (practice: PracticeExercise) => void
+  onGenerateSimilar: () => void
+}) {
+  const [showAnswer, setShowAnswer] = useState(false)
+  const solutionSteps = practice.solution_steps?.length
+    ? practice.solution_steps
+    : practice.solution ? [practice.solution] : []
+  const answerItems = practice.answer_items?.length
+    ? practice.answer_items
+    : practice.answer ? [practice.answer] : []
+
+  return (
+    <section className={`practice-card ${grading ? 'graded' : ''}`} onClick={(event) => event.stopPropagation()}>
+      <div className="practice-card-head">
+        <div>
+          <span className="practice-card-eyebrow">{grading ? '本题练习结果' : '先练后看'}</span>
+          <strong>{grading ? `${grading.score} / ${grading.max_score} 分` : '答案已为你隐藏'}</strong>
+        </div>
+        <div className="practice-card-tags">
+          {practice.difficulty && <Tag bordered={false}>{practice.difficulty}</Tag>}
+          {practice.knowledge_point && <Tag bordered={false}>{practice.knowledge_point}</Tag>}
+          {Boolean(practice.verification?.passed) && <Tag bordered={false} color="success">已校验</Tag>}
+        </div>
+      </div>
+      <p className="practice-card-tip">
+        {grading
+          ? '可展开标准答案对照订正，或基于当前题目继续生成一道同构变式。'
+          : '建议先独立完成并提交。支持直接输入，也支持上传最多 5 张手写过程图片。'}
+      </p>
+      {practice.circuit_diagram?.attachments.length ? (
+        <div className="practice-circuit-reference">
+          <div className="practice-circuit-reference-head">
+            <span><BrainCircuit size={15} /></span>
+            <div>
+              <strong>原题电路图 · 拓扑参考</strong>
+              <small>{practice.circuit_diagram.notice}</small>
+            </div>
+          </div>
+          <div className={`practice-circuit-images count-${Math.min(3, practice.circuit_diagram.attachments.length)}`}>
+            {practice.circuit_diagram.attachments.map((attachment) => (
+              <a key={attachment.id} href={attachment.url} target="_blank" rel="noreferrer">
+                <img src={attachment.url} alt={`${attachment.name}，原题电路拓扑参考图`} />
+              </a>
+            ))}
+          </div>
+          {practice.circuit_diagram.topology && (
+            <p><strong>结构识别：</strong>{practice.circuit_diagram.topology}</p>
+          )}
+        </div>
+      ) : null}
+      <div className="practice-card-actions">
+        {!grading && (
+          <Button type="primary" disabled={disabled} icon={<FileCheck2 size={15} />} onClick={() => onStart(practice)}>
+            提交我的答案
+          </Button>
+        )}
+        <Button icon={<BookOpen size={15} />} onClick={() => setShowAnswer((current) => !current)}>
+          {showAnswer ? '收起答案' : '查看 AI 答案'}
+        </Button>
+        <Button disabled={disabled} icon={<RotateCcw size={15} />} onClick={onGenerateSimilar}>
+          再出一道
+        </Button>
+      </div>
+      {showAnswer && (
+        <div className="practice-answer-panel">
+          <div>
+            <span>参考步骤</span>
+            {solutionSteps.length
+              ? solutionSteps.map((step, index) => <MathMarkdown key={`${index}-${step}`} content={`${index + 1}. ${step}`} />)
+              : <p>本题暂无分步解析。</p>}
+          </div>
+          <div>
+            <span>标准答案</span>
+            {answerItems.length
+              ? answerItems.map((answer, index) => <MathMarkdown key={`${index}-${answer}`} content={`${index + 1}. ${answer}`} />)
+              : <p>本题暂无标准答案。</p>}
+          </div>
+          {practice.common_mistakes?.length > 0 && (
+            <div>
+              <span>易错提醒</span>
+              <ul>{practice.common_mistakes.map((item) => <li key={item}>{item}</li>)}</ul>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -821,7 +997,17 @@ function mistakeDraftForAssistant(messages: ChatMessage[], index: number): Mista
   if (!previousUser?.content) return null
   let question = previousUser.content
   let answer = message.content
-  if (agent === '出题 Agent') {
+  if (message.practice) {
+    question = message.practice.question
+    answer = [
+      '### 解题步骤',
+      ...message.practice.solution_steps.map((item, itemIndex) => `${itemIndex + 1}. ${item}`),
+      '',
+      '### 标准答案',
+      ...message.practice.answer_items.map((item, itemIndex) => `${itemIndex + 1}. ${item}`),
+    ].join('\n')
+  }
+  else if (agent === '出题 Agent') {
     const questionMatch = message.content.match(
       /(?:^|\n)###\s*题目\s*\n+([\s\S]*?)(?=\n+---|\n+###\s*(?:解题步骤|标准答案|易错点)|$)/,
     )
@@ -837,7 +1023,86 @@ function mistakeDraftForAssistant(messages: ChatMessage[], index: number): Mista
   }
 }
 
-function Conversation({ onAddMistake }: { onAddMistake: (draft: MistakeDraft) => void }) {
+function RecognitionConfirmationCard({
+  recognition,
+  disabled,
+  onConfirm,
+}: {
+  recognition: PhotoRecognition
+  disabled: boolean
+  onConfirm: (content: string) => void
+}) {
+  const setMode = useChatStore((state) => state.setMode)
+  const setScene = useChatStore((state) => state.setScene)
+  const [transcription, setTranscription] = useState(recognition.transcription)
+  const [knowns, setKnowns] = useState(recognition.knowns.join('；'))
+  const [unknowns, setUnknowns] = useState(recognition.unknowns.join('；'))
+  const [uncertain, setUncertain] = useState(recognition.uncertain_regions.join('；'))
+
+  const confirm = () => {
+    if (!transcription.trim() || !unknowns.trim()) return
+    onConfirm([
+      '上述题目经我确认，以下修订内容优先于图片识别：',
+      `题干：${transcription.trim()}`,
+      `已知量：${knowns.trim() || '无额外已知量'}`,
+      `待求量：${unknowns.trim()}`,
+      recognition.constraints.length ? `特殊条件：${recognition.constraints.join('；')}` : '',
+      uncertain.trim() ? `仍不确定项：${uncertain.trim()}` : '不确定项：无',
+    ].filter(Boolean).join('\n'))
+  }
+
+  return (
+    <section className="recognition-confirmation-card" onClick={(event) => event.stopPropagation()}>
+      <div className="recognition-card-head">
+        <span><FileCheck2 size={18} /></span>
+        <div>
+          <strong>请确认图片识别结果</strong>
+          <small>识别置信度 {Math.round(recognition.confidence * 100)}%，你的修订将拥有最高优先级</small>
+        </div>
+      </div>
+      <label>
+        <span>题干</span>
+        <TextArea value={transcription} onChange={(event) => setTranscription(event.target.value)} autoSize={{ minRows: 3, maxRows: 8 }} />
+      </label>
+      <div className="recognition-fields">
+        <label><span>已知量</span><Input value={knowns} onChange={(event) => setKnowns(event.target.value)} /></label>
+        <label><span>待求量</span><Input value={unknowns} onChange={(event) => setUnknowns(event.target.value)} /></label>
+      </div>
+      <label>
+        <span>不确定项（确认无误可清空）</span>
+        <Input value={uncertain} onChange={(event) => setUncertain(event.target.value)} />
+      </label>
+      <div className="recognition-hints">
+        {recognition.knowledge_points.map((point) => <Tag key={point}>{point}</Tag>)}
+        {recognition.topology && <span>拓扑：{recognition.topology}</span>}
+      </div>
+      <div className="recognition-actions">
+        <Button
+          onClick={() => {
+            setMode('answer')
+            setScene('image_answer')
+            document.querySelector('.photo-upload-dragger')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          }}
+        >重新上传</Button>
+        <Button type="primary" disabled={disabled || !transcription.trim() || !unknowns.trim()} onClick={confirm}>
+          修正后继续
+        </Button>
+      </div>
+    </section>
+  )
+}
+
+function Conversation({
+  onAddMistake,
+  onConfirmPhoto,
+  onStartPractice,
+  onGenerateSimilar,
+}: {
+  onAddMistake: (draft: MistakeDraft) => void
+  onConfirmPhoto: (content: string) => void
+  onStartPractice: (practice: PracticeExercise) => void
+  onGenerateSimilar: () => void
+}) {
   const { message: toast } = AntApp.useApp()
   const messages = useChatStore((state) => state.messages)
   const sessionId = useChatStore((state) => state.sessionId)
@@ -956,12 +1221,55 @@ function Conversation({ onAddMistake }: { onAddMistake: (draft: MistakeDraft) =>
                 <span>{stage || '正在准备…'}</span>
               </div>
             )}
+            {message.role === 'assistant'
+              && message.needsConfirmation
+              && message.recognition
+              && !messages.slice(index + 1).some((later) => later.role === 'user' && later.content.startsWith('上述题目经我确认'))
+              && (
+              <RecognitionConfirmationCard
+                recognition={message.recognition}
+                disabled={streaming}
+                onConfirm={onConfirmPhoto}
+              />
+            )}
+            {message.role === 'assistant' && message.review?.triggered && !message.needsConfirmation && (
+              <div className={`answer-review-note ${message.review.passed ? 'passed' : message.review.repaired ? 'repaired' : 'warning'}`}>
+                <ShieldCheck size={14} />
+                <span>
+                  {message.review.passed
+                    ? '答案复核通过'
+                    : message.review.repaired
+                      ? '答案已根据复核结果修正一次'
+                      : '答案已复核，请留意校验说明'}
+                  {message.review.sympy_checked ? ' · 已完成 SymPy 数值复算' : ''}
+                  {message.review.issues?.length ? ` · ${message.review.issues.slice(0, 2).join('；')}` : ''}
+                </span>
+              </div>
+            )}
+            {message.role === 'assistant'
+              && message.practice
+              && !message.failed
+              && !(streaming && index === messages.length - 1)
+              && (
+                <PracticeCard
+                  practice={message.practice}
+                  grading={message.grading}
+                  disabled={streaming}
+                  onStart={onStartPractice}
+                  onGenerateSimilar={onGenerateSimilar}
+                />
+              )}
             {message.content
               && message.role === 'assistant'
               && !message.failed
               && (message.agent === '答疑 Agent' || message.agent === '出题 Agent')
               && !(streaming && index === messages.length - 1) && (
               <div className="message-tools">
+                {message.agent === '答疑 Agent' && (
+                  <button type="button" disabled={streaming} onClick={onGenerateSimilar}>
+                    <WandSparkles size={14} /> 生成同类题
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -1793,17 +2101,31 @@ function ModelSettingsModal({
   catalog: ModelCatalog
 }) {
   const active = useChatStore((state) => state.modelConfig)
+  const activeVision = useChatStore((state) => state.visionModelConfig)
   const setModelConfig = useChatStore((state) => state.setModelConfig)
+  const setVisionModelConfig = useChatStore((state) => state.setVisionModelConfig)
   const [draft, setDraft] = useState<ModelConfig>(active)
+  const [visionDraft, setVisionDraft] = useState<VisionModelConfig>(activeVision)
   const { message: toast } = AntApp.useApp()
 
   useEffect(() => {
-    if (open) setDraft(active)
-  }, [open, active])
+    if (open) {
+      setDraft(active)
+      setVisionDraft(activeVision)
+    }
+  }, [open, active, activeVision])
 
   const provider = catalog.providers.find((item) => item.id === draft.provider)
     || fallbackModelCatalog.providers[0]
   const selectableModels = provider.model_options || provider.models.map((model) => ({
+    value: model,
+    label: model,
+    disabled: false,
+    description: '',
+  }))
+  const qwenProvider = catalog.providers.find((item) => item.id === 'qwen')
+    || fallbackModelCatalog.providers.find((item) => item.id === 'qwen')!
+  const visionModels = qwenProvider.model_options || qwenProvider.models.map((model) => ({
     value: model,
     label: model,
     disabled: false,
@@ -1839,9 +2161,26 @@ function ModelSettingsModal({
       toast.warning(selectedOption.description || '该模型不能用于当前对话')
       return
     }
+    if (!visionDraft.model.trim()) {
+      toast.warning('请填写 Qwen 视觉模型名称')
+      return
+    }
+    if (!visionDraft.baseUrl.trim()) {
+      toast.warning('请填写 Qwen 视觉模型 API Base URL')
+      return
+    }
     setModelConfig({ ...draft, model: draft.model.trim(), baseUrl: draft.baseUrl.trim() })
+    setVisionModelConfig({
+      ...visionDraft,
+      model: visionDraft.model.trim(),
+      baseUrl: visionDraft.baseUrl.trim(),
+    })
     onClose()
-    toast.success(`已切换到 ${draft.model.trim()}`)
+    if (!visionDraft.apiKey.trim() && !qwenProvider.configured && draft.provider !== 'qwen') {
+      toast.warning(`已切换到 ${draft.model.trim()}；拍照答题仍需配置 Qwen 视觉 API Key`)
+    } else {
+      toast.success(`已切换到 ${draft.model.trim()}`)
+    }
   }
 
   const clearSavedApiKey = () => {
@@ -1849,6 +2188,13 @@ function ModelSettingsModal({
     setModelConfig(cleared)
     setDraft((value) => ({ ...value, apiKey: '' }))
     toast.success('已清除当前浏览器保存的 API Key')
+  }
+
+  const clearSavedVisionApiKey = () => {
+    const cleared = { ...activeVision, apiKey: '' }
+    setVisionModelConfig(cleared)
+    setVisionDraft((value) => ({ ...value, apiKey: '' }))
+    toast.success('已清除当前浏览器保存的 Qwen 视觉 API Key')
   }
 
   const providerIcon = (id: ModelProviderId) => {
@@ -1870,7 +2216,7 @@ function ModelSettingsModal({
         <span className="modal-icon"><ServerCog size={22} /></span>
         <div>
           <h2>选择与配置模型</h2>
-          <p>答题与附件识别使用当前模型；检索可临时调用专用模型，最终仍由当前模型回答。</p>
+          <p>当前模型负责解题与批改；题目图片和手写作答可单独使用 Qwen VL 识别，再交给当前模型处理。</p>
         </div>
       </div>
 
@@ -1958,6 +2304,54 @@ function ModelSettingsModal({
               : '使用云端模型时，题目、最近对话及检索上下文会发送到所选 API；配置和 API Key 会保存在此浏览器的本地存储中，不写入项目文件。'}
           </span>
         </div>
+
+        <div className="vision-config-section">
+          <div className="vision-config-heading">
+            <span className="modal-icon"><ScanLine size={18} /></span>
+            <div>
+              <strong>图片识别</strong>
+              <small>用于拍照答题、图片原题变式和手写作答批改，不改变上方的解题模型。</small>
+            </div>
+          </div>
+          <div className="model-field">
+            <label>Qwen 视觉模型</label>
+            <Select
+              value={visionDraft.model}
+              options={visionModels.filter((option) => !option.disabled).map((option) => ({
+                value: option.value,
+                label: option.description ? `${option.label} · ${option.description}` : option.label,
+              }))}
+              onChange={(model) => setVisionDraft((value) => ({ ...value, model }))}
+              style={{ width: '100%' }}
+              showSearch
+              aria-label="选择 Qwen 视觉模型"
+            />
+          </div>
+          <div className="model-field">
+            <label>Qwen API Key</label>
+            <Input.Password
+              value={visionDraft.apiKey}
+              onChange={(event) => setVisionDraft((value) => ({ ...value, apiKey: event.target.value }))}
+              placeholder={qwenProvider.configured ? '后端已配置；留空即可使用' : '拍照答题必填，保存在当前浏览器'}
+              prefix={<KeyRound size={15} />}
+              autoComplete="off"
+            />
+            {activeVision.apiKey && (
+              <button type="button" className="clear-api-key" onClick={clearSavedVisionApiKey}>
+                清除已保存的 Qwen 视觉 API Key
+              </button>
+            )}
+          </div>
+          <div className="model-field">
+            <label>Qwen API Base URL</label>
+            <Input
+              value={visionDraft.baseUrl}
+              onChange={(event) => setVisionDraft((value) => ({ ...value, baseUrl: event.target.value }))}
+              placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+              prefix={<Cloud size={15} />}
+            />
+          </div>
+        </div>
       </div>
 
       <div className="model-modal-actions">
@@ -1988,6 +2382,8 @@ function StudentPageContent() {
   const sessionId = useChatStore((state) => state.sessionId)
   const mode = useChatStore((state) => state.mode)
   const setMode = useChatStore((state) => state.setMode)
+  const setScene = useChatStore((state) => state.setScene)
+  const setActivePractice = useChatStore((state) => state.setActivePractice)
   const send = useChatStore((state) => state.send)
   const knowledgeBase = useChatStore((state) => state.knowledgeBase)
   const defaultKnowledgeBase = useChatStore((state) => state.defaultKnowledgeBase)
@@ -2156,9 +2552,28 @@ function StudentPageContent() {
     toast.success(`已将“${knowledgeBaseDisplayName(target, id)}”设为默认课程知识库`)
   }
 
-  const ask = (prompt: string, preferredMode?: ChatMode) => {
-    if (preferredMode) setMode(preferredMode)
-    void send(prompt).then(() => refreshSessions())
+  const ask = (prompt: string, preferredMode?: ChatMode, recognitionConfirmed = false) => {
+    if (preferredMode) {
+      setMode(preferredMode)
+      if (!recognitionConfirmed) setScene('chat')
+    }
+    void send(prompt, { recognitionConfirmed }).then(() => refreshSessions())
+  }
+
+  const startPracticeAnswer = (practice: PracticeExercise) => {
+    setMode('quiz')
+    setActivePractice(practice)
+    setScene('quiz_grade')
+    window.setTimeout(() => {
+      document.querySelector('.practice-submit-banner')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      })
+    }, 0)
+  }
+
+  const generateAnotherPractice = () => {
+    ask('请基于刚才这道题再生成一道同构变式题，保持知识点、拓扑和待求量结构，只调整情境或参数。', 'quiz')
   }
 
   const saveMistake = async ({ question, answer, agent, attachments }: MistakeDraft) => {
@@ -2441,7 +2856,14 @@ function StudentPageContent() {
                     onOpenSchedule={() => setActiveView('schedule')}
                     onToggleSchedule={(item) => void toggleScheduleItem(item)}
                   />
-                ) : <Conversation onAddMistake={(draft) => void saveMistake(draft)} />}
+                ) : (
+                  <Conversation
+                    onAddMistake={(draft) => void saveMistake(draft)}
+                    onConfirmPhoto={(content) => ask(content, 'answer', true)}
+                    onStartPractice={startPracticeAnswer}
+                    onGenerateSimilar={generateAnotherPractice}
+                  />
+                )}
               </div>
               <ChatComposer onSend={(value) => ask(value)} />
             </div>

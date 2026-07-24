@@ -1,7 +1,8 @@
 import { create } from 'zustand'
-import { AttachmentInfo, KBStatus, ModelConfig, ModelProviderId, SourceInfo, StoredMessage, streamChat, uploadChatAttachment } from '../lib/api'
+import { AnswerReview, AttachmentInfo, KBStatus, ModelConfig, ModelProviderId, PhotoRecognition, PracticeExercise, PracticeGrading, SourceInfo, StoredMessage, streamChat, uploadChatAttachment, VisionModelConfig } from '../lib/api'
 
 export type ChatMode = 'auto' | 'answer' | 'quiz' | 'plan'
+export type ChatScene = 'chat' | 'image_answer' | 'quiz_grade'
 
 export type ChatMessage = {
   id: string
@@ -15,6 +16,12 @@ export type ChatMessage = {
   model?: string
   provider?: ModelProviderId
   knowledgeBase?: string
+  recognition?: PhotoRecognition
+  needsConfirmation?: boolean
+  evidenceMode?: 'grounded' | 'mixed' | 'general_only'
+  review?: AnswerReview
+  practice?: PracticeExercise
+  grading?: PracticeGrading
 }
 
 export type PendingAttachment = {
@@ -31,6 +38,7 @@ export type PendingAttachment = {
 const sessionKey = 'circuitmind-session-id'
 const studentKey = 'circuitmind-student-id'
 const modelConfigKey = 'circuitmind-model-config'
+const visionModelConfigKey = 'circuitmind-vision-model-config'
 const defaultKnowledgeBaseKey = 'circuitmind-default-knowledge-base'
 export const CHAT_MODEL_PROVIDER: ModelProviderId = 'ollama'
 export const CHAT_MODEL = 'qwen3.5:2b'
@@ -41,6 +49,12 @@ const defaultModelConfig: ModelConfig = {
   model: CHAT_MODEL,
   apiKey: '',
   baseUrl: 'http://127.0.0.1:11434',
+}
+
+const defaultVisionModelConfig: VisionModelConfig = {
+  model: QWEN_VL_FALLBACK_MODEL,
+  apiKey: '',
+  baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
 }
 
 function getSessionId() {
@@ -95,6 +109,25 @@ function getModelConfig(): ModelConfig {
   }
 }
 
+function getVisionModelConfig(): VisionModelConfig {
+  try {
+    const stored = JSON.parse(localStorage.getItem(visionModelConfigKey) || '{}')
+    const config = {
+      model: typeof stored.model === 'string' && stored.model.trim()
+        ? canonicalModel('qwen', stored.model)
+        : defaultVisionModelConfig.model,
+      apiKey: typeof stored.apiKey === 'string' ? stored.apiKey : '',
+      baseUrl: typeof stored.baseUrl === 'string' && stored.baseUrl.trim()
+        ? stored.baseUrl.trim()
+        : defaultVisionModelConfig.baseUrl,
+    }
+    localStorage.setItem(visionModelConfigKey, JSON.stringify(config))
+    return config
+  } catch {
+    return defaultVisionModelConfig
+  }
+}
+
 function getDefaultKnowledgeBase(): string {
   const stored = localStorage.getItem(defaultKnowledgeBaseKey)?.trim() || ''
   return /^[A-Za-z0-9_-]{1,48}$/.test(stored) ? stored : ''
@@ -138,9 +171,11 @@ type ChatState = {
   studentId: string
   sessionId: string
   mode: ChatMode
+  scene: ChatScene
   knowledgeBase: string
   defaultKnowledgeBase: string
   modelConfig: ModelConfig
+  visionModelConfig: VisionModelConfig
   messages: ChatMessage[]
   streaming: boolean
   stage: string
@@ -149,17 +184,21 @@ type ChatState = {
   activeCitedSources: SourceInfo[]
   activeMessageId?: string
   pendingAttachments: PendingAttachment[]
+  activePractice?: PracticeExercise
   controller?: AbortController
   setMode: (mode: ChatMode) => void
+  setScene: (scene: ChatScene) => void
+  setActivePractice: (practice?: PracticeExercise) => void
   setKnowledgeBase: (id: string) => void
   setDefaultKnowledgeBase: (id: string) => void
   syncKnowledgeBases: (knowledgeBases: KBStatus[]) => void
   setModelConfig: (config: ModelConfig) => void
+  setVisionModelConfig: (config: VisionModelConfig) => void
   addAttachments: (files: File[]) => Promise<void>
   removeAttachment: (localId: string) => void
   activateMessage: (messageId: string) => void
   loadSession: (sessionId: string, messages: StoredMessage[]) => void
-  send: (message: string) => Promise<void>
+  send: (message: string, options?: { recognitionConfirmed?: boolean }) => Promise<void>
   stop: () => void
   clear: () => void
 }
@@ -168,9 +207,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   studentId: getStudentId(),
   sessionId: getSessionId(),
   mode: 'auto',
+  scene: 'chat',
   knowledgeBase: initialKnowledgeBase,
   defaultKnowledgeBase: initialKnowledgeBase,
   modelConfig: getModelConfig(),
+  visionModelConfig: getVisionModelConfig(),
   messages: [],
   streaming: false,
   stage: '',
@@ -179,7 +220,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   activeCitedSources: [],
   activeMessageId: undefined,
   pendingAttachments: [],
+  activePractice: undefined,
   setMode: (mode) => set({ mode }),
+  setScene: (scene) => set({
+    scene,
+    ...(scene === 'quiz_grade' ? {} : { activePractice: undefined }),
+  }),
+  setActivePractice: (activePractice) => set({ activePractice }),
   setKnowledgeBase: (knowledgeBase) => set({ knowledgeBase }),
   setDefaultKnowledgeBase: (defaultKnowledgeBase) => {
     if (!defaultKnowledgeBase) {
@@ -214,6 +261,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const normalized = normalizedModelConfig(modelConfig)
     localStorage.setItem(modelConfigKey, JSON.stringify(normalized))
     set({ modelConfig: normalized })
+  },
+  setVisionModelConfig: (visionModelConfig) => {
+    const normalized = {
+      model: canonicalModel('qwen', visionModelConfig.model || defaultVisionModelConfig.model),
+      apiKey: visionModelConfig.apiKey,
+      baseUrl: visionModelConfig.baseUrl.trim() || defaultVisionModelConfig.baseUrl,
+    }
+    localStorage.setItem(visionModelConfigKey, JSON.stringify(normalized))
+    set({ visionModelConfig: normalized })
   },
   addAttachments: async (files) => {
     const available = Math.max(0, 5 - get().pendingAttachments.length)
@@ -282,6 +338,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         attachments: item.attachments || [],
         sources,
         citedSources,
+        recognition: item.recognition,
+        needsConfirmation: item.needs_confirmation,
+        evidenceMode: item.evidence_mode,
+        review: item.review,
+        practice: item.practice,
+        grading: item.grading,
       }
     })
     const latestAssistant = [...messages].reverse().find((item) => item.role === 'assistant')
@@ -295,17 +357,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activeCitedSources: latestAssistant?.citedSources || [],
       activeMessageId: latestAssistant?.id,
       pendingAttachments: [],
+      activePractice: undefined,
       controller: undefined,
     })
   },
-  send: async (rawMessage) => {
+  send: async (rawMessage, options) => {
     const readyAttachments = get().pendingAttachments
-      .filter((item) => item.status === 'ready' && item.attachment)
+      .filter((item) => (
+        item.status === 'ready'
+        && item.attachment
+        && (!['image_answer', 'quiz_grade'].includes(get().scene) || item.kind === 'image')
+      ))
       .map((item) => item.attachment!)
     const hasUnfinished = get().pendingAttachments.some((item) => item.status !== 'ready')
     const message = rawMessage.trim() || (
       readyAttachments.length
-        ? get().mode === 'quiz'
+        ? get().scene === 'quiz_grade'
+          ? '请批改我上传的作答，并指出具体错误和改进方法。'
+          : get().mode === 'quiz'
           ? '请根据附件中的原题生成一道同类型新题。'
           : '请识别并解答附件中的电路题。'
         : ''
@@ -319,7 +388,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       knowledgeBase: get().knowledgeBase,
     }
     const assistantId = crypto.randomUUID()
+    const requestScene = get().scene
     const selectedModel = get().modelConfig
+    const selectedVisionModel = get().visionModelConfig
     const assistantMessage: ChatMessage = {
       id: assistantId,
       role: 'assistant',
@@ -346,12 +417,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
           session_id: get().sessionId,
           message,
           mode: get().mode,
+          scene: get().scene,
+          recognition_confirmed: Boolean(options?.recognitionConfirmed),
           knowledge_base: get().knowledgeBase,
           attachment_ids: readyAttachments.map((item) => item.id),
           model_provider: selectedModel.provider,
           model: selectedModel.model,
           api_key: selectedModel.apiKey,
           base_url: selectedModel.baseUrl,
+          vision_model: selectedVisionModel.model,
+          vision_api_key: selectedVisionModel.apiKey,
+          vision_base_url: selectedVisionModel.baseUrl,
         },
         {
           onStatus: (data) => set({ stage: data.message, stageAgent: data.agent }),
@@ -380,6 +456,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
                         model: data.model,
                         sources,
                         citedSources,
+                        recognition: data.recognition,
+                        needsConfirmation: data.needs_confirmation,
+                        evidenceMode: data.evidence_mode,
+                        review: data.review,
+                        practice: data.practice,
+                        grading: data.grading,
                       }
                     : item,
                 ),
@@ -393,7 +475,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
               ),
             }))
           },
-          onDone: () => set({ streaming: false, stage: '', stageAgent: '', controller: undefined }),
+          onDone: () => set({
+            streaming: false,
+            stage: '',
+            stageAgent: '',
+            controller: undefined,
+            ...(requestScene === 'quiz_grade' ? { scene: 'chat' as ChatScene, activePractice: undefined } : {}),
+          }),
           onError: (error) => {
             set((state) => ({
               streaming: false,
@@ -456,6 +544,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activeCitedSources: [],
       activeMessageId: undefined,
       pendingAttachments: [],
+      activePractice: undefined,
       controller: undefined,
     })
   },

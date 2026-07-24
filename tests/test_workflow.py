@@ -2,8 +2,10 @@ import asyncio
 
 from backend.app.agents.workflow import (
     CircuitTutorEngine,
+    _circuit_blueprint_matches,
     _contextual_attachment_ids,
     _detect_quiz_family,
+    _filter_grounding_hits,
     _finalize_answer_citations,
     _plan_schedule_guidance,
     _quiz_reference,
@@ -65,6 +67,50 @@ def test_backend_does_not_present_retrieval_candidates_as_citations():
     assert cited_sources == []
 
 
+def test_grounding_filter_rejects_unrelated_graph_only_candidate():
+    unrelated = _retrieval_hit(1)
+    unrelated.chunk.text = "晶体管静态工作点由基极偏置和集电极负载线共同确定。"
+    unrelated.chunk.knowledge_tags = ["静态工作点", "晶体管"]
+    unrelated.graph_score = 1.0
+    unrelated.vector_score = 0.9
+    unrelated.bm25_score = 0.8
+    unrelated.rerank_score = 0.85
+
+    hits, scope = _filter_grounding_hits(
+        "方波-三角波发生器由滞回比较器与积分器组成",
+        [unrelated],
+        {
+            "knowledge_points": ["方波-三角波发生器", "滞回比较器", "积分器"],
+            "component_types": ["运算放大器"],
+            "topology": "滞回比较器连接积分器",
+            "has_circuit": True,
+        },
+    )
+
+    assert hits == []
+    assert scope["quality"] == "none"
+    assert scope["graph_only_rejected_count"] == 1
+    assert "方波-三角波发生器" in scope["missing_concepts"]
+
+
+def test_grounding_filter_keeps_direct_textbook_support_and_reports_partial_coverage():
+    comparator = _retrieval_hit(1)
+    comparator.chunk.text = "滞回比较器利用正反馈形成两个阈值，可用于方波发生器。"
+    comparator.chunk.section = "运算放大器的非线性应用"
+    comparator.graph_score = 1.0
+
+    hits, scope = _filter_grounding_hits(
+        "分析方波-三角波发生器中的滞回比较器和积分器",
+        [comparator],
+        {"knowledge_points": ["滞回比较器", "积分器"]},
+    )
+
+    assert hits == [comparator]
+    assert scope["quality"] == "partial"
+    assert "滞回比较器" in scope["covered_concepts"]
+    assert "积分器" in scope["missing_concepts"]
+
+
 def test_streaming_suppresses_model_reference_list_and_emits_backend_list_once():
     class FakeCitationModel:
         model = "fake-citation-model"
@@ -116,6 +162,7 @@ def test_contextual_followup_reuses_latest_attachment_and_history_for_retrieval(
     assert _contextual_attachment_ids("上述电路属于什么类型？", history) == [
         attachment_id
     ]
+    assert _contextual_attachment_ids("同类出题", history) == [attachment_id]
     assert _contextual_attachment_ids("请解释共射放大电路", history) == []
 
     engine = object.__new__(CircuitTutorEngine)
@@ -192,7 +239,7 @@ def test_sympy_verification_rejects_identifiers():
     assert result["passed"] is False
 
 
-def test_conceptual_quiz_does_not_require_sympy():
+def test_conceptual_quiz_is_rejected_from_same_type_practice():
     engine = object.__new__(CircuitTutorEngine)
     state = {
         "quiz_type": "conceptual",
@@ -210,8 +257,58 @@ def test_conceptual_quiz_does_not_require_sympy():
         "sympy_expected": "",
     }
     result = engine._verify_draft(state, draft)
-    assert result["passed"] is True
+    assert result["passed"] is False
     assert result["method"] == "conceptual"
+    assert "numeric" in result["message"]
+
+
+def test_explicit_numeric_variant_request_is_classified_as_numeric():
+    engine = object.__new__(CircuitTutorEngine)
+    extracted = asyncio.run(engine._extract_knowledge({
+        "message": "围绕欧姆定律生成一道基础数值变式题，参数简单。",
+        "history": [],
+        "attachment_context": "",
+    }))
+    assert extracted["quiz_type"] == "numeric"
+    assert extracted["knowledge_point"] == "欧姆定律"
+
+
+def test_quiz_knowledge_extraction_prioritizes_visual_blueprint():
+    engine = object.__new__(CircuitTutorEngine)
+    extracted = asyncio.run(engine._extract_knowledge({
+        "message": "同类出题",
+        "history": [],
+        "attachment_context": "已识别附件",
+        "attachment_blueprint": {
+            "knowledge_points": ["方波-三角波发生器", "滞回比较器", "积分器"],
+            "component_types": ["运算放大器"],
+        },
+    }))
+
+    assert extracted["knowledge_point"].startswith("方波-三角波发生器、滞回比较器、积分器")
+    assert extracted["quiz_type"] == "numeric"
+
+
+def test_numeric_verifier_rejects_explanation_disguised_as_calculation():
+    engine = object.__new__(CircuitTutorEngine)
+    result = engine._verify_draft(
+        {
+            "quiz_type": "numeric",
+            "knowledge_point": "欧姆定律",
+            "history": [],
+        },
+        {
+            "question_type": "numeric",
+            "question": "说明欧姆定律中公式 U=IR 的物理含义，并举 1 个例子。",
+            "solution": "解释电压、电流和电阻的关系。",
+            "answer": "三者满足 U=IR。",
+            "common_mistakes": ["忽略适用条件"],
+            "sympy_expression": "1",
+            "sympy_expected": "1",
+        },
+    )
+    assert result["passed"] is False
+    assert "数值" in result["message"]
 
 
 def test_fallback_is_topic_specific_and_varied():
@@ -321,7 +418,7 @@ def test_followup_quiz_uses_latest_generated_question_as_reference():
             "---\n\n### 解题步骤\n\n1. 略"
         ),
     }]
-    for followup in ("再出一道和上题类似的题目", "再出一道", "再出一题", "再来一题"):
+    for followup in ("同类出题", "再出一道和上题类似的题目", "再出一道", "再出一题", "再来一题"):
         assert _quiz_reference(followup, "", history) == previous["question"]
     reference = _quiz_reference("再出一题", "", history)
     assert _detect_quiz_family(reference) == "parallel_series_rl_capacitor_unity_pf"
@@ -339,11 +436,69 @@ def test_followup_quiz_uses_latest_generated_question_as_reference():
     assert extracted["hits"] == []
 
 
-def test_quiz_graph_has_no_knowledge_base_retrieval_node():
+def test_quiz_graph_retrieves_course_evidence_before_generation():
     engine = object.__new__(CircuitTutorEngine)
     graph = engine._build_quiz_graph().get_graph()
-    assert "retrieve_similar" not in graph.nodes
+    assert "retrieve_quiz_evidence" in graph.nodes
     assert "generate_quiz" in graph.nodes
+
+
+def test_quiz_retrieval_uses_knowledge_point_reference_and_images():
+    captured = {}
+    hits = [_retrieval_hit(1)]
+    hits[0].chunk.text = "欧姆定律给出电阻元件两端电压与电流的关系。"
+
+    class Retriever:
+        def search(self, query, k, prefer_questions, query_images):
+            captured.update({
+                "query": query,
+                "k": k,
+                "prefer_questions": prefer_questions,
+                "query_images": query_images,
+            })
+            return hits
+
+    class KnowledgeBases:
+        def get(self, knowledge_base):
+            captured["knowledge_base"] = knowledge_base
+            return Retriever()
+
+    engine = object.__new__(CircuitTutorEngine)
+    engine.knowledge_bases = KnowledgeBases()
+    result = asyncio.run(engine._quiz_retrieve({
+        "knowledge_base": "course-a",
+        "knowledge_point": "欧姆定律",
+        "reference_question": "已知 U=12V、R=6Ω，求电流 I。",
+        "attachment_images": ["image-base64"],
+    }))
+
+    assert captured["knowledge_base"] == "course-a"
+    assert "欧姆定律" in captured["query"]
+    assert "U=12V" in captured["query"]
+    assert captured["query_images"] == ["image-base64"]
+    assert result["hits"] == hits
+    assert result["sources"][0]["source"] == "教材.pdf"
+
+
+def test_quiz_retrieval_discards_weakly_related_course_chunks():
+    class Retriever:
+        def search(self, *_args):
+            return [_retrieval_hit(1)]
+
+    class KnowledgeBases:
+        def get(self, _knowledge_base):
+            return Retriever()
+
+    engine = object.__new__(CircuitTutorEngine)
+    engine.knowledge_bases = KnowledgeBases()
+    result = asyncio.run(engine._quiz_retrieve({
+        "knowledge_base": "course-a",
+        "knowledge_point": "欧姆定律",
+        "reference_question": "已知 U=12V、R=6Ω，求电流 I。",
+    }))
+
+    assert result["hits"] == []
+    assert result["sources"] == []
 
 
 def test_learning_plan_graph_has_analysis_retrieval_and_generation_nodes():
@@ -477,7 +632,60 @@ def test_attachment_analysis_uses_request_selected_client():
     assert "附件结构化识别" in result["attachment_context"]
 
 
-def test_quiz_rendering_is_spacious_structured_and_has_no_references():
+def test_same_type_quiz_reuses_recognition_for_inherited_original_image():
+    attachment_id = "b" * 32
+
+    class VisionShouldNotRun:
+        model = "unused-vision"
+
+        async def chat(self, *_args, **_kwargs):
+            raise AssertionError("已有同一附件的视觉蓝图时不应重复识图")
+
+    engine = object.__new__(CircuitTutorEngine)
+    engine.ollama = VisionShouldNotRun()
+    result = asyncio.run(engine._analyze_attachments({
+        "mode": "quiz",
+        "scene": "chat",
+        "attachment_images": ["image-base64"],
+        "attachment_items": [{
+            "id": attachment_id,
+            "kind": "image",
+            "url": f"/api/attachments/{attachment_id}?session_id=student-a",
+        }],
+        "history": [
+            {
+                "role": "user",
+                "content": "请识别并解答附件中的电路题。",
+                "attachments": [{"id": attachment_id, "kind": "image"}],
+            },
+            {
+                "role": "assistant",
+                "content": "这是方波—三角波发生器。",
+                "recognition": {
+                    "transcription": "判断运放工作区",
+                    "question_type": "选择题",
+                    "knowledge_points": ["运算放大器"],
+                    "component_types": ["运算放大器", "电阻", "电容"],
+                    "topology": "A1 为比较器，A2 为积分器，二者构成反馈回路",
+                    "knowns": ["R1", "R2", "C"],
+                    "unknowns": ["A1、A2 工作区"],
+                    "constraints": [],
+                    "confidence": 0.95,
+                    "is_complete": True,
+                    "has_circuit": True,
+                    "uncertain_regions": [],
+                },
+            },
+        ],
+        "vision_llm": VisionShouldNotRun(),
+    }))
+
+    assert result["attachment_blueprint"]["has_circuit"] is True
+    assert "A1 为比较器" in result["attachment_blueprint"]["topology"]
+    assert "继承的原题结构化识别" in result["attachment_context"]
+
+
+def test_quiz_rendering_hides_solution_and_returns_structured_practice():
     engine = object.__new__(CircuitTutorEngine)
     draft = CircuitTutorEngine._fallback_quiz(
         "正弦稳态、功率因数、感抗、容抗",
@@ -496,10 +704,106 @@ def test_quiz_rendering_is_spacious_structured_and_has_no_references():
     assert content.startswith("## 同类型新题\n\n")
     assert "同类型新题 ·" not in content
     assert "### 题目" in content
-    assert "### 解题步骤" in content
-    assert "### 标准答案" in content
-    assert "### 易错点" in content
-    assert content.count("\n\n---\n\n") == 3
+    assert "### 解题步骤" not in content
+    assert "### 标准答案" not in content
+    assert "### 易错点" not in content
+    assert "答案已隐藏" in content
     assert "\n\n1. " in content
     assert "检索依据" not in content
+    assert rendered["practice"]["question"] == draft["question"]
+    assert rendered["practice"]["answer"]
+    assert rendered["practice"]["solution_steps"]
+    assert rendered["practice"]["verification"]["passed"] is True
     assert rendered["sources"] == []
+
+
+def test_circuit_blueprint_requires_same_components_and_topology():
+    blueprint = {
+        "has_circuit": True,
+        "topology": "电压源与 R1 串联后，节点 n1 分为电阻支路和电容支路并联",
+        "component_types": ["电压源", "电阻", "电容"],
+    }
+    matching = {
+        "question": "电压源与电阻 R1 串联，随后接电阻和电容两个并联支路，求支路电流。",
+        "topology_signature": "电压源—R1 串联；节点 n1 后两个支路并联",
+        "component_types": ["电压源", "电阻", "电容"],
+    }
+    changed = {
+        "question": "电压源与两个电阻串联，求总电流。",
+        "topology_signature": "全串联",
+        "component_types": ["电压源", "电阻"],
+    }
+
+    assert _circuit_blueprint_matches(blueprint, matching) is True
+    assert _circuit_blueprint_matches(blueprint, changed) is False
+
+
+def test_quiz_practice_reuses_original_circuit_image_as_topology_reference():
+    engine = object.__new__(CircuitTutorEngine)
+    draft = CircuitTutorEngine._fallback_quiz("欧姆定律", 1, "numeric")
+    rendered = asyncio.run(engine._render_quiz({
+        "draft": draft,
+        "verification": {"passed": True, "method": "sympy"},
+        "history": [],
+        "quiz_type": "numeric",
+        "attachment_images": ["base64-image"],
+        "attachment_blueprint": {
+            "has_circuit": True,
+            "topology": "电源与两个电阻串联",
+            "component_types": ["电压源", "电阻"],
+        },
+        "attachment_items": [{
+            "id": "a" * 32,
+            "name": "original-circuit.png",
+            "content_type": "image/png",
+            "size": 1234,
+            "kind": "image",
+            "url": "/api/attachments/" + "a" * 32 + "?session_id=student-a",
+        }],
+    }))
+
+    diagram = rendered["practice"]["circuit_diagram"]
+    assert diagram["mode"] == "topology_reference"
+    assert diagram["attachments"][0]["name"] == "original-circuit.png"
+    assert "图内原题数值不作为新题条件" in diagram["notice"]
+    assert diagram["topology"] == "电源与两个电阻串联"
+
+
+def test_practice_grading_uses_latest_exercise_and_returns_actionable_feedback():
+    class Grader:
+        model = "grader"
+
+        async def chat(self, messages, **_kwargs):
+            prompt = messages[0]["content"]
+            assert "[题目]\n已知 U=10V，R=5Ω，求 I。" in prompt
+            assert "[标准答案]\nI=2A" in prompt
+            assert "I=2A" in prompt
+            return (
+                '{"score":95,"is_correct":true,"summary":"结果正确，步骤基本完整。",'
+                '"extracted_answer":"I=2A","strengths":["公式选择正确"],'
+                '"issues":[{"title":"单位书写","detail":"代入时未标单位",'
+                '"suggestion":"代入量保留 V 和 Ω"}],"next_steps":["复核参考方向"]}'
+            )
+
+    engine = object.__new__(CircuitTutorEngine)
+    result = asyncio.run(engine._grade_practice({
+        "message": "I=U/R=2A",
+        "attachment_context": "",
+        "llm": Grader(),
+        "history": [{
+            "role": "assistant",
+            "content": "同类型新题",
+            "practice": {
+                "question": "已知 U=10V，R=5Ω，求 I。",
+                "answer": "I=2A",
+                "answer_items": ["I=2A"],
+                "solution": "使用欧姆定律。",
+                "solution_steps": ["I=U/R", "代入得 I=2A"],
+            },
+        }],
+    }))
+
+    assert result["agent"] == "批改 Agent"
+    assert result["grading"]["score"] == 95
+    assert result["grading"]["issues"][0]["suggestion"] == "代入量保留 V 和 Ω"
+    assert "AI 批改反馈" in result["response"]

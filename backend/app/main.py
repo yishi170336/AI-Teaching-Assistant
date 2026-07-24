@@ -17,7 +17,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.app.agents.workflow import CircuitTutorEngine, _contextual_attachment_ids
+from backend.app.agents.workflow import (
+    CircuitTutorEngine,
+    _contextual_attachment_ids,
+    _history_recognition_for_attachments,
+)
 from backend.app.config import settings
 from backend.app.rag.manager import KnowledgeBaseManager
 from backend.app.rag.multimodal import BuildModelConfig
@@ -586,11 +590,46 @@ def select_model_client(payload: ChatRequest) -> tuple[Any, bool]:
     )
 
 
+def select_vision_client(payload: ChatRequest, selected_client: Any) -> tuple[Any, bool]:
+    """Prefer the configured Qwen vision model without changing the answer model."""
+    qwen_api_key = (
+        payload.vision_api_key
+        or (payload.api_key if payload.model_provider == "qwen" else "")
+        or settings.qwen_api_key
+    )
+    if not qwen_api_key:
+        if payload.model_provider == "deepseek":
+            raise ValueError(
+                "拍照答题需要配置 Qwen 视觉模型 API Key；图片识别不能使用当前仅支持文本的 DeepSeek 模型，"
+                "请在“模型设置 → 图片识别”中完成配置。"
+            )
+        return selected_client, False
+    qwen_base_url = (
+        payload.vision_base_url
+        or (
+            payload.base_url
+            if payload.model_provider == "qwen" and payload.api_key and payload.base_url
+            else settings.qwen_base_url
+        )
+    )
+    return (
+        OpenAICompatibleClient(
+            provider="qwen",
+            model=payload.vision_model or settings.qwen_vision_model,
+            api_key=qwen_api_key,
+            base_url=qwen_base_url,
+        ),
+        True,
+    )
+
+
 @app.post("/api/chat")
 async def chat(payload: ChatRequest) -> StreamingResponse:
     async def event_stream() -> AsyncIterator[str]:
         selected_client: Any | None = None
         close_selected_client = False
+        vision_client: Any | None = None
+        close_vision_client = False
         try:
             selected_client, close_selected_client = select_model_client(payload)
             selected_provider = payload.model_provider
@@ -610,7 +649,9 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
             )
             history = await memory.recent(payload.session_id)
             effective_message = payload.message or (
-                "请根据附件中的原题生成一道同类型新题。"
+                "请批改我上传的作答，并指出具体错误和改进方法。"
+                if payload.scene == "quiz_grade"
+                else "请根据附件中的原题生成一道同类型新题。"
                 if payload.mode == "quiz"
                 else "请识别并解答附件中的电路题。"
             )
@@ -624,6 +665,13 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 payload.attachment_ids or inherited_attachment_ids,
             )
             attachment_names = [item["name"] for item in resolved.items]
+            reusable_recognition = (
+                _history_recognition_for_attachments(history, resolved.items)
+                if payload.mode == "quiz"
+                else {}
+            )
+            if resolved.images and not reusable_recognition:
+                vision_client, close_vision_client = select_vision_client(payload, selected_client)
             await memory.append(
                 payload.session_id,
                 "user",
@@ -631,6 +679,8 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 {
                     "attachments": resolved.items if payload.attachment_ids else [],
                     "knowledge_base": payload.knowledge_base,
+                    "scene": payload.scene,
+                    "recognition_confirmed": payload.recognition_confirmed,
                 },
             )
             event_queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
@@ -646,12 +696,16 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 engine.run(
                     message=effective_message,
                     mode=payload.mode,
+                    scene=payload.scene,
+                    recognition_confirmed=payload.recognition_confirmed,
                     knowledge_base=payload.knowledge_base,
                     history=history,
                     attachment_text=resolved.text,
                     attachment_images=resolved.images,
                     attachment_names=attachment_names,
+                    attachment_items=resolved.items,
                     llm=selected_client,
+                    vision_llm=vision_client or selected_client,
                     on_status=on_status,
                     on_delta=on_delta,
                 )
@@ -683,6 +737,12 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     "sources": persisted_sources,
                     "cited_sources": persisted_cited_sources,
                     "verification": result.verification,
+                    "recognition": result.recognition,
+                    "needs_confirmation": result.needs_confirmation,
+                    "evidence_mode": result.evidence_mode,
+                    "review": result.review,
+                    "practice": result.practice,
+                    "grading": result.grading,
                 },
             )
             if not streamed_answer:
@@ -700,6 +760,12 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     "knowledge_base": payload.knowledge_base,
                     "sources": persisted_sources,
                     "cited_sources": persisted_cited_sources,
+                    "recognition": result.recognition,
+                    "needs_confirmation": result.needs_confirmation,
+                    "evidence_mode": result.evidence_mode,
+                    "review": result.review,
+                    "practice": result.practice,
+                    "grading": result.grading,
                 },
             )
             yield sse("done", {"ok": True})
@@ -709,6 +775,8 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
             logger.exception("Chat workflow failed")
             yield sse("error", {"message": str(exc)})
         finally:
+            if close_vision_client and vision_client is not None:
+                await vision_client.close()
             if close_selected_client and selected_client is not None:
                 await selected_client.close()
 

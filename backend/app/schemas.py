@@ -11,12 +11,17 @@ class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=96)
     message: str = Field(default="", max_length=8000)
     mode: Literal["auto", "answer", "quiz", "plan"] = "auto"
+    scene: Literal["chat", "image_answer", "quiz_grade"] = "chat"
+    recognition_confirmed: bool = False
     knowledge_base: str = Field(default="default", min_length=1, max_length=48)
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     model_provider: Literal["ollama", "deepseek", "qwen", "custom"] = "ollama"
     model: str = Field(default="qwen3.5:2b", min_length=1, max_length=128)
     api_key: str = Field(default="", max_length=512)
     base_url: str = Field(default="", max_length=512)
+    vision_model: str = Field(default="", max_length=128)
+    vision_api_key: str = Field(default="", max_length=512)
+    vision_base_url: str = Field(default="", max_length=512)
 
     @field_validator("session_id", "knowledge_base")
     @classmethod
@@ -31,7 +36,14 @@ class ChatRequest(BaseModel):
     def non_blank_message(cls, value: str) -> str:
         return value.strip()
 
-    @field_validator("model", "api_key", "base_url")
+    @field_validator(
+        "model",
+        "api_key",
+        "base_url",
+        "vision_model",
+        "vision_api_key",
+        "vision_base_url",
+    )
     @classmethod
     def strip_model_fields(cls, value: str) -> str:
         return value.strip()
@@ -50,10 +62,17 @@ class ChatRequest(BaseModel):
             raise ValueError("消息和附件不能同时为空")
         if not re.fullmatch(r"[A-Za-z0-9._:/-]+", self.model):
             raise ValueError("模型名称包含不支持的字符")
-        if self.base_url:
-            parsed = urlparse(self.base_url)
+        if self.vision_model and not re.fullmatch(r"[A-Za-z0-9._:/-]+", self.vision_model):
+            raise ValueError("视觉模型名称包含不支持的字符")
+        for label, value in (
+            ("API Base URL", self.base_url),
+            ("视觉模型 API Base URL", self.vision_base_url),
+        ):
+            if not value:
+                continue
+            parsed = urlparse(value)
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise ValueError("API Base URL 必须是有效的 HTTP(S) 地址")
+                raise ValueError(f"{label} 必须是有效的 HTTP(S) 地址")
         if self.model_provider == "custom" and (not self.api_key or not self.base_url):
             raise ValueError("自定义 API 必须填写 API Key 和 Base URL")
         return self

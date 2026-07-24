@@ -56,6 +56,12 @@ export type ModelConfig = {
   baseUrl: string
 }
 
+export type VisionModelConfig = {
+  model: string
+  apiKey: string
+  baseUrl: string
+}
+
 export type ModelProviderInfo = {
   id: ModelProviderId
   label: string
@@ -347,6 +353,69 @@ export type SessionSummary = {
   message_count: number
 }
 
+export type PhotoRecognition = {
+  transcription: string
+  question_type: string
+  knowledge_points: string[]
+  component_types: string[]
+  topology: string
+  knowns: string[]
+  unknowns: string[]
+  constraints: string[]
+  confidence: number
+  is_complete: boolean
+  has_circuit: boolean
+  uncertain_regions: string[]
+}
+
+export type AnswerReview = {
+  triggered?: boolean
+  passed?: boolean
+  repaired?: boolean
+  issues?: string[]
+  risk_reasons?: string[]
+  sympy_checked?: boolean
+}
+
+export type PracticeExercise = {
+  question_type: string
+  question: string
+  question_stem: string
+  question_parts: string[]
+  knowledge_point: string
+  difficulty: string
+  solution: string
+  solution_steps: string[]
+  answer: string
+  answer_items: string[]
+  common_mistakes: string[]
+  verification?: Record<string, unknown>
+  circuit_diagram?: {
+    mode: 'topology_reference'
+    attachments: AttachmentInfo[]
+    topology: string
+    component_types: string[]
+    notice: string
+  }
+}
+
+export type PracticeGradingIssue = {
+  title: string
+  detail: string
+  suggestion: string
+}
+
+export type PracticeGrading = {
+  score: number
+  max_score: number
+  is_correct: boolean
+  summary: string
+  extracted_answer: string
+  strengths: string[]
+  issues: PracticeGradingIssue[]
+  next_steps: string[]
+}
+
 export type StoredMessage = {
   role: 'user' | 'assistant'
   content: string
@@ -358,11 +427,17 @@ export type StoredMessage = {
   attachments?: AttachmentInfo[]
   sources?: SourceInfo[]
   cited_sources?: SourceInfo[]
+  recognition?: PhotoRecognition
+  needs_confirmation?: boolean
+  evidence_mode?: 'grounded' | 'mixed' | 'general_only'
+  review?: AnswerReview
+  practice?: PracticeExercise
+  grading?: PracticeGrading
 }
 
 type SSECallbacks = {
   onStatus: (data: { stage: string; message: string; agent: string }) => void
-  onMeta: (data: { intent: string; agent: string; provider: ModelProviderId; model: string; sources: SourceInfo[]; cited_sources: SourceInfo[]; verification?: Record<string, unknown> }) => void
+  onMeta: (data: { intent: string; agent: string; provider: ModelProviderId; model: string; sources: SourceInfo[]; cited_sources: SourceInfo[]; verification?: Record<string, unknown>; recognition?: PhotoRecognition; needs_confirmation?: boolean; evidence_mode?: 'grounded' | 'mixed' | 'general_only'; review?: AnswerReview; practice?: PracticeExercise; grading?: PracticeGrading }) => void
   onDelta: (content: string) => void
   onDone: () => void
   onError: (message: string) => void
@@ -386,10 +461,15 @@ export async function streamChat(
     mode: string
     knowledge_base: string
     attachment_ids: string[]
+    scene?: 'chat' | 'image_answer' | 'quiz_grade'
+    recognition_confirmed?: boolean
     model_provider: ModelProviderId
     model: string
     api_key: string
     base_url: string
+    vision_model?: string
+    vision_api_key?: string
+    vision_base_url?: string
   },
   callbacks: SSECallbacks,
   signal?: AbortSignal,
