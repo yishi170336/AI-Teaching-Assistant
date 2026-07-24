@@ -1586,14 +1586,24 @@ async def get_homework_submission_file(submission_id: str, filename: str) -> Fil
 
 
 frontend_dist = settings.root_dir / "frontend" / "dist"
+FRONTEND_INDEX_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
+async def frontend_app(full_path: str) -> FileResponse:
+    dist_root = frontend_dist.resolve()
+    index_file = dist_root / "index.html"
+    requested = (dist_root / full_path).resolve()
+    if requested.is_file() and dist_root in requested.parents and requested != index_file:
+        return FileResponse(requested)
+    return FileResponse(index_file, headers=FRONTEND_INDEX_HEADERS)
+
+
 if frontend_dist.exists():
     assets_dir = frontend_dist / "assets"
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
-
-    @app.get("/{full_path:path}")
-    async def frontend_app(full_path: str):
-        requested = (frontend_dist / full_path).resolve()
-        if requested.is_file() and frontend_dist.resolve() in requested.parents:
-            return FileResponse(requested)
-        return FileResponse(frontend_dist / "index.html")
+    app.get("/{full_path:path}")(frontend_app)
