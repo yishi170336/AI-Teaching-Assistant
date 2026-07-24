@@ -84,18 +84,13 @@ python scripts/download_embedding_model.py
 脚本只下载 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` 推理所需文件到
 `models/paraphrase-multilingual-MiniLM-L12-v2`，不会读取或写入任何 API Key。
 
-项目已经包含构建好的前端和默认向量库，因此只需在项目根目录运行：
-
-```powershell
-conda activate llm
-python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
-```
-
-或：
+项目包含默认向量库。推荐在项目根目录使用启动脚本：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/start.ps1
 ```
+
+脚本会先在 `frontend` 中执行锁定依赖安装（`npm ci --no-audit --no-fund`）和 `npm run build`，确保 FastAPI 提供的前端产物与当前源码一致，然后使用 `llm` 环境启动后端。构建或依赖安装失败时，脚本会停止而不会继续提供旧页面。
 
 打开 `http://127.0.0.1:8000/student`；教师作业工作台位于 `http://127.0.0.1:8000/teacher`。生产构建由 FastAPI 直接提供；开发前端可在 `frontend` 中运行 `npm run dev`，Vite 会代理 `/api` 到 8000 端口。
 
