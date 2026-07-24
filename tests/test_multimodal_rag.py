@@ -802,6 +802,7 @@ def test_load_existing_keeps_default_when_source_files_remain(tmp_path, monkeypa
 
     assert manager.statuses() == [{
         "id": "default",
+        "display_name": "默认课程知识库",
         "state": "missing",
         "documents": 1,
         "chunks": 0,

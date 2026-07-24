@@ -16,7 +16,7 @@
 - 右上角可切换本地 Ollama、DeepSeek、通义千问或自定义兼容 API；配置会保存在当前浏览器，也可通过后端环境变量提供。
 - 左侧“最近学习”读取持久化会话列表，支持点击恢复历史对话；刷新页面后会自动恢复当前会话。
 - 学生端知识图谱默认展示聚合后的“教材—页面—知识点—电路图—去重元件”语义关系；公式、文本片段和网络节点保留在底层图中作为检索证据，不直接铺到画布上。
-- 答疑和出题内容均可加入持久化错题本；归档前自动提取知识点，错题页可按薄弱点发起知识补全与巩固规划。
+- 答疑、AI 出题和外部题库内容均可加入持久化错题本；支持来源追踪、分类、批注、知识图谱对齐、章节/前置知识定位和确定性薄弱点学习规划。实现、接口与迁移约定见 [错题本集成说明](docs/MISTAKE_BOOK.md)。
 - 教师可上传试卷、课后习题、学习指导书、图片或扫描版习题册；`qwen3-vl-flash` 联合 PDF-Extract-Kit 过滤目录、知识讲解等非题目内容，按题提取题号、共同题干、分层小问、选项、所属插图、参考答案与评分点，并重排为可打印的作业内容和参考答案。
 - 学生端“我的作业”支持多张作答照片提交；`qwen3-vl-flash` 识别手写内容并评分，`qwen3-vl-8b-instruct` 独立复核漏题、错读、步骤分与总分，疑点会标记为教师复查。
 
@@ -84,18 +84,13 @@ python scripts/download_embedding_model.py
 脚本只下载 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` 推理所需文件到
 `models/paraphrase-multilingual-MiniLM-L12-v2`，不会读取或写入任何 API Key。
 
-项目已经包含构建好的前端和默认向量库，因此只需在项目根目录运行：
-
-```powershell
-conda activate llm
-python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
-```
-
-或：
+项目包含默认向量库。推荐在项目根目录使用启动脚本：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/start.ps1
 ```
+
+脚本会先在 `frontend` 中执行锁定依赖安装（`npm ci --no-audit --no-fund`）和 `npm run build`，确保 FastAPI 提供的前端产物与当前源码一致，然后使用 `llm` 环境启动后端。构建或依赖安装失败时，脚本会停止而不会继续提供旧页面。
 
 打开 `http://127.0.0.1:8000/student`；教师作业工作台位于 `http://127.0.0.1:8000/teacher`。生产构建由 FastAPI 直接提供；开发前端可在 `frontend` 中运行 `npm run dev`，Vite 会代理 `/api` 到 8000 端口。
 
@@ -240,8 +235,14 @@ docker compose up -d qdrant redis
 - `GET /api/kb/{knowledge_base}/graph`
 - `POST /api/kb/rebuild`（使用 `qwen3-vl-flash` 重建已有资料）
 - `GET /api/mistakes?student_id=...`
-- `POST /api/mistakes`（调用当前模型提取知识点后归档）
+- `POST /api/mistakes`（提取知识点、推断可信来源并对齐课程图谱后归档）
+- `PATCH /api/mistakes/{mistake_id}?student_id=...`
 - `DELETE /api/mistakes/{mistake_id}?student_id=...`
+- `GET /api/mistakes/analysis?student_id=...`
+- `GET|POST /api/mistakes/categories`
+- `PATCH|DELETE /api/mistakes/categories/{category_id}`
+- `POST /api/mistakes/{mistake_id}/annotations`
+- `PATCH|DELETE /api/mistakes/{mistake_id}/annotations/{annotation_id}`
 - `GET /api/homeworks?role=teacher|student&student_id=...`
 - `POST /api/homeworks`（上传 PDF/图片并后台拆题）
 - `POST /api/homeworks/{homework_id}/publish`
