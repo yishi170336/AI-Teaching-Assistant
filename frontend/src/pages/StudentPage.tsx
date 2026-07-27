@@ -74,12 +74,13 @@ import {
 import MathMarkdown from '../components/MathMarkdown'
 import HomeworkView from './HomeworkView'
 import {
-  addMistake,
   addMistakeAnnotation,
   addScheduleItem,
   AttachmentInfo,
   cancelKnowledgeBaseBuild,
   ChapterKnowledgeSummary,
+  confirmMistakeCandidate,
+  createMistakeCandidate,
   createMistakeCategory,
   deleteKnowledgeBase,
   deleteMistake,
@@ -106,7 +107,10 @@ import {
   PracticeExercise,
   PracticeGrading,
   MistakeAnalysis,
+  MistakeCandidateDraft,
   MistakeCategory,
+  MistakePhotoRetention,
+  MistakeReason,
   MistakeSource,
   renameMistakeCategory,
   ScheduleCategory,
@@ -118,6 +122,7 @@ import {
   setScheduleItemCompleted,
   updateMistake,
   updateMistakeAnnotation,
+  uploadChatAttachment,
   uploadKnowledgeFile,
   rebuildKnowledgeBase,
 } from '../lib/api'
@@ -125,17 +130,25 @@ import { CHAT_MODEL, CHAT_MODEL_PROVIDER, ChatMessage, ChatMode, useChatStore } 
 
 const { TextArea } = Input
 type WorkspaceView = 'chat' | 'graph' | 'homework' | 'mistakes' | 'schedule'
-type MistakeDraft = {
-  question: string
-  answer: string
-  agent: string
-  attachments: AttachmentInfo[]
-}
 
 const mistakeSourceLabels: Record<MistakeSource, string> = {
   question_bank: '题库',
   ai_generated: 'AI 生成',
   user_uploaded: '用户上传',
+}
+
+const mistakeReasonLabels: Record<MistakeReason, string> = {
+  wrong: '做错了',
+  unknown: '不会做',
+  concept_gap: '概念不清',
+  calculation_error: '计算失误',
+  bookmark: '想收藏',
+}
+
+const photoRetentionLabels: Record<MistakePhotoRetention, string> = {
+  original_and_processed: '保存原图和清晰化副本',
+  processed_only: '只保存清晰化副本',
+  text_only: '只保存题目文字',
 }
 
 const knowledgeBaseDisplayName = (status: KBStatus | undefined, fallbackId = '') => (
@@ -1005,7 +1018,7 @@ function mistakeAttachmentsForMessage(messages: ChatMessage[], index: number): A
   return []
 }
 
-function mistakeDraftForAssistant(messages: ChatMessage[], index: number): MistakeDraft | null {
+function mistakeDraftForAssistant(messages: ChatMessage[], index: number): MistakeCandidateDraft | null {
   const message = messages[index]
   if (message.role !== 'assistant' || !message.content) return null
   const agent = message.agent || ''
@@ -1032,11 +1045,37 @@ function mistakeDraftForAssistant(messages: ChatMessage[], index: number): Mista
     if (questionMatch?.[1]?.trim()) question = questionMatch[1].trim()
     if (answerStart >= 0) answer = message.content.slice(answerStart).trim()
   }
+  const attachments = mistakeAttachmentsForMessage(messages, index)
+  const isGenerated = agent === '出题 Agent'
+  const isPhoto = Boolean(message.recognition) || attachments.some((attachment) => attachment.kind === 'image')
   return {
     question,
     answer,
     agent,
-    attachments: mistakeAttachmentsForMessage(messages, index),
+    attachments,
+    source: isGenerated ? 'ai_generated' : 'user_uploaded',
+    sourceRef: {
+      kind: isGenerated ? 'ai_practice' : isPhoto ? 'photo' : 'chat',
+      practice_id: isGenerated ? message.id : '',
+    },
+    attempt: message.grading ? {
+      student_answer: message.grading.extracted_answer,
+      score: message.grading.score,
+      max_score: message.grading.max_score,
+      is_correct: message.grading.is_correct,
+      grading_feedback: message.grading.summary,
+    } : {},
+    solution: {
+      answer,
+      explanation: answer,
+      model: message.model,
+      verification: message.practice?.verification || {},
+    },
+    recognition: message.recognition,
+    suggestedReason: message.grading && message.grading.score < message.grading.max_score
+      ? 'wrong'
+      : isGenerated ? 'bookmark' : 'unknown',
+    title: question.slice(0, 80),
   }
 }
 
@@ -1109,13 +1148,149 @@ function RecognitionConfirmationCard({
   )
 }
 
+function MistakeConfirmModal({
+  drafts,
+  categories,
+  saving,
+  onCancel,
+  onConfirm,
+}: {
+  drafts: MistakeCandidateDraft[]
+  categories: MistakeCategory[]
+  saving: boolean
+  onCancel: () => void
+  onConfirm: (decision: {
+    reason: MistakeReason
+    categoryId: string
+    title: string
+    photoRetention: MistakePhotoRetention
+  }) => void
+}) {
+  const first = drafts[0]
+  const [reason, setReason] = useState<MistakeReason>('wrong')
+  const [categoryId, setCategoryId] = useState('uncategorized')
+  const [title, setTitle] = useState('')
+  const [photoRetention, setPhotoRetention] = useState<MistakePhotoRetention>('original_and_processed')
+  const hasPhoto = drafts.some((draft) => (
+    draft.sourceRef.kind === 'photo'
+    || draft.attachments.some((attachment) => attachment.kind === 'image')
+    || Boolean(draft.attachmentUrls?.length)
+  ))
+
+  useEffect(() => {
+    setReason(first?.suggestedReason || 'wrong')
+    setCategoryId('uncategorized')
+    setTitle(drafts.length === 1 ? first?.title || first?.question.slice(0, 80) || '' : '')
+    setPhotoRetention('original_and_processed')
+  }, [first, drafts.length])
+
+  return (
+    <Modal
+      open={drafts.length > 0}
+      title={drafts.length > 1 ? `确认加入 ${drafts.length} 道错题` : '是否加入错题本？'}
+      onCancel={onCancel}
+      mask={{ closable: !saving }}
+      closable={!saving}
+      footer={[
+        <Button key="cancel" disabled={saving} onClick={onCancel}>暂不加入</Button>,
+        <Button
+          key="confirm"
+          type="primary"
+          loading={saving}
+          onClick={() => onConfirm({ reason, categoryId, title: title.trim(), photoRetention })}
+        >
+          由我确认加入
+        </Button>,
+      ]}
+      width={760}
+      className="mistake-confirm-modal"
+      destroyOnHidden
+    >
+      <div className="mistake-confirm-intro">
+        <ShieldCheck size={18} />
+        <div>
+          <strong>系统只提供整理建议，是否入库由你决定</strong>
+          <span>确认后才会计入薄弱知识分析；选择“暂不加入”不会创建错题记录。</span>
+        </div>
+      </div>
+      <div className="mistake-candidate-list">
+        {drafts.slice(0, 8).map((draft, index) => (
+          <article key={`${draft.sourceRef.kind}-${draft.sourceRef.question_id || draft.sourceRef.practice_id || index}`}>
+            <div>
+              <Tag>{mistakeSourceLabels[draft.source]}</Tag>
+              {draft.attempt?.score != null && draft.attempt.max_score != null && (
+                <Tag color={draft.attempt.is_correct ? 'success' : 'warning'}>
+                  {draft.attempt.score} / {draft.attempt.max_score} 分
+                </Tag>
+              )}
+            </div>
+            <strong>{draft.title || draft.question.slice(0, 100)}</strong>
+            <p>{draft.question.slice(0, 220)}</p>
+            {(draft.attachments.some((attachment) => attachment.kind === 'image') || Boolean(draft.attachmentUrls?.length)) && (
+              <div className="mistake-candidate-images">
+                {draft.attachments.filter((attachment) => attachment.kind === 'image').slice(0, 3).map((attachment) => (
+                  <img src={attachment.url} alt={attachment.name} key={attachment.id} />
+                ))}
+                {(draft.attachmentUrls || []).slice(0, Math.max(0, 3 - draft.attachments.filter((attachment) => attachment.kind === 'image').length)).map((url, imageIndex) => (
+                  <img src={url} alt={`待归档题图 ${imageIndex + 1}`} key={url} />
+                ))}
+              </div>
+            )}
+          </article>
+        ))}
+      </div>
+      <div className="mistake-confirm-fields">
+        {drafts.length === 1 && (
+          <label>
+            <span>错题名称</span>
+            <Input value={title} maxLength={120} onChange={(event) => setTitle(event.target.value)} />
+          </label>
+        )}
+        <label>
+          <span>加入原因</span>
+          <Select
+            value={reason}
+            onChange={setReason}
+            options={(Object.keys(mistakeReasonLabels) as MistakeReason[]).map((value) => ({
+              value,
+              label: mistakeReasonLabels[value],
+            }))}
+          />
+        </label>
+        <label>
+          <span>错题分类</span>
+          <Select
+            value={categoryId}
+            onChange={setCategoryId}
+            options={categories.map((category) => ({ value: category.id, label: category.name }))}
+          />
+        </label>
+        {hasPhoto && (
+          <label>
+            <span>图片保存方式</span>
+            <Select
+              value={photoRetention}
+              onChange={setPhotoRetention}
+              options={(Object.keys(photoRetentionLabels) as MistakePhotoRetention[]).map((value) => ({
+                value,
+                label: photoRetentionLabels[value],
+              }))}
+            />
+            <small>原图永不被生成式修改；清晰化仅包含方向纠正、对比度增强和尺寸约束。</small>
+          </label>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
 function Conversation({
   onAddMistake,
   onConfirmPhoto,
   onStartPractice,
   onGenerateSimilar,
 }: {
-  onAddMistake: (draft: MistakeDraft) => void
+  onAddMistake: (draft: MistakeCandidateDraft) => void
   onConfirmPhoto: (content: string) => void
   onStartPractice: (practice: PracticeExercise) => void
   onGenerateSimilar: () => void
@@ -1961,8 +2136,14 @@ function MistakeBookView({
         <div className="mistake-grid">
           {visibleMistakes.map((item) => (
             <article className="mistake-card" key={item.id}>
-              <div className="mistake-card-head"><span>{mistakeSourceLabels[item.source] || '用户上传'} · {item.agent}</span><small>{new Date(item.updated_at || item.created_at).toLocaleDateString('zh-CN')}</small></div>
-              <h2>{item.title || item.summary}</h2>
+              <div className="mistake-card-head">
+                <span>
+                  {mistakeSourceLabels[item.source] || '用户上传'} · {item.agent}
+                  {item.decision?.reason ? ` · ${mistakeReasonLabels[item.decision.reason]}` : ''}
+                </span>
+                <small>{new Date(item.updated_at || item.created_at).toLocaleDateString('zh-CN')}</small>
+              </div>
+              <div className="mistake-title"><MathMarkdown content={item.title || item.summary} /></div>
               <div className="mistake-points">
                 {(item.knowledge_tags?.length ? item.knowledge_tags : item.knowledge_points.map((point) => ({ tag_id: point, tag_name: point, match_type: 'unmatched' as const, confidence: 0 }))).map((tag) => (
                   <Tooltip key={tag.tag_id} title={`${tag.match_type === 'exact' ? '图谱精确匹配' : tag.match_type === 'approximate' ? '图谱近似匹配' : '独立标签'} · 置信度 ${Math.round(tag.confidence * 100)}%`}>
@@ -1971,6 +2152,9 @@ function MistakeBookView({
                 ))}
               </div>
               <p className="mistake-location">{item.location?.chapter || '暂未确定'} · {item.location?.section || '暂未确定'}</p>
+              {item.attempt?.score != null && item.attempt.max_score != null && (
+                <p className="mistake-location">本次作答：{item.attempt.score} / {item.attempt.max_score} 分</p>
+              )}
               {item.attachments?.length ? (
                 <div className="mistake-attachments">
                   {item.attachments.map((attachment) => (
@@ -2003,7 +2187,9 @@ function MistakeBookView({
       ) : <div className="workspace-empty"><Layers3 size={30} /><strong>{mistakes.length ? '当前筛选没有错题' : '错题本还是空的'}</strong><p>{mistakes.length ? '可切换来源或分类查看其他错题。' : '在答疑或出题结果旁点击“加入错题本”，系统会自动识别知识点。'}</p></div>}
       <Modal
         open={Boolean(selectedMistake)}
-        title={selectedMistake?.title || selectedMistake?.summary || '错题详情'}
+        title={selectedMistake
+          ? <div className="mistake-modal-title"><MathMarkdown content={selectedMistake.title || selectedMistake.summary} /></div>
+          : '错题详情'}
         width={860}
         onCancel={() => setSelectedId('')}
         footer={<Button onClick={() => setSelectedId('')}>关闭</Button>}
@@ -2017,6 +2203,10 @@ function MistakeBookView({
                 <Button loading={savingAction === 'title'} onClick={() => void runAction('title', async () => { await updateMistake(studentId, selectedMistake.id, { title: titleDraft.trim() }) }, '错题名称已更新')}>保存名称</Button>
               </div>
               <p>来源：{mistakeSourceLabels[selectedMistake.source] || '用户上传'}</p>
+              <p>加入原因：{selectedMistake.decision?.reason ? mistakeReasonLabels[selectedMistake.decision.reason] : '历史记录未标注'}</p>
+              {selectedMistake.attempt?.score != null && selectedMistake.attempt.max_score != null && (
+                <p>本次作答：{selectedMistake.attempt.score} / {selectedMistake.attempt.max_score} 分</p>
+              )}
               <p>章节：{selectedMistake.location?.chapter || '暂未确定'}；小节：{selectedMistake.location?.section || '暂未确定'}</p>
               <p>建议先复习：{selectedMistake.prerequisites?.length
                 ? selectedMistake.prerequisites.map((item) => `${item.name}（${item.source === 'knowledge_graph' ? '图谱关系' : '章节顺序推断'}）`).join('、')
@@ -2602,6 +2792,8 @@ function StudentPageContent() {
   const [mistakes, setMistakes] = useState<MistakeItem[]>([])
   const [mistakeCategories, setMistakeCategories] = useState<MistakeCategory[]>([])
   const [mistakeAnalysis, setMistakeAnalysis] = useState<MistakeAnalysis>()
+  const [pendingMistakeDrafts, setPendingMistakeDrafts] = useState<MistakeCandidateDraft[]>([])
+  const [savingMistakeDecision, setSavingMistakeDecision] = useState(false)
   const [scheduleItems, setScheduleItems] = useState<ScheduleItem[]>([])
   const studentId = useChatStore((state) => state.studentId)
   const messages = useChatStore((state) => state.messages)
@@ -2807,25 +2999,72 @@ function StudentPageContent() {
     ask('请基于刚才这道题再生成一道同构变式题，保持知识点、拓扑和待求量结构，只调整情境或参数。', 'quiz')
   }
 
-  const saveMistake = async ({ question, answer, agent, attachments }: MistakeDraft) => {
+  const proposeMistakes = (drafts: MistakeCandidateDraft | MistakeCandidateDraft[]) => {
+    const next = (Array.isArray(drafts) ? drafts : [drafts]).filter((draft) => (
+      draft.question.trim() && draft.answer.trim()
+    ))
+    if (!next.length) {
+      toast.warning('当前内容还不能整理为错题')
+      return
+    }
+    setPendingMistakeDrafts(next)
+  }
+
+  const materializeMistakeAttachments = async (
+    draft: MistakeCandidateDraft,
+  ): Promise<MistakeCandidateDraft> => {
+    const attachments = [...draft.attachments]
+    for (const [index, url] of (draft.attachmentUrls || []).slice(0, 5 - attachments.length).entries()) {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error('无法读取作业题目或作答图片')
+      const blob = await response.blob()
+      const suffix = blob.type.includes('png') ? 'png' : blob.type.includes('webp') ? 'webp' : 'jpg'
+      const file = new File([blob], `错题图片-${index + 1}.${suffix}`, { type: blob.type || `image/${suffix}` })
+      attachments.push(await uploadChatAttachment(file, sessionId))
+    }
+    return { ...draft, attachments }
+  }
+
+  const confirmMistakeDecision = async (decision: {
+    reason: MistakeReason
+    categoryId: string
+    title: string
+    photoRetention: MistakePhotoRetention
+  }) => {
+    if (!pendingMistakeDrafts.length || savingMistakeDecision) return
+    setSavingMistakeDecision(true)
     try {
-      const source: MistakeSource = agent === '出题 Agent' ? 'ai_generated' : 'user_uploaded'
-      const item = await addMistake(
-        studentId,
-        sessionId,
-        question,
-        answer,
-        agent,
-        attachments,
-        modelConfig,
-        knowledgeBase,
-        source,
-      )
-      setMistakes((current) => [item, ...current.filter((existing) => existing.id !== item.id)])
+      const saved: MistakeItem[] = []
+      for (const [index, originalDraft] of pendingMistakeDrafts.entries()) {
+        const draft = await materializeMistakeAttachments(originalDraft)
+        const candidate = await createMistakeCandidate(
+          studentId,
+          sessionId,
+          draft,
+          modelConfig,
+          knowledgeBase,
+        )
+        saved.push(await confirmMistakeCandidate(studentId, candidate.id, {
+          ...decision,
+          title: pendingMistakeDrafts.length === 1
+            ? decision.title
+            : originalDraft.title || `错题 ${index + 1}`,
+        }))
+      }
+      setMistakes((current) => [
+        ...saved,
+        ...current.filter((existing) => !saved.some((item) => item.id === existing.id)),
+      ])
       await refreshMistakes()
-      toast.success(`已加入错题本，并识别知识点：${item.knowledge_points.join('、')}`)
+      setPendingMistakeDrafts([])
+      const points = [...new Set(saved.flatMap((item) => item.knowledge_points))].slice(0, 6)
+      toast.success(
+        `已由你确认加入 ${saved.length} 道错题${points.length ? `，关联：${points.join('、')}` : ''}`,
+      )
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '加入错题本失败')
+    } finally {
+      setSavingMistakeDecision(false)
     }
   }
 
@@ -3102,7 +3341,7 @@ function StudentPageContent() {
                   />
                 ) : (
                   <Conversation
-                    onAddMistake={(draft) => void saveMistake(draft)}
+                    onAddMistake={(draft) => proposeMistakes(draft)}
                     onConfirmPhoto={(content) => ask(content, 'answer', true)}
                     onStartPractice={startPracticeAnswer}
                     onGenerateSimilar={generateAnotherPractice}
@@ -3133,7 +3372,10 @@ function StudentPageContent() {
             onDelete={(id) => void removeScheduleItem(id)}
           />
         ) : (
-          <HomeworkView studentId={studentId} />
+          <HomeworkView
+            studentId={studentId}
+            onProposeMistakes={(drafts) => proposeMistakes(drafts)}
+          />
         )}
       </main>
 
@@ -3143,10 +3385,18 @@ function StudentPageContent() {
         catalog={modelCatalog}
       />
 
+      <MistakeConfirmModal
+        drafts={pendingMistakeDrafts}
+        categories={mistakeCategories}
+        saving={savingMistakeDecision}
+        onCancel={() => !savingMistakeDecision && setPendingMistakeDrafts([])}
+        onConfirm={(decision) => void confirmMistakeDecision(decision)}
+      />
+
       <Modal
         open={kbModalOpen}
         onCancel={closeKnowledgeBaseModal}
-        maskClosable={!creatingKnowledgeBase}
+        mask={{ closable: !creatingKnowledgeBase }}
         closable={!creatingKnowledgeBase}
         footer={null}
         title={null}

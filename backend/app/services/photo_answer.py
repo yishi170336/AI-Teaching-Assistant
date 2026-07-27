@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -46,6 +47,65 @@ def normalize_recognition(value: Any) -> dict[str, Any]:
         "has_circuit": has_circuit,
         "uncertain_regions": uncertain_regions,
     }
+
+
+_CONFIRMATION_PREFIX = "上述题目经我确认"
+_CONFIRMATION_LABELS = (
+    "题干",
+    "已知量",
+    "待求量",
+    "特殊条件",
+    "仍不确定项",
+    "不确定项",
+)
+_EMPTY_CONFIRMATION_VALUES = {"", "无", "无额外已知量", "无不确定项"}
+
+
+def merge_confirmed_recognition(
+    recognition: dict[str, Any], message: str
+) -> dict[str, Any]:
+    """Apply the existing confirmation-card text to a visual blueprint."""
+    merged = normalize_recognition(recognition)
+    confirmed_text = _text(message)
+    if not confirmed_text.startswith(_CONFIRMATION_PREFIX):
+        merged["transcription"] = confirmed_text
+        merged["is_complete"] = True
+        return merged
+
+    labels = "|".join(re.escape(label) for label in _CONFIRMATION_LABELS)
+    fields: dict[str, str] = {}
+    for match in re.finditer(
+        rf"(?:^|\n)({labels})：(.*?)(?=\n(?:{labels})：|\Z)",
+        confirmed_text,
+        flags=re.S,
+    ):
+        fields[match.group(1)] = match.group(2).strip()
+
+    if "题干" not in fields:
+        merged["transcription"] = confirmed_text
+        merged["is_complete"] = True
+        return merged
+
+    if "题干" in fields:
+        merged["transcription"] = fields["题干"]
+    for label, key in (
+        ("已知量", "knowns"),
+        ("待求量", "unknowns"),
+        ("特殊条件", "constraints"),
+    ):
+        if label in fields:
+            value = fields[label]
+            merged[key] = [] if value in _EMPTY_CONFIRMATION_VALUES else _items(value)
+
+    uncertain_value = fields.get("仍不确定项", fields.get("不确定项"))
+    if uncertain_value is not None:
+        merged["uncertain_regions"] = (
+            []
+            if uncertain_value in _EMPTY_CONFIRMATION_VALUES
+            else _items(uncertain_value)
+        )
+    merged["is_complete"] = bool(merged["transcription"] and merged["unknowns"])
+    return merged
 
 
 def needs_recognition_confirmation(recognition: dict[str, Any]) -> bool:

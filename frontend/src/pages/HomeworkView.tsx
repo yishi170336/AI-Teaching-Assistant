@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Button, Empty, Input, Modal, Progress, Radio, Spin, Tag, Upload, message } from 'antd'
+import { Button, Checkbox, Empty, Input, Modal, Progress, Radio, Spin, Tag, Upload, message } from 'antd'
 import type { UploadFile } from 'antd'
 import {
   AlertTriangle,
+  BookmarkPlus,
   BookOpenCheck,
   Camera,
   CheckCircle2,
@@ -19,6 +20,8 @@ import {
 import {
   fetchHomeworks,
   Homework,
+  HomeworkGradingItem,
+  MistakeCandidateDraft,
   HomeworkQuestion,
   HomeworkStudentAnswer,
   submitHomework,
@@ -166,8 +169,66 @@ function formatDeadline(value: string) {
   })
 }
 
-function StudentGrading({ homework }: { homework: Homework }) {
+function homeworkMistakeDraft(
+  homework: Homework,
+  item: HomeworkGradingItem,
+): MistakeCandidateDraft | null {
   const submission = homework.submission
+  const question = homework.questions.find((entry) => entry.id === item.question_id)
+  if (!submission || !question) return null
+  const answerImages = (submission.answer_images || []).filter((asset) => (
+    asset.question_id === question.id || asset.question_number === question.number
+  ))
+  const questionImages = [...(question.figures || []), ...(question.layout_images || [])]
+  const reference = [
+    question.answer ? `### 参考答案\n${question.answer}` : '',
+    item.feedback ? `### 批改反馈\n${item.feedback}` : '',
+    item.evidence ? `### 判分依据\n${item.evidence}` : '',
+  ].filter(Boolean).join('\n\n')
+  return {
+    question: question.prompt,
+    answer: reference || '作业批改结果已归档。',
+    agent: '作业批改 Agent',
+    attachments: [],
+    attachmentUrls: [...questionImages, ...answerImages].map((asset) => asset.url).filter(Boolean),
+    source: 'question_bank',
+    questionBankId: `QB:${homework.id}:${question.id}`,
+    sourceRef: {
+      kind: 'homework_question',
+      homework_id: homework.id,
+      submission_id: submission.id,
+      question_id: question.id,
+      question_bank_id: `QB:${homework.id}:${question.id}`,
+    },
+    attempt: {
+      student_answer: item.student_answer,
+      score: item.score,
+      max_score: item.max_score,
+      is_correct: item.is_correct,
+      grading_feedback: item.feedback,
+      evidence: item.evidence,
+      answer_assets: answerImages,
+    },
+    solution: {
+      answer: question.answer || '',
+      explanation: reference,
+      model: homework.grading_model,
+    },
+    suggestedReason: question.question_type === 'calculation' ? 'calculation_error' : 'wrong',
+    title: `${homework.title} · 第 ${question.number} 题`,
+  }
+}
+
+function StudentGrading({
+  homework,
+  onProposeMistakes,
+}: {
+  homework: Homework
+  onProposeMistakes: (drafts: MistakeCandidateDraft[]) => void
+}) {
+  const [selectedQuestionIds, setSelectedQuestionIds] = useState<string[]>([])
+  const submission = homework.submission
+  useEffect(() => setSelectedQuestionIds([]), [homework.id, submission?.id, submission?.updated_at])
   if (!submission) return null
   if (submission.status === 'submitted') {
     return (
@@ -191,6 +252,20 @@ function StudentGrading({ homework }: { homework: Homework }) {
   const grading = submission.grading
   if (!grading) return null
   const percent = grading.max_score ? Math.round((grading.total_score / grading.max_score) * 100) : 0
+  const suggestedItems = grading.items.filter((item) => (
+    !item.is_correct || (item.max_score > 0 && item.score < item.max_score)
+  ))
+  const proposeSelected = () => {
+    const drafts = suggestedItems
+      .filter((item) => selectedQuestionIds.includes(item.question_id))
+      .map((item) => homeworkMistakeDraft(homework, item))
+      .filter((draft): draft is MistakeCandidateDraft => Boolean(draft))
+    if (!drafts.length) {
+      message.info('请先选择要加入错题本的题目')
+      return
+    }
+    onProposeMistakes(drafts)
+  }
   return (
     <section className="student-grade-report">
       <header>
@@ -204,6 +279,17 @@ function StudentGrading({ homework }: { homework: Homework }) {
       <div className="student-grade-items">
         {grading.items.map((item) => (
           <article key={`${item.question_id}-${item.number}`}>
+            {(!item.is_correct || (item.max_score > 0 && item.score < item.max_score)) && (
+              <Checkbox
+                checked={selectedQuestionIds.includes(item.question_id)}
+                aria-label={`选择第 ${item.number} 题加入错题本`}
+                onChange={(event) => setSelectedQuestionIds((current) => (
+                  event.target.checked
+                    ? [...new Set([...current, item.question_id])]
+                    : current.filter((id) => id !== item.question_id)
+                ))}
+              />
+            )}
             <span className={item.is_correct ? 'correct' : 'incorrect'}>
               {item.is_correct ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
             </span>
@@ -212,6 +298,24 @@ function StudentGrading({ homework }: { homework: Homework }) {
           </article>
         ))}
       </div>
+      {suggestedItems.length > 0 && (
+        <div className="homework-mistake-suggestion">
+          <div>
+            <BookmarkPlus size={18} />
+            <span>
+              <strong>{suggestedItems.length} 道题建议复习</strong>
+              <small>系统不会自动加入，请勾选后由你确认。</small>
+            </span>
+          </div>
+          <Button
+            type="primary"
+            disabled={!selectedQuestionIds.length}
+            onClick={proposeSelected}
+          >
+            将已选 {selectedQuestionIds.length} 题加入错题本
+          </Button>
+        </div>
+      )}
       {submission.review && (
         <div className={`student-review-note ${submission.review.passed ? 'passed' : 'pending'}`}>
           {submission.review.passed ? <ShieldCheck size={17} /> : <AlertTriangle size={17} />}
@@ -225,7 +329,13 @@ function StudentGrading({ homework }: { homework: Homework }) {
   )
 }
 
-export default function HomeworkView({ studentId }: { studentId: string }) {
+export default function HomeworkView({
+  studentId,
+  onProposeMistakes,
+}: {
+  studentId: string
+  onProposeMistakes: (drafts: MistakeCandidateDraft[]) => void
+}) {
   const [homeworks, setHomeworks] = useState<Homework[]>([])
   const [loading, setLoading] = useState(true)
   const [detailId, setDetailId] = useState<string | null>(null)
@@ -433,7 +543,7 @@ export default function HomeworkView({ studentId }: { studentId: string }) {
                 <div>{detail.submission.answer_images.map((asset, index) => <a href={asset.url} target="_blank" rel="noreferrer" key={asset.file}><img src={asset.url} alt={`第 ${asset.question_number || '?'} 题答案 ${index + 1}`} /><span>第 {asset.question_number || '?'} 题</span></a>)}</div>
               </section>
             )}
-            <StudentGrading homework={detail} />
+            <StudentGrading homework={detail} onProposeMistakes={onProposeMistakes} />
           </div>
         )}
       </Modal>

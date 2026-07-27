@@ -17,7 +17,7 @@ from uuid import uuid4
 import fitz
 from docx import Document
 from openpyxl import load_workbook
-from PIL import Image
+from PIL import Image, ImageOps
 
 from backend.app.config import settings
 
@@ -40,6 +40,8 @@ class AttachmentStore:
     def __init__(self) -> None:
         self.root = settings.root_dir / "data" / "uploads" / "chat"
         self.root.mkdir(parents=True, exist_ok=True)
+        self.mistake_root = settings.root_dir / "data" / "mistakes" / "assets"
+        self.mistake_root.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def validate_session_id(session_id: str) -> str:
@@ -260,6 +262,118 @@ class AttachmentStore:
 
     def file_for_response(self, session_id: str, attachment_id: str) -> tuple[dict[str, Any], Path]:
         return self._load_meta(session_id, attachment_id)
+
+    async def promote_to_mistake(
+        self,
+        *,
+        session_id: str,
+        attachment_ids: list[str],
+        mistake_id: str,
+        student_id: str,
+        retention: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._promote_to_mistake_sync,
+            session_id=session_id,
+            attachment_ids=attachment_ids,
+            mistake_id=mistake_id,
+            student_id=student_id,
+            retention=retention,
+        )
+
+    def _promote_to_mistake_sync(
+        self,
+        *,
+        session_id: str,
+        attachment_ids: list[str],
+        mistake_id: str,
+        student_id: str,
+        retention: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        if not re.fullmatch(r"[a-f0-9]{32}", mistake_id):
+            raise ValueError("错题标识不合法")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", student_id):
+            raise ValueError("学生标识不合法")
+        if retention not in {"original_and_processed", "processed_only", "text_only"}:
+            raise ValueError("图片保存方式不合法")
+
+        target_dir = self.mistake_root / mistake_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        promoted: list[dict[str, Any]] = []
+        photo_evidence: dict[str, Any] = {
+            "retention": retention,
+            "original_assets": [],
+            "processed_assets": [],
+        }
+        if retention == "text_only":
+            return promoted, photo_evidence
+
+        for attachment_id in attachment_ids[: settings.max_chat_attachments]:
+            meta, file_path = self._load_meta(session_id, attachment_id)
+            suffix = str(meta.get("suffix") or file_path.suffix).lower()
+            base_url = f"/api/mistakes/{mistake_id}/assets"
+            if retention == "original_and_processed":
+                original_name = f"original-{attachment_id}{suffix}"
+                original_path = target_dir / original_name
+                shutil.copy2(file_path, original_path)
+                original_meta = {
+                    "id": f"{mistake_id}:original:{attachment_id}",
+                    "name": str(meta.get("name") or original_name),
+                    "content_type": str(meta.get("content_type") or "application/octet-stream"),
+                    "size": original_path.stat().st_size,
+                    "kind": str(meta.get("kind") or "document"),
+                    "variant": "original",
+                    "url": f"{base_url}/{original_name}?student_id={student_id}",
+                }
+                promoted.append(original_meta)
+                photo_evidence["original_assets"].append(original_meta)
+
+            if str(meta.get("kind")) != "image":
+                continue
+            processed_name = f"processed-{attachment_id}.jpg"
+            processed_path = target_dir / processed_name
+            with Image.open(file_path) as raw_image:
+                image = ImageOps.exif_transpose(raw_image)
+                if image.mode not in {"RGB", "L"}:
+                    image = image.convert("RGB")
+                image = ImageOps.autocontrast(image)
+                image.thumbnail((1800, 1800))
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                image.save(processed_path, format="JPEG", quality=92, optimize=True)
+                width, height = image.size
+            processed_meta = {
+                "id": f"{mistake_id}:processed:{attachment_id}",
+                "name": f"清晰化-{meta.get('name') or processed_name}",
+                "content_type": "image/jpeg",
+                "size": processed_path.stat().st_size,
+                "kind": "image",
+                "variant": "processed",
+                "width": width,
+                "height": height,
+                "processing": [
+                    "exif_orientation",
+                    "deterministic_autocontrast",
+                    "bounded_resize",
+                ],
+                "url": f"{base_url}/{processed_name}?student_id={student_id}",
+            }
+            promoted.append(processed_meta)
+            photo_evidence["processed_assets"].append(processed_meta)
+        return promoted[:10], photo_evidence
+
+    def mistake_asset_path(self, mistake_id: str, filename: str) -> Path:
+        if not re.fullmatch(r"[a-f0-9]{32}", mistake_id):
+            raise ValueError("错题标识不合法")
+        safe_name = Path(filename).name
+        if safe_name != filename or not re.fullmatch(
+            r"(?:original|processed)-[a-f0-9]{32}(?:\.[A-Za-z0-9]+)?", safe_name
+        ):
+            raise ValueError("错题附件名称不合法")
+        path = self.mistake_root / mistake_id / safe_name
+        if not path.is_file():
+            raise FileNotFoundError("错题附件不存在")
+        return path
 
     def list_public(self, session_id: str) -> list[dict[str, Any]]:
         session_dir = self._session_dir(session_id)

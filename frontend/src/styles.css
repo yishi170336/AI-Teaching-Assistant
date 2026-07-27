@@ -611,7 +611,10 @@ button { color: inherit; }
 .mistake-card { position: relative; min-width: 0; padding: 17px; background: #fff; border: 1px solid #dce6e3; border-radius: 14px; box-shadow: 0 6px 22px rgba(34,76,70,.04); }
 .mistake-card-head { display: flex; justify-content: space-between; color: #78908c; font-size: 9px; }
 .mistake-card-head > span { color: #24786f; font-weight: 700; }
-.mistake-card h2 { margin: 9px 0 8px; color: #294f50; font-size: 14px; }
+.mistake-title { margin: 9px 0 8px; color: #294f50; font-size: 14px; font-weight: 700; }
+.mistake-title .math-markdown { color: inherit; font-size: inherit; line-height: 1.38; }
+.mistake-title .math-markdown p, .mistake-modal-title .math-markdown p { margin: 0; }
+.mistake-modal-title .math-markdown { font-size: inherit; line-height: inherit; }
 .mistake-location { margin: -3px 0 10px; color: #78908c; font-size: 9px; }
 .mistake-points { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
 .mistake-attachments { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-bottom: 10px; }
@@ -1273,6 +1276,41 @@ button { color: inherit; }
   .model-pipeline i { display: none; }
   .teacher-question-section, .teacher-submission-section { margin: 10px; }
   .grading-items > div { grid-template-columns: 56px 58px minmax(0, 1fr); }
+  .mistake-confirm-fields { grid-template-columns: 1fr; }
+  .mistake-candidate-list article { padding: 12px; }
+  .homework-mistake-suggestion { align-items: stretch; flex-direction: column; }
+  .homework-mistake-suggestion .ant-btn { width: 100%; }
+}
+
+.mistake-confirm-modal .ant-modal-body { display: flex; flex-direction: column; gap: 16px; }
+.mistake-confirm-intro { display: flex; align-items: flex-start; gap: 11px; padding: 13px 15px; color: #164e48; background: #ecf8f4; border: 1px solid #cce9df; border-radius: 12px; }
+.mistake-confirm-intro > svg { flex: 0 0 auto; margin-top: 2px; }
+.mistake-confirm-intro > div { display: flex; flex-direction: column; gap: 4px; }
+.mistake-confirm-intro strong { font-size: 13px; }
+.mistake-confirm-intro span { color: #52736f; font-size: 11px; line-height: 1.5; }
+.mistake-candidate-list { display: flex; flex-direction: column; gap: 9px; max-height: 310px; overflow-y: auto; }
+.mistake-candidate-list article { padding: 14px 16px; background: #f8faf9; border: 1px solid #e0ebe7; border-radius: 12px; }
+.mistake-candidate-list article > div:first-child { display: flex; gap: 6px; margin-bottom: 7px; }
+.mistake-candidate-list article > strong { display: block; color: #163f3d; font-size: 13px; }
+.mistake-candidate-list article > p { margin: 6px 0 0; color: #647c79; font-size: 11px; line-height: 1.55; }
+.mistake-candidate-images { display: flex; gap: 8px; margin-top: 10px; }
+.mistake-candidate-images img { width: 72px; height: 58px; object-fit: cover; border: 1px solid #d8e6e1; border-radius: 8px; }
+.mistake-confirm-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.mistake-confirm-fields label { display: flex; flex-direction: column; gap: 6px; color: #315b58; font-size: 11px; }
+.mistake-confirm-fields label:first-child:last-child, .mistake-confirm-fields label:has(small) { grid-column: 1 / -1; }
+.mistake-confirm-fields small { color: #78908d; line-height: 1.45; }
+.homework-mistake-suggestion { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 14px; padding: 13px 14px; background: #f1f8f5; border: 1px solid #d6eae3; border-radius: 12px; }
+.homework-mistake-suggestion > div { display: flex; align-items: center; gap: 10px; color: #17675e; }
+.homework-mistake-suggestion > div > span { display: flex; flex-direction: column; gap: 3px; }
+.homework-mistake-suggestion strong { font-size: 12px; }
+.homework-mistake-suggestion small { color: #6b8581; font-size: 10px; }
+.student-grade-items article > .ant-checkbox-wrapper { flex: 0 0 auto; margin-right: 1px; }
+
+@media (max-width: 520px) {
+  .mistake-confirm-fields { grid-template-columns: 1fr; }
+  .mistake-candidate-list article { padding: 12px; }
+  .homework-mistake-suggestion { align-items: stretch; flex-direction: column; }
+  .homework-mistake-suggestion .ant-btn { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

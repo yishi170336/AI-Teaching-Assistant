@@ -7,6 +7,7 @@ from backend.app.agents.workflow import CircuitTutorEngine
 from backend.app.schemas import ChatRequest
 from backend.app.services.photo_answer import (
     evidence_mode,
+    merge_confirmed_recognition,
     needs_recognition_confirmation,
     normalize_recognition,
     recognition_retrieval_text,
@@ -95,6 +96,62 @@ def test_confirmed_transcription_overrides_visual_text_but_keeps_retrieval_hints
     assert result["needs_confirmation"] is False
     assert result["attachment_blueprint"]["transcription"] == state["message"]
     assert result["attachment_blueprint"]["knowledge_points"] == ["欧姆定律"]
+
+
+def test_structured_confirmation_overrides_stale_recognition_fields():
+    engine = object.__new__(CircuitTutorEngine)
+    message = "\n".join(
+        (
+            "上述题目经我确认，以下修订内容优先于图片识别：",
+            "题干：已知电压 U=5V，电阻 R=10Ω，求电流 I。",
+            "已知量：U=5V；R=10Ω",
+            "待求量：电流 I",
+            "特殊条件：直流稳态；忽略导线电阻",
+            "不确定项：无",
+        )
+    )
+    result = asyncio.run(engine._recognition_gate({
+        "scene": "image_answer",
+        "recognition_confirmed": True,
+        "message": message,
+        "attachment_blueprint": _complete_recognition(
+            transcription="已知电压 U=8V，电阻 R=10Ω，求电流 I。",
+            knowns=["U=8V", "R=10Ω"],
+            unknowns=["旧待求量"],
+            constraints=["旧条件"],
+            uncertain_regions=["电压数值模糊"],
+        ),
+    }))
+
+    recognition = result["attachment_blueprint"]
+    assert recognition["transcription"] == "已知电压 U=5V，电阻 R=10Ω，求电流 I。"
+    assert recognition["knowns"] == ["U=5V", "R=10Ω"]
+    assert recognition["unknowns"] == ["电流 I"]
+    assert recognition["constraints"] == ["直流稳态", "忽略导线电阻"]
+    assert recognition["uncertain_regions"] == []
+    assert "8V" not in recognition_retrieval_text(recognition)
+    assert recognition["knowledge_points"] == ["欧姆定律"]
+    assert recognition["topology"] == "电压源与电阻串联"
+    assert recognition["confidence"] == 0.96
+
+
+def test_structured_confirmation_preserves_remaining_uncertainties():
+    recognition = merge_confirmed_recognition(
+        _complete_recognition(uncertain_regions=["旧不确定项"]),
+        "\n".join(
+            (
+                "上述题目经我确认，以下修订内容优先于图片识别：",
+                "题干：已知电阻 R=10Ω，求电流 I。",
+                "已知量：无额外已知量",
+                "待求量：I",
+                "仍不确定项：电源方向；电流参考方向",
+            )
+        ),
+    )
+
+    assert recognition["knowns"] == []
+    assert recognition["unknowns"] == ["I"]
+    assert recognition["uncertain_regions"] == ["电源方向", "电流参考方向"]
 
 
 def test_photo_recognition_uses_separate_visual_client():

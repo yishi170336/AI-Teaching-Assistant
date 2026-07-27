@@ -1,10 +1,14 @@
 import asyncio
+import io
 import json
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
+from backend.app.services.attachments import AttachmentStore
+from backend.app.services.mistake_candidates import MistakeCandidateStore
 from backend.app.services.mistake_book import (
     DEFAULT_CATEGORY_ID,
     MistakeBook,
@@ -345,3 +349,120 @@ def test_mistake_api_round_trip_annotations_and_isolation(tmp_path, monkeypatch)
 
     invalid_source = client.post("/api/mistakes", json={**payload, "source": "forged"})
     assert invalid_source.status_code == 422
+
+
+def test_candidate_requires_explicit_confirmation_before_it_enters_mistake_book(
+    tmp_path, monkeypatch
+):
+    from backend.app import main as main_module
+
+    book = MistakeBook(tmp_path / "mistakes.json")
+    candidates = MistakeCandidateStore(tmp_path / "candidates.json")
+    monkeypatch.setattr(main_module, "mistake_book", book)
+    monkeypatch.setattr(main_module, "mistake_candidates", candidates)
+    monkeypatch.setattr(
+        main_module,
+        "mistake_knowledge",
+        MistakeKnowledgeService(FakeKnowledgeBases(error=True)),
+    )
+
+    async def metadata(_payload):
+        return ["PN结"], "拍照题：PN结"
+
+    async def resolve(_session_id, _attachment_ids):
+        return SimpleNamespace(items=[{
+            "id": "a" * 32,
+            "name": "photo.png",
+            "kind": "image",
+            "url": "/api/attachments/" + "a" * 32,
+        }])
+
+    async def promote(**_kwargs):
+        asset = {
+            "id": "m:processed:a",
+            "name": "清晰化-photo.png",
+            "kind": "image",
+            "url": "/api/mistakes/" + "b" * 32 + "/assets/processed.png",
+        }
+        return [asset], {"retention": "processed_only", "processed_assets": [asset]}
+
+    monkeypatch.setattr(main_module, "_extract_mistake_metadata", metadata)
+    monkeypatch.setattr(main_module.attachments, "resolve", resolve)
+    monkeypatch.setattr(main_module.attachments, "promote_to_mistake", promote)
+    client = TestClient(main_module.app)
+    payload = {
+        "student_id": "student-a",
+        "session_id": "session-a",
+        "question": "PN结为什么具有单向导电性？",
+        "answer": "正反向偏置会改变势垒宽度。",
+        "agent": "答疑 Agent",
+        "knowledge_base": "default",
+        "source": "user_uploaded",
+        "attachment_ids": ["a" * 32],
+        "source_ref": {"kind": "photo"},
+        "recognition": {
+            "transcription": "PN结为什么具有单向导电性？",
+            "confidence": 0.96,
+        },
+    }
+
+    created = client.post("/api/mistake-candidates", json=payload)
+    assert created.status_code == 200
+    candidate_id = created.json()["candidate"]["id"]
+    assert asyncio.run(book.list("student-a")) == []
+
+    confirmed = client.post(
+        f"/api/mistake-candidates/{candidate_id}/confirm",
+        json={
+            "student_id": "student-a",
+            "reason": "unknown",
+            "category_id": "uncategorized",
+            "title": "PN结拍照题",
+            "photo_retention": "processed_only",
+        },
+    )
+    assert confirmed.status_code == 200
+    item = confirmed.json()["mistake"]
+    assert item["decision"]["confirmed_by_user"] is True
+    assert item["decision"]["reason"] == "unknown"
+    assert item["source_ref"]["kind"] == "photo"
+    assert item["photo_evidence"]["recognition"]["confidence"] == 0.96
+    assert item["attachments"][0]["kind"] == "image"
+    assert client.post(
+        f"/api/mistake-candidates/{candidate_id}/confirm",
+        json={
+            "student_id": "student-a",
+            "reason": "unknown",
+            "photo_retention": "processed_only",
+        },
+    ).status_code == 404
+
+
+def test_photo_assets_are_promoted_out_of_chat_session_with_original_untouched(tmp_path):
+    store = AttachmentStore()
+    store.root = tmp_path / "chat"
+    store.mistake_root = tmp_path / "mistakes"
+    store.root.mkdir(parents=True)
+    store.mistake_root.mkdir(parents=True)
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (64, 48), "#d7f0ea").save(image_buffer, format="PNG")
+    public = asyncio.run(store.save(
+        session_id="session-a",
+        filename="question.png",
+        content_type="image/png",
+        data=image_buffer.getvalue(),
+    ))
+
+    promoted, evidence = asyncio.run(store.promote_to_mistake(
+        session_id="session-a",
+        attachment_ids=[public["id"]],
+        mistake_id="b" * 32,
+        student_id="student-a",
+        retention="original_and_processed",
+    ))
+
+    assert len(promoted) == 2
+    assert evidence["retention"] == "original_and_processed"
+    assert (store.root / "session-a" / f"{public['id']}.png").read_bytes() == image_buffer.getvalue()
+    assert (store.mistake_root / ("b" * 32) / f"original-{public['id']}.png").exists()
+    assert (store.mistake_root / ("b" * 32) / f"processed-{public['id']}.jpg").exists()

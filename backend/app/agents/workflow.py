@@ -10,6 +10,23 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Literal, TypedDict
 
 import sympy as sp
+
+# langchain-core 0.3 still reads these legacy root attributes, while newer
+# langchain packages no longer create them. Keep mixed environments usable
+# until both dependencies are upgraded together.
+try:
+    import langchain
+
+    for _legacy_name, _legacy_default in (
+        ("debug", False),
+        ("verbose", False),
+        ("llm_cache", None),
+    ):
+        if not hasattr(langchain, _legacy_name):
+            setattr(langchain, _legacy_name, _legacy_default)
+except ImportError:
+    pass
+
 from langgraph.graph import END, StateGraph
 
 from backend.app.config import settings
@@ -18,6 +35,7 @@ from backend.app.rag.models import RetrievalHit
 from backend.app.services.ollama_client import OllamaClient
 from backend.app.services.photo_answer import (
     evidence_mode,
+    merge_confirmed_recognition,
     needs_recognition_confirmation,
     normalize_recognition,
     recognition_retrieval_text,
@@ -505,6 +523,25 @@ def _detect_quiz_family(text: str) -> str:
         and (has_parallel or has_original_unknowns)
     ):
         return "parallel_series_rl_capacitor_unity_pf"
+    # ── op‑amp square‑wave / triangular‑wave generator ──
+    has_opamp = any(
+        marker in lowered
+        for marker in ("运放", "运算放大器", "集成运放", "opamp", "op-amp", "a1", "a2", "a₁", "a₂")
+    )
+    has_comparator = any(
+        marker in lowered for marker in ("比较器", "滞回", "施密特", "正反馈", "同相输入")
+    )
+    has_integrator = any(
+        marker in lowered for marker in ("积分器", "积分电路", "反相输入", "负反馈")
+    )
+    has_waveform = any(
+        marker in lowered for marker in ("方波", "三角波", "矩形波", "锯齿波", "发生器", "振荡")
+    )
+    if has_opamp and (has_comparator or has_integrator) and has_waveform:
+        return "opamp_comparator_integrator_waveform"
+    # ── generic op‑amp application ──
+    if has_opamp and (has_comparator or has_integrator or "线性区" in lowered or "非线性区" in lowered):
+        return "opamp_region_analysis"
     return ""
 
 
@@ -515,6 +552,19 @@ def _quiz_family_instruction(family: str) -> str:
             "另一个支路为容抗 X_C；已知电源相量、有功功率和总功率因数为 1。"
             "仍须求总电流、RL 支路电流、电容支路电流、X_L、X_C 和电容无功功率。"
             "只允许改变电压、功率、电阻等数值或符号表述；禁止改成串联 RLC、单纯功率因数计算或功率因数校正题。"
+        )
+    if family == "opamp_comparator_integrator_waveform":
+        return (
+            "必须保持原题同构：使用两个运放，A₁ 构成同相输入滞回比较器（正反馈），"
+            "A₂ 构成反相输入积分器（负反馈），组成方波‑三角波发生器。"
+            "只允许改变电阻、电容等元件参数或运放饱和电压值；"
+            "禁止改成单一比较器、单一积分器、RC 振荡器或其他拓扑。"
+        )
+    if family == "opamp_region_analysis":
+        return (
+            "必须围绕运放工作区域（线性区/非线性区）判断出题，涉及虚短/虚断条件、"
+            "正反馈/负反馈对工作区的影响；保持与参考题相同的考察角度（比较器 vs 积分器判别）。"
+            "只允许改变运放编号、反馈元件参数或提问措辞。"
         )
     return "保持原题的电路拓扑、已知量组合和待求量组合，只更换参数或等价表述。"
 
@@ -544,6 +594,25 @@ def _quiz_family_matches(family: str, draft: dict[str, Any]) -> bool:
             "无功功率" in question,
         )
         return topology_ok and givens_ok and sum(requested_groups) >= 4
+    if family == "opamp_comparator_integrator_waveform":
+        topology_ok = (
+            any(marker in question for marker in ("运放", "运算放大器", "集成运放", "A1", "A2", "A₁", "A₂"))
+            and any(marker in question for marker in ("比较器", "滞回", "正反馈"))
+            and any(marker in question for marker in ("积分器", "积分", "负反馈"))
+        )
+        givens_ok = any(
+            marker in question
+            for marker in ("方波", "三角波", "矩形波", "线性区", "非线性区", "饱和")
+        )
+        return topology_ok and givens_ok
+    if family == "opamp_region_analysis":
+        has_opamp = any(
+            marker in question for marker in ("运放", "运算放大器", "集成运放", "A1", "A2", "A₁", "A₂")
+        )
+        has_region = any(
+            marker in question for marker in ("线性区", "非线性区", "虚短", "虚断", "工作区")
+        )
+        return has_opamp and has_region
     return True
 
 
@@ -596,7 +665,13 @@ def _circuit_blueprint_matches(
         for marker in ("串联", "并联", "支路", "节点", "反馈", "共射", "共集", "共基")
         if marker in topology
     )
-    return not topology_markers or all(marker in draft_text for marker in topology_markers)
+    if not topology_markers:
+        return True
+    matched = sum(1 for marker in topology_markers if marker in draft_text)
+    # Require a majority of blueprint topology markers to appear in the draft.
+    # This tolerates minor wording differences (e.g. "节点" omitted) while still
+    # catching wholesale topology changes.
+    return matched >= max(1, len(topology_markers) * 0.5)
 
 
 def _practice_circuit_diagram(state: AgentState) -> dict[str, Any] | None:
@@ -1188,9 +1263,27 @@ class CircuitTutorEngine:
                         reasoning_budget=160,
                         json_mode=True,
                     )
-                except Exception:
+                except Exception as vision_error:
                     answer_client = state.get("llm") or self.ollama
-                    if state.get("scene") != "image_answer" or vision_client is answer_client:
+                    vision_signature = (
+                        getattr(vision_client, "provider", None),
+                        getattr(vision_client, "model", None),
+                        getattr(vision_client, "base_url", None),
+                    )
+                    answer_signature = (
+                        getattr(answer_client, "provider", None),
+                        getattr(answer_client, "model", None),
+                        getattr(answer_client, "base_url", None),
+                    )
+                    same_endpoint = (
+                        any(value is not None for value in vision_signature)
+                        and vision_signature == answer_signature
+                    )
+                    if (
+                        state.get("scene") != "image_answer"
+                        or vision_client is answer_client
+                        or same_endpoint
+                    ):
                         raise
                     await _emit(
                         state,
@@ -1198,12 +1291,17 @@ class CircuitTutorEngine:
                         "Qwen 视觉服务不可用，正在尝试当前所选模型识别图片",
                         "视觉理解 Agent",
                     )
-                    vision_text = await answer_client.chat(
-                        [{"role": "user", "content": prompt, "images": images}],
-                        temperature=0.05,
-                        reasoning_budget=160,
-                        json_mode=True,
-                    )
+                    try:
+                        vision_text = await answer_client.chat(
+                            [{"role": "user", "content": prompt, "images": images}],
+                            temperature=0.05,
+                            reasoning_budget=160,
+                            json_mode=True,
+                        )
+                    except Exception as fallback_error:
+                        raise RuntimeError(
+                            f"Qwen 视觉服务失败：{vision_error}；当前模型回退也失败：{fallback_error}"
+                        ) from fallback_error
                 raw_vision = _json_object(vision_text)
                 if state.get("scene") == "quiz_grade":
                     transcription = str(raw_vision.get("transcription", "")).strip()
@@ -1229,7 +1327,7 @@ class CircuitTutorEngine:
                     or state.get("mode") == "quiz"
                 ):
                     raise RuntimeError(
-                        "题目图片识别失败。请配置 Qwen 视觉模型或检查现有配置后重试。"
+                        f"题目图片识别失败：{exc}。请配置 Qwen 视觉模型，并检查 API 地址、网络和模型权限后重试。"
                     ) from exc
                 text_parts.append(
                     f"[图片或文档页面已附加；预识别失败：{exc}。请在最终回答中直接读取附件。]"
@@ -1246,8 +1344,7 @@ class CircuitTutorEngine:
         if state.get("recognition_confirmed"):
             # The user's edited transcription is authoritative. Visual topology and
             # knowledge points remain retrieval hints only.
-            recognition["transcription"] = state["message"].strip()
-            recognition["is_complete"] = True
+            recognition = merge_confirmed_recognition(recognition, state["message"])
             return {
                 "attachment_blueprint": recognition,
                 "needs_confirmation": False,
@@ -1880,9 +1977,30 @@ class CircuitTutorEngine:
             "正弦稳态", "交流电路", "相量", "复阻抗", "阻抗", "感抗", "容抗", "功率因数",
             "有功功率", "无功功率", "视在功率", "复功率", "RLC", "谐振", "功率因数校正",
             "欧姆定律", "基尔霍夫电流定律", "KCL", "基尔霍夫电压定律", "KVL", "戴维南", "诺顿",
+            "运算放大器", "运放", "集成运放", "比较器", "滞回比较器", "施密特触发器",
+            "积分器", "微分器", "方波发生器", "三角波发生器", "正弦波振荡器", "振荡器",
+            "同相输入", "反相输入", "正反馈", "负反馈", "虚短", "虚断", "线性区", "非线性区", "饱和区",
         )
         matched = [point for point in known_points if point.lower() in message.lower()]
         knowledge_point = "、".join(dict.fromkeys([*recognized_points, *matched]))
+        # If the blueprint component types hint at an op‑amp circuit but
+        # knowledge_point is still missing Chinese terms, inject them so
+        # downstream fallback can route to the right variant family.
+        if isinstance(blueprint, dict) and blueprint.get("has_circuit"):
+            _bp_components = _string_list(blueprint.get("component_types"), 12)
+            _bp_lowered = " ".join(_bp_components).lower()
+            _inferred: list[str] = []
+            if any(alias in _bp_lowered for alias in ("运放", "运算放大器", "op amp", "op-amp")):
+                _inferred.append("运算放大器")
+            if any(alias in _bp_lowered for alias in ("比较器", "comparator")):
+                _inferred.append("比较器")
+            if any(alias in _bp_lowered for alias in ("积分器", "integrator")):
+                _inferred.append("积分器")
+            if _inferred:
+                knowledge_point = "、".join(dict.fromkeys([
+                    *knowledge_point.split("、"),
+                    *_inferred,
+                ])).strip("、")
         if not knowledge_point:
             recognized_components = (
                 _string_list(blueprint.get("component_types"), 8)
@@ -1973,7 +2091,37 @@ class CircuitTutorEngine:
             and circuit_blueprint.get("has_circuit")
             and state.get("attachment_images")
         )
-        prompt = (
+
+        if has_original_circuit:
+            # The original circuit image will be shown alongside the question.
+            # The LLM only needs to vary the numerical parameters — no need to
+            # re-describe a topology that the image already communicates.
+            prompt = (
+                "你是大学电路命题教师。原题电路图将会原样展示在新题旁边，你只需生成题干文字。\n\n"
+                "核心规则：\n"
+                "1. 题干开头用「如图所示电路」引用原图，不要再描述电路结构。\n"
+                "2. 仅更换数值参数（电压、电阻、电容、频率等），保持元件连接关系不变。\n"
+                "3. 已知量组合和待求量组合必须与原题一致，只改变具体数值。\n"
+                "4. 新题必须是带明确数值和单位的计算题。\n\n"
+                "只输出合法 JSON，不要 Markdown。字段：question_type, question, question_stem, question_parts, "
+                "knowledge_point, difficulty, solution, solution_steps, answer, answer_items, common_mistakes, "
+                "topology_signature, component_types, sympy_expression, sympy_expected。\n"
+                "question 是完整题干（以「如图所示电路」开头）；question_stem 不含分项设问；\n"
+                "question_parts 是分项设问的 JSON 字符串数组；solution_steps 至少 3 项；\n"
+                "answer_items 与 question_parts 一一对应；common_mistakes 至少 1 项。\n"
+                "question_type 固定为 numeric。sympy_expression 只能含数字、+ - * / **、()、sqrt、pi、Rational，禁止单位和变量。\n"
+                "solution 中公式用 $...$ 或 $$...$$。\n\n"
+                f"目标知识点：{state['knowledge_point']}\n"
+                f"学生原始要求：{state['message']}\n"
+                f"本轮参考原题：\n{state.get('reference_question') or state['message']}\n"
+                f"原题电路蓝图（含识别到的已知量和待求量）：\n{json.dumps(circuit_blueprint, ensure_ascii=False)}\n"
+                f"结构家族：{state.get('quiz_family') or '未识别'}\n"
+                f"同构硬约束：{_quiz_family_instruction(state.get('quiz_family', ''))}\n"
+                f"多样化编号：{state.get('variation_seed', 0)}（据此改变参数值）\n"
+                f"本会话最近已生成题目（禁止重复）：{json.dumps(recent_questions, ensure_ascii=False)}"
+            )
+        else:
+            prompt = (
             "你是大学电路命题教师。这里的‘同类型’首先指电路拓扑、已知量组合、特殊条件和待求量组合相同，"
             "其次才是知识点相同。必须依据原题蓝图生成同构新题，不得仅凭RLC等宽泛知识点自由换题。"
             "必须使用下方课程知识库证据校准公式、定律适用条件、符号和单位；教材证据只用于约束命题，"
@@ -2073,12 +2221,23 @@ class CircuitTutorEngine:
                 "method": question_type,
                 "message": "生成题与原题的电路拓扑、已知量或待求量结构不一致",
             }
-        if not _circuit_blueprint_matches(state.get("attachment_blueprint"), draft):
-            return {
-                "passed": False,
-                "method": question_type,
-                "message": "生成题未保持原电路图的元件类型或串并联/支路结构",
-            }
+        # When the original circuit image is reused alongside the question,
+        # the image is the authoritative topology reference. There is no need
+        # to verify that the generated text re-describes the circuit — the
+        # question only needs to reference "如图所示电路" and vary parameters.
+        blueprint = state.get("attachment_blueprint")
+        has_reusable_image = bool(
+            isinstance(blueprint, dict)
+            and blueprint.get("has_circuit")
+            and state.get("attachment_images")
+        )
+        if not has_reusable_image:
+            if not _circuit_blueprint_matches(blueprint, draft):
+                return {
+                    "passed": False,
+                    "method": question_type,
+                    "message": "生成题未保持原电路图的元件类型或串并联/支路结构",
+                }
         if question_type == "numeric":
             question = str(draft.get("question", "")).strip()
             has_number = bool(re.search(r"\d+(?:\.\d+)?", question))
@@ -2203,12 +2362,10 @@ class CircuitTutorEngine:
             and blueprint.get("has_circuit")
             and state.get("attachment_images")
         )
+
         if not verification.get("passed"):
-            if has_original_circuit:
-                raise RuntimeError(
-                    "未能生成与原电路图拓扑一致且可验算的变式题。请确认识别结果，或重新上传更清晰的电路图。"
-                )
             recent_questions = _recent_generated_questions(state.get("history", []))
+            # ── phase 1: deterministic fallback ──
             for offset in range(29, 69):
                 candidate = self._fallback_quiz(
                     state.get("knowledge_point", "电路基础"),
@@ -2221,6 +2378,46 @@ class CircuitTutorEngine:
                 draft, verification = candidate, candidate_verification
                 if candidate_verification.get("passed"):
                     break
+
+            # ── phase 2: still failing → retry the LLM with explicit failure context ──
+            if not verification.get("passed"):
+                await _emit(state, "repair", "自动返工：将失败原因反馈给 AI 重新生成", "验算 Agent")
+                llm = state.get("llm") or self.ollama
+                failure_detail = verification.get("message", "校验未通过")
+                retry_prompt = (
+                    "上一次生成的题目未通过校验，原因：" + failure_detail + "\n\n"
+                    "请根据原题的电路拓扑、已知量和待求量重新生成一道同类型数值题。"
+                    "只更换参数值，保持电路结构完全不变。"
+                    + ("题干用「如图所示电路」开头，不要再描述电路。" if has_original_circuit else "题干要完整描述电路拓扑。")
+                    + "\n只输出合法 JSON，字段同前。必须给出可验算的 sympy_expression。"
+                )
+                try:
+                    retry_message: dict[str, Any] = {"role": "user", "content": retry_prompt}
+                    llm_draft = _json_object(
+                        await llm.chat([retry_message], temperature=0.45, json_mode=True)
+                    )
+                    if llm_draft.get("question"):
+                        llm_verification = self._verify_draft(state, llm_draft)
+                        if llm_verification.get("passed"):
+                            draft, verification = llm_draft, llm_verification
+                        elif llm_verification.get("method") == "sympy" and not llm_verification.get("passed"):
+                            # SymPy mismatch only — still usable, just flag it
+                            draft, verification = llm_draft, llm_verification
+                except Exception:
+                    pass  # LLM retry failed, continue with whatever we have
+
+            # ── phase 3: build badge from final state — never throw ──
+            if not verification.get("passed") and not draft.get("question"):
+                # Truly nothing worked — generate a minimal same-domain question
+                draft = self._fallback_quiz(
+                    state.get("knowledge_point", "电路基础"),
+                    state.get("variation_seed", 0) + 99,
+                    state.get("quiz_type", "numeric"),
+                    recent_questions,
+                    state.get("quiz_family", ""),
+                )
+                verification = {"passed": False, "method": "fallback", "message": "自动生成，请人工复核"}
+
         badge = (
             "✓ 已通过 SymPy 数值验算"
             if verification.get("method") == "sympy" and verification.get("passed")
@@ -2495,6 +2692,68 @@ class CircuitTutorEngine:
                     "sympy_expected": f"{power_factor:.8f}",
                 },
             ]
+            return _pick_variant(variants, variation_seed, avoid_questions)
+
+        if any(
+            word in topic
+            for word in (
+                "运算放大器", "运放", "集成运放", "比较器", "滞回比较器", "施密特触发器",
+                "积分器", "微分器", "方波发生器", "三角波发生器", "正弦波振荡器", "振荡器",
+                "同相输入", "反相输入", "正反馈", "负反馈", "虚短", "虚断", "线性区", "非线性区",
+                "op amp", "op-amp", "comparator", "integrator", "waveform", "schmitt",
+                "square wave", "triangle wave", "nonlinear", "linear region",
+            )
+        ):
+            variants: list[dict[str, Any]] = []
+            for vcc_val, r1_val, r2_val, r4_val, c_val, freq_hz in (
+                (12, 10e3, 20e3, 10e3, 0.1e-6, 500),
+                (15, 10e3, 15e3, 10e3, 0.047e-6, 798),
+                (12, 15e3, 22e3, 10e3, 0.022e-6, 1667),
+            ):
+                v_sat = vcc_val - 1
+                v_th = v_sat * r1_val / (r1_val + r2_val)
+                period = 4 * r4_val * c_val * r1_val / r2_val
+                freq = 1 / period
+                variants.append({
+                    "question_type": "numeric",
+                    "question": (
+                        "方波‑三角波发生器由两个集成运放组成：A₁ 构成同相输入滞回比较器，"
+                        f"其正反馈支路由 $R_1={r1_val/1e3:.0f}\\,\\mathrm{{k}}\\Omega$ 和 $R_2={r2_val/1e3:.0f}\\,\\mathrm{{k}}\\Omega$ 串联构成；"
+                        "A₂ 构成反相输入积分器，"
+                        f"其负反馈支路由输入电阻 $R_4={r4_val/1e3:.0f}\\,\\mathrm{{k}}\\Omega$ 与跨接在输出端和反相输入端之间的反馈电容 $C={c_val*1e9:.0f}\\,\\mathrm{{nF}}$ 构成，"
+                        f"运放饱和输出电压约为 $\\pm {v_sat:.0f}\\,\\mathrm{{V}}$。"
+                        "试判断 A₁ 和 A₂ 分别工作在什么区域（线性区/非线性区），并计算输出方波和三角波的频率。"
+                    ),
+                    "topology_signature": (
+                        "两个运放A1和A2组成闭环，A1正反馈支路R1与R2串联构成同相输入滞回比较器，"
+                        "A2负反馈支路R4与反馈电容C构成反相输入积分器，A1输出节点接A2输入"
+                    ),
+                    "component_types": ["运放", "电阻", "电容"],
+                    "knowledge_point": topic,
+                    "difficulty": "进阶",
+                    "solution": (
+                        "A₁ 滞回比较器具有正反馈，输出在饱和值之间跳变，虚短不成立 → **非线性区**。"
+                        "A₂ 积分器通过负反馈实现线性积分，虚短成立 → **线性区**。"
+                        f"滞回比较器阈值 $V_{{\\mathrm{{TH}}}}=\\pm\\frac{{R_1}}{{R_1+R_2}}V_{{\\mathrm{{sat}}}}"
+                        f"=\\pm\\frac{{{r1_val/1e3:.0f}}}{{{r1_val/1e3:.0f}+{r2_val/1e3:.0f}}}\\times {v_sat:.0f}"
+                        f"=\\pm{v_th:.1f}\\,\\mathrm{{V}}$。"
+                        f"积分器充放电时间 $T=4R_4 C\\frac{{R_1}}{{R_2}}"
+                        f"=4\\times{r4_val/1e3:.0f}\\times10^3\\times{c_val*1e9:.0f}\\times10^{{-9}}"
+                        f"\\times\\frac{{{r1_val/1e3:.0f}}}{{{r2_val/1e3:.0f}}}"
+                        f"={period*1e3:.2f}\\,\\mathrm{{ms}}$，"
+                        f"频率 $f=1/T\\approx{freq:.0f}\\,\\mathrm{{Hz}}$。"
+                    ),
+                    "answer": (
+                        f"A₁ 工作在**非线性区**，A₂ 工作在**线性区**。"
+                        f"输出方波和三角波的频率约为 ${freq:.0f}\\,\\mathrm{{Hz}}$。"
+                    ),
+                    "common_mistakes": (
+                        "把滞回比较器与负反馈放大器混淆，认为 A₁ 也工作在线性区；"
+                        "计算频率时遗漏滞回比较器阈值分压比对积分时间的影响。"
+                    ),
+                    "sympy_expression": f"1/(4*{r4_val}*{c_val}*{r1_val}/{r2_val})",
+                    "sympy_expected": f"{freq:.6f}",
+                })
             return _pick_variant(variants, variation_seed, avoid_questions)
 
         if any(word in topic for word in ("稳压", "反向击穿")):

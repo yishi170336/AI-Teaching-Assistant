@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -184,6 +184,99 @@ class MistakeCreateRequest(BaseModel):
         if self.question_bank_id and self.source not in {None, "question_bank"}:
             raise ValueError("题库题目标识与错题来源不一致")
         return self
+
+
+class MistakeSourceRef(BaseModel):
+    kind: Literal["photo", "homework_question", "question_bank", "ai_practice", "chat"] = "chat"
+    homework_id: str = Field(default="", max_length=128)
+    submission_id: str = Field(default="", max_length=128)
+    question_id: str = Field(default="", max_length=128)
+    question_bank_id: str = Field(default="", max_length=128)
+    practice_id: str = Field(default="", max_length=128)
+
+    @field_validator(
+        "homework_id", "submission_id", "question_id", "question_bank_id", "practice_id"
+    )
+    @classmethod
+    def safe_source_reference(cls, value: str) -> str:
+        value = value.strip()
+        if value and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value):
+            raise ValueError("来源标识不合法")
+        return value
+
+
+class MistakeAttemptSnapshot(BaseModel):
+    student_answer: str = Field(default="", max_length=40000)
+    score: float | None = None
+    max_score: float | None = None
+    is_correct: bool | None = None
+    grading_feedback: str = Field(default="", max_length=12000)
+    evidence: str = Field(default="", max_length=12000)
+    answer_attachment_ids: list[str] = Field(default_factory=list, max_length=5)
+    answer_assets: list[dict[str, Any]] = Field(default_factory=list, max_length=10)
+
+    @field_validator("student_answer", "grading_feedback", "evidence")
+    @classmethod
+    def strip_attempt_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("answer_attachment_ids")
+    @classmethod
+    def safe_answer_attachment_ids(cls, values: list[str]) -> list[str]:
+        for value in values:
+            if not re.fullmatch(r"[a-f0-9]{32}", value):
+                raise ValueError("作答附件标识不合法")
+        return list(dict.fromkeys(values))
+
+
+class MistakeSolutionSnapshot(BaseModel):
+    answer: str = Field(default="", max_length=40000)
+    explanation: str = Field(default="", max_length=40000)
+    model: str = Field(default="", max_length=128)
+    verification: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("answer", "explanation", "model")
+    @classmethod
+    def strip_solution_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class MistakeCandidateCreateRequest(MistakeCreateRequest):
+    source_ref: MistakeSourceRef = Field(default_factory=MistakeSourceRef)
+    attempt: MistakeAttemptSnapshot = Field(default_factory=MistakeAttemptSnapshot)
+    solution: MistakeSolutionSnapshot = Field(default_factory=MistakeSolutionSnapshot)
+    recognition: dict[str, Any] = Field(default_factory=dict)
+
+
+class MistakeCandidateConfirmRequest(BaseModel):
+    student_id: str = Field(min_length=1, max_length=96)
+    reason: Literal["wrong", "unknown", "concept_gap", "calculation_error", "bookmark"]
+    category_id: str = Field(default="uncategorized", min_length=1, max_length=96)
+    title: str = Field(default="", max_length=120)
+    photo_retention: Literal[
+        "original_and_processed", "processed_only", "text_only"
+    ] = "original_and_processed"
+
+    @field_validator("student_id")
+    @classmethod
+    def safe_candidate_student_id(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", value):
+            raise ValueError("学生标识不合法")
+        return value
+
+    @field_validator("category_id")
+    @classmethod
+    def safe_candidate_category_id(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"(?:uncategorized|[a-f0-9]{32})", value):
+            raise ValueError("错题分类标识不合法")
+        return value
+
+    @field_validator("title")
+    @classmethod
+    def strip_candidate_title(cls, value: str) -> str:
+        return value.strip()
 
 
 class MistakeUpdateRequest(BaseModel):
