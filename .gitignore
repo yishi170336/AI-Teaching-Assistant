@@ -12,6 +12,8 @@ data/vector_stores/*/*.tmp
 data/uploads/
 data/session_memory/
 data/mistake_book*.json
+data/mistake_candidates.json
+data/mistakes/
 data/student_schedule.json
 data/presentations/
 tmp/

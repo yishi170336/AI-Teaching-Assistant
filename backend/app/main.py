@@ -6,10 +6,12 @@ import logging
 import mimetypes
 import re
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from time import perf_counter
 from typing import Any, AsyncIterator
+from uuid import uuid4
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -17,7 +19,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.app.agents.workflow import CircuitTutorEngine, _contextual_attachment_ids
+from backend.app.agents.workflow import (
+    CircuitTutorEngine,
+    _contextual_attachment_ids,
+    _history_recognition_for_attachments,
+)
 from backend.app.config import settings
 from backend.app.rag.manager import KnowledgeBaseManager
 from backend.app.rag.multimodal import BuildModelConfig
@@ -29,6 +35,8 @@ from backend.app.schemas import (
     KnowledgeBaseRebuildRequest,
     LearningPlanPptRequest,
     MistakeAnnotationRequest,
+    MistakeCandidateConfirmRequest,
+    MistakeCandidateCreateRequest,
     MistakeCategoryRequest,
     MistakeCreateRequest,
     MistakeUpdateRequest,
@@ -40,6 +48,7 @@ from backend.app.services.ollama_client import OllamaClient
 from backend.app.services.openai_compatible_client import OpenAICompatibleClient
 from backend.app.services.attachments import ALLOWED_ATTACHMENT_SUFFIXES, AttachmentStore
 from backend.app.services.mistake_book import MistakeBook, related_mistake_context
+from backend.app.services.mistake_candidates import MistakeCandidateStore
 from backend.app.services.mistake_insights import MistakeKnowledgeService
 from backend.app.services.schedule import StudentSchedule
 from backend.app.services.learning_plan_ppt import (
@@ -92,6 +101,7 @@ knowledge_bases = KnowledgeBaseManager()
 engine = CircuitTutorEngine(ollama, knowledge_bases)
 attachments = AttachmentStore()
 mistake_book = MistakeBook()
+mistake_candidates = MistakeCandidateStore()
 mistake_knowledge = MistakeKnowledgeService(knowledge_bases)
 student_schedule = StudentSchedule()
 homework_store = HomeworkStore()
@@ -480,6 +490,155 @@ async def list_mistakes(student_id: str) -> dict[str, Any]:
     }
 
 
+@app.post("/api/mistake-candidates")
+async def create_mistake_candidate(
+    payload: MistakeCandidateCreateRequest,
+) -> dict[str, Any]:
+    (knowledge_points, summary), resolved = await asyncio.gather(
+        _extract_mistake_metadata(payload),
+        attachments.resolve(payload.session_id, payload.attachment_ids),
+    )
+    alignment = await asyncio.to_thread(
+        mistake_knowledge.align, payload.knowledge_base, knowledge_points
+    )
+    candidate = await mistake_candidates.create(
+        {
+            "student_id": payload.student_id,
+            "session_id": payload.session_id,
+            "question": payload.question,
+            "answer": payload.answer,
+            "agent": payload.agent,
+            "knowledge_base": payload.knowledge_base,
+            "knowledge_points": knowledge_points,
+            "summary": summary,
+            "source": payload.source,
+            "question_bank_id": payload.question_bank_id,
+            "category_id": payload.category_id,
+            "messages": [message.model_dump() for message in payload.messages],
+            "attachment_ids": payload.attachment_ids,
+            "attachments": resolved.items,
+            "knowledge_tags": alignment["knowledge_tags"],
+            "location": alignment["location"],
+            "prerequisites": alignment["prerequisites"],
+            "source_ref": payload.source_ref.model_dump(),
+            "attempt": payload.attempt.model_dump(),
+            "solution": payload.solution.model_dump(),
+            "recognition": payload.recognition,
+        }
+    )
+    return {"candidate": candidate}
+
+
+@app.post("/api/mistake-candidates/{candidate_id}/confirm")
+async def confirm_mistake_candidate(
+    candidate_id: str, payload: MistakeCandidateConfirmRequest
+) -> dict[str, Any]:
+    _validate_mistake_id(candidate_id)
+    candidate = await mistake_candidates.get(payload.student_id, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="错题候选不存在或已经处理")
+
+    existing_items = await mistake_book.list(payload.student_id)
+    normalized_question = str(candidate.get("question", "")).strip()
+    normalized_answer = str(candidate.get("answer", "")).strip()
+    comparable_question = "\n".join(
+        line.rstrip() for line in normalized_question.splitlines()
+    ).strip()
+    comparable_answer = "\n".join(
+        line.rstrip() for line in normalized_answer.splitlines()
+    ).strip()
+    duplicate = next(
+        (
+            item
+            for item in existing_items
+            if "\n".join(
+                line.rstrip()
+                for line in str(item.get("question") or item.get("content", "")).strip().splitlines()
+            ).strip()
+            == comparable_question
+            and (
+                "\n".join(
+                    line.rstrip()
+                    for line in str(item.get("answer", "")).strip().splitlines()
+                ).strip()
+                == comparable_answer
+                or not item.get("answer")
+            )
+        ),
+        None,
+    )
+    mistake_id = str(duplicate.get("id")) if duplicate else uuid4().hex
+    attachment_ids = list(
+        dict.fromkeys(
+            [
+                *candidate.get("attachment_ids", []),
+                *candidate.get("attempt", {}).get("answer_attachment_ids", []),
+            ]
+        )
+    )
+    try:
+        promoted, promoted_evidence = await attachments.promote_to_mistake(
+            session_id=str(candidate["session_id"]),
+            attachment_ids=attachment_ids,
+            mistake_id=mistake_id,
+            student_id=payload.student_id,
+            retention=payload.photo_retention,
+        )
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    decision = {
+        "reason": payload.reason,
+        "confirmed_by_user": True,
+        "confirmed_at": datetime.now(timezone.utc).isoformat(),
+        "photo_retention": payload.photo_retention,
+    }
+    photo_evidence = {
+        **promoted_evidence,
+        "recognition": candidate.get("recognition", {}),
+        "user_corrected_transcription": normalized_question,
+    }
+    try:
+        item = await mistake_book.add(
+            student_id=payload.student_id,
+            session_id=str(candidate["session_id"]),
+            question=normalized_question,
+            answer=normalized_answer,
+            agent=str(candidate.get("agent") or "学习 Agent"),
+            knowledge_points=list(candidate.get("knowledge_points", [])),
+            summary=payload.title or str(candidate.get("summary", "")),
+            attachments=promoted,
+            knowledge_base=str(candidate.get("knowledge_base") or "default"),
+            source=str(candidate.get("source") or ""),
+            question_bank_id=str(candidate.get("question_bank_id") or ""),
+            knowledge_tags=list(candidate.get("knowledge_tags", [])),
+            location=dict(candidate.get("location", {})),
+            prerequisites=list(candidate.get("prerequisites", [])),
+            messages=list(candidate.get("messages", [])),
+            category_id=payload.category_id,
+            mistake_id=mistake_id,
+            candidate_id=candidate_id,
+            source_ref=dict(candidate.get("source_ref", {})),
+            decision=decision,
+            attempt=dict(candidate.get("attempt", {})),
+            photo_evidence=photo_evidence,
+            solution=dict(candidate.get("solution", {})),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await mistake_candidates.mark_confirmed(payload.student_id, candidate_id, item["id"])
+    return {"ok": True, "mistake": item}
+
+
+@app.delete("/api/mistake-candidates/{candidate_id}")
+async def dismiss_mistake_candidate(candidate_id: str, student_id: str) -> dict[str, Any]:
+    _validate_student_id(student_id)
+    _validate_mistake_id(candidate_id)
+    if not await mistake_candidates.dismiss(student_id, candidate_id):
+        raise HTTPException(status_code=404, detail="错题候选不存在或已经处理")
+    return {"ok": True}
+
+
 @app.post("/api/mistakes")
 async def add_mistake(payload: MistakeCreateRequest) -> dict[str, Any]:
     (knowledge_points, summary), resolved = await asyncio.gather(
@@ -511,6 +670,28 @@ async def add_mistake(payload: MistakeCreateRequest) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "mistake": item}
+
+
+@app.get("/api/mistakes/{mistake_id}/assets/{filename}")
+async def mistake_asset(
+    mistake_id: str, filename: str, student_id: str
+) -> FileResponse:
+    _validate_student_id(student_id)
+    _validate_mistake_id(mistake_id)
+    if await mistake_book.get(student_id, mistake_id) is None:
+        raise HTTPException(status_code=404, detail="错题不存在")
+    try:
+        path = attachments.mistake_asset_path(mistake_id, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+        filename=path.name,
+        content_disposition_type="inline",
+    )
 
 
 @app.get("/api/mistakes/categories")
@@ -739,11 +920,46 @@ def select_model_client(payload: ChatRequest) -> tuple[Any, bool]:
     )
 
 
+def select_vision_client(payload: ChatRequest, selected_client: Any) -> tuple[Any, bool]:
+    """Prefer the configured Qwen vision model without changing the answer model."""
+    qwen_api_key = (
+        payload.vision_api_key
+        or (payload.api_key if payload.model_provider == "qwen" else "")
+        or settings.qwen_api_key
+    )
+    if not qwen_api_key:
+        if payload.model_provider == "deepseek":
+            raise ValueError(
+                "拍照答题需要配置 Qwen 视觉模型 API Key；图片识别不能使用当前仅支持文本的 DeepSeek 模型，"
+                "请在“模型设置 → 图片识别”中完成配置。"
+            )
+        return selected_client, False
+    qwen_base_url = (
+        payload.vision_base_url
+        or (
+            payload.base_url
+            if payload.model_provider == "qwen" and payload.api_key and payload.base_url
+            else settings.qwen_base_url
+        )
+    )
+    return (
+        OpenAICompatibleClient(
+            provider="qwen",
+            model=payload.vision_model or settings.qwen_vision_model,
+            api_key=qwen_api_key,
+            base_url=qwen_base_url,
+        ),
+        True,
+    )
+
+
 @app.post("/api/chat")
 async def chat(payload: ChatRequest) -> StreamingResponse:
     async def event_stream() -> AsyncIterator[str]:
         selected_client: Any | None = None
         close_selected_client = False
+        vision_client: Any | None = None
+        close_vision_client = False
         try:
             selected_client, close_selected_client = select_model_client(payload)
             selected_provider = payload.model_provider
@@ -763,7 +979,9 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
             )
             history = await memory.recent(payload.session_id)
             effective_message = payload.message or (
-                "请根据附件中的原题生成一道同类型新题。"
+                "请批改我上传的作答，并指出具体错误和改进方法。"
+                if payload.scene == "quiz_grade"
+                else "请根据附件中的原题生成一道同类型新题。"
                 if payload.mode == "quiz"
                 else "请识别并解答附件中的电路题。"
             )
@@ -777,6 +995,13 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 payload.attachment_ids or inherited_attachment_ids,
             )
             attachment_names = [item["name"] for item in resolved.items]
+            reusable_recognition = (
+                _history_recognition_for_attachments(history, resolved.items)
+                if payload.mode == "quiz"
+                else {}
+            )
+            if resolved.images and not reusable_recognition:
+                vision_client, close_vision_client = select_vision_client(payload, selected_client)
             await memory.append(
                 payload.session_id,
                 "user",
@@ -784,6 +1009,8 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 {
                     "attachments": resolved.items if payload.attachment_ids else [],
                     "knowledge_base": payload.knowledge_base,
+                    "scene": payload.scene,
+                    "recognition_confirmed": payload.recognition_confirmed,
                 },
             )
             event_queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
@@ -799,12 +1026,16 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 engine.run(
                     message=effective_message,
                     mode=payload.mode,
+                    scene=payload.scene,
+                    recognition_confirmed=payload.recognition_confirmed,
                     knowledge_base=payload.knowledge_base,
                     history=history,
                     attachment_text=resolved.text,
                     attachment_images=resolved.images,
                     attachment_names=attachment_names,
+                    attachment_items=resolved.items,
                     llm=selected_client,
+                    vision_llm=vision_client or selected_client,
                     on_status=on_status,
                     on_delta=on_delta,
                 )
@@ -836,6 +1067,12 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     "sources": persisted_sources,
                     "cited_sources": persisted_cited_sources,
                     "verification": result.verification,
+                    "recognition": result.recognition,
+                    "needs_confirmation": result.needs_confirmation,
+                    "evidence_mode": result.evidence_mode,
+                    "review": result.review,
+                    "practice": result.practice,
+                    "grading": result.grading,
                 },
             )
             if not streamed_answer:
@@ -853,6 +1090,12 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     "knowledge_base": payload.knowledge_base,
                     "sources": persisted_sources,
                     "cited_sources": persisted_cited_sources,
+                    "recognition": result.recognition,
+                    "needs_confirmation": result.needs_confirmation,
+                    "evidence_mode": result.evidence_mode,
+                    "review": result.review,
+                    "practice": result.practice,
+                    "grading": result.grading,
                 },
             )
             yield sse("done", {"ok": True})
@@ -862,6 +1105,8 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
             logger.exception("Chat workflow failed")
             yield sse("error", {"message": str(exc)})
         finally:
+            if close_vision_client and vision_client is not None:
+                await vision_client.close()
             if close_selected_client and selected_client is not None:
                 await selected_client.close()
 

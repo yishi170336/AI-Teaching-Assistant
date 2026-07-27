@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -11,12 +11,17 @@ class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=96)
     message: str = Field(default="", max_length=8000)
     mode: Literal["auto", "answer", "quiz", "plan"] = "auto"
+    scene: Literal["chat", "image_answer", "quiz_grade"] = "chat"
+    recognition_confirmed: bool = False
     knowledge_base: str = Field(default="default", min_length=1, max_length=48)
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     model_provider: Literal["ollama", "deepseek", "qwen", "custom"] = "ollama"
     model: str = Field(default="qwen3.5:2b", min_length=1, max_length=128)
     api_key: str = Field(default="", max_length=512)
     base_url: str = Field(default="", max_length=512)
+    vision_model: str = Field(default="", max_length=128)
+    vision_api_key: str = Field(default="", max_length=512)
+    vision_base_url: str = Field(default="", max_length=512)
 
     @field_validator("session_id", "knowledge_base")
     @classmethod
@@ -31,7 +36,14 @@ class ChatRequest(BaseModel):
     def non_blank_message(cls, value: str) -> str:
         return value.strip()
 
-    @field_validator("model", "api_key", "base_url")
+    @field_validator(
+        "model",
+        "api_key",
+        "base_url",
+        "vision_model",
+        "vision_api_key",
+        "vision_base_url",
+    )
     @classmethod
     def strip_model_fields(cls, value: str) -> str:
         return value.strip()
@@ -50,10 +62,17 @@ class ChatRequest(BaseModel):
             raise ValueError("消息和附件不能同时为空")
         if not re.fullmatch(r"[A-Za-z0-9._:/-]+", self.model):
             raise ValueError("模型名称包含不支持的字符")
-        if self.base_url:
-            parsed = urlparse(self.base_url)
+        if self.vision_model and not re.fullmatch(r"[A-Za-z0-9._:/-]+", self.vision_model):
+            raise ValueError("视觉模型名称包含不支持的字符")
+        for label, value in (
+            ("API Base URL", self.base_url),
+            ("视觉模型 API Base URL", self.vision_base_url),
+        ):
+            if not value:
+                continue
+            parsed = urlparse(value)
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise ValueError("API Base URL 必须是有效的 HTTP(S) 地址")
+                raise ValueError(f"{label} 必须是有效的 HTTP(S) 地址")
         if self.model_provider == "custom" and (not self.api_key or not self.base_url):
             raise ValueError("自定义 API 必须填写 API Key 和 Base URL")
         return self
@@ -165,6 +184,99 @@ class MistakeCreateRequest(BaseModel):
         if self.question_bank_id and self.source not in {None, "question_bank"}:
             raise ValueError("题库题目标识与错题来源不一致")
         return self
+
+
+class MistakeSourceRef(BaseModel):
+    kind: Literal["photo", "homework_question", "question_bank", "ai_practice", "chat"] = "chat"
+    homework_id: str = Field(default="", max_length=128)
+    submission_id: str = Field(default="", max_length=128)
+    question_id: str = Field(default="", max_length=128)
+    question_bank_id: str = Field(default="", max_length=128)
+    practice_id: str = Field(default="", max_length=128)
+
+    @field_validator(
+        "homework_id", "submission_id", "question_id", "question_bank_id", "practice_id"
+    )
+    @classmethod
+    def safe_source_reference(cls, value: str) -> str:
+        value = value.strip()
+        if value and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value):
+            raise ValueError("来源标识不合法")
+        return value
+
+
+class MistakeAttemptSnapshot(BaseModel):
+    student_answer: str = Field(default="", max_length=40000)
+    score: float | None = None
+    max_score: float | None = None
+    is_correct: bool | None = None
+    grading_feedback: str = Field(default="", max_length=12000)
+    evidence: str = Field(default="", max_length=12000)
+    answer_attachment_ids: list[str] = Field(default_factory=list, max_length=5)
+    answer_assets: list[dict[str, Any]] = Field(default_factory=list, max_length=10)
+
+    @field_validator("student_answer", "grading_feedback", "evidence")
+    @classmethod
+    def strip_attempt_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("answer_attachment_ids")
+    @classmethod
+    def safe_answer_attachment_ids(cls, values: list[str]) -> list[str]:
+        for value in values:
+            if not re.fullmatch(r"[a-f0-9]{32}", value):
+                raise ValueError("作答附件标识不合法")
+        return list(dict.fromkeys(values))
+
+
+class MistakeSolutionSnapshot(BaseModel):
+    answer: str = Field(default="", max_length=40000)
+    explanation: str = Field(default="", max_length=40000)
+    model: str = Field(default="", max_length=128)
+    verification: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("answer", "explanation", "model")
+    @classmethod
+    def strip_solution_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class MistakeCandidateCreateRequest(MistakeCreateRequest):
+    source_ref: MistakeSourceRef = Field(default_factory=MistakeSourceRef)
+    attempt: MistakeAttemptSnapshot = Field(default_factory=MistakeAttemptSnapshot)
+    solution: MistakeSolutionSnapshot = Field(default_factory=MistakeSolutionSnapshot)
+    recognition: dict[str, Any] = Field(default_factory=dict)
+
+
+class MistakeCandidateConfirmRequest(BaseModel):
+    student_id: str = Field(min_length=1, max_length=96)
+    reason: Literal["wrong", "unknown", "concept_gap", "calculation_error", "bookmark"]
+    category_id: str = Field(default="uncategorized", min_length=1, max_length=96)
+    title: str = Field(default="", max_length=120)
+    photo_retention: Literal[
+        "original_and_processed", "processed_only", "text_only"
+    ] = "original_and_processed"
+
+    @field_validator("student_id")
+    @classmethod
+    def safe_candidate_student_id(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", value):
+            raise ValueError("学生标识不合法")
+        return value
+
+    @field_validator("category_id")
+    @classmethod
+    def safe_candidate_category_id(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"(?:uncategorized|[a-f0-9]{32})", value):
+            raise ValueError("错题分类标识不合法")
+        return value
+
+    @field_validator("title")
+    @classmethod
+    def strip_candidate_title(cls, value: str) -> str:
+        return value.strip()
 
 
 class MistakeUpdateRequest(BaseModel):

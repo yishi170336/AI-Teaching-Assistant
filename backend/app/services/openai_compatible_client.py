@@ -120,7 +120,12 @@ class OpenAICompatibleClient:
             return response.text[:300] or response.reason_phrase
 
     async def _post(self, payload: dict[str, Any]) -> httpx.Response:
-        response = await self._client.post(self.endpoint, json=payload)
+        try:
+            response = await self._client.post(self.endpoint, json=payload)
+        except httpx.HTTPError as exc:
+            raise ModelAPIError(
+                f"无法连接 {self.provider} 模型服务 {self.base_url}：{exc}"
+            ) from exc
         if response.is_error:
             raise ModelAPIError(
                 f"{self.provider} 模型请求失败 ({response.status_code})：{self._error_detail(response)}",

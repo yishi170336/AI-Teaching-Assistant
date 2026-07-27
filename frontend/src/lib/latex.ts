@@ -15,7 +15,10 @@ export function normalizeLatex(input: string): string {
     return `@@MATH_BLOCK_${protectedBlocks.length - 1}@@`
   })
   const singleDollarCount = (text.match(/(?<!\\)\$/g) || []).length
-  if (singleDollarCount % 2 === 1) text += '$'
+  if (singleDollarCount % 2 === 1) {
+    const trailingBackslashes = text.match(/\\+$/)?.[0].length || 0
+    text += trailingBackslashes % 2 === 1 ? ' $' : '$'
+  }
   text = text.replace(/@@MATH_BLOCK_(\d+)@@/g, (_, index) => protectedBlocks[Number(index)])
 
   const completeMath: string[] = []

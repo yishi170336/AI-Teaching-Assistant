@@ -49,6 +49,60 @@ def test_student_chat_uses_request_selected_model(monkeypatch):
     asyncio.run(client.close())
 
 
+def test_photo_answer_can_use_browser_qwen_vision_config_with_deepseek_answer(monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        SimpleNamespace(
+            qwen_api_key="",
+            qwen_base_url="https://dashscope.example/v1",
+            qwen_vision_model="server-vision-model",
+        ),
+    )
+    payload = ChatRequest(
+        session_id="student-demo",
+        message="分析题图",
+        scene="image_answer",
+        model_provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="deepseek-key",
+        base_url="https://deepseek.example/v1",
+        vision_model="qwen3-vl-flash",
+        vision_api_key="browser-qwen-key",
+        vision_base_url="https://workspace.example/v1",
+    )
+    selected_client = SimpleNamespace(provider="deepseek", model="deepseek-v4-flash")
+    client, should_close = main_module.select_vision_client(payload, selected_client)
+    assert should_close is True
+    assert client.provider == "qwen"
+    assert client.model == "qwen3-vl-flash"
+    assert client.base_url == "https://workspace.example/v1"
+    asyncio.run(client.close())
+
+
+def test_photo_answer_rejects_text_only_deepseek_without_qwen_vision_key(monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        SimpleNamespace(
+            qwen_api_key="",
+            qwen_base_url="https://dashscope.example/v1",
+            qwen_vision_model="qwen3-vl-flash",
+        ),
+    )
+    payload = ChatRequest(
+        session_id="student-demo",
+        message="分析题图",
+        scene="image_answer",
+        model_provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="deepseek-key",
+        base_url="https://deepseek.example/v1",
+    )
+    with pytest.raises(ValueError, match="拍照答题需要配置 Qwen 视觉模型 API Key"):
+        main_module.select_vision_client(payload, object())
+
+
 def test_knowledge_build_uses_specialist_without_changing_chat_model(monkeypatch):
     monkeypatch.setattr(
         main_module,

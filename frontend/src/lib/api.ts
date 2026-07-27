@@ -56,6 +56,12 @@ export type ModelConfig = {
   baseUrl: string
 }
 
+export type VisionModelConfig = {
+  model: string
+  apiKey: string
+  baseUrl: string
+}
+
 export type ModelProviderInfo = {
   id: ModelProviderId
   label: string
@@ -129,6 +135,60 @@ export type KnowledgeGraph = {
 }
 
 export type MistakeSource = 'question_bank' | 'ai_generated' | 'user_uploaded'
+export type MistakeReason = 'wrong' | 'unknown' | 'concept_gap' | 'calculation_error' | 'bookmark'
+export type MistakePhotoRetention = 'original_and_processed' | 'processed_only' | 'text_only'
+
+export type MistakeSourceRef = {
+  kind: 'photo' | 'homework_question' | 'question_bank' | 'ai_practice' | 'chat'
+  homework_id?: string
+  submission_id?: string
+  question_id?: string
+  question_bank_id?: string
+  practice_id?: string
+}
+
+export type MistakeAttemptSnapshot = {
+  student_answer?: string
+  score?: number | null
+  max_score?: number | null
+  is_correct?: boolean | null
+  grading_feedback?: string
+  evidence?: string
+  answer_attachment_ids?: string[]
+  answer_assets?: HomeworkAsset[]
+}
+
+export type MistakeSolutionSnapshot = {
+  answer?: string
+  explanation?: string
+  model?: string
+  verification?: Record<string, unknown>
+}
+
+export type MistakeCandidateDraft = {
+  question: string
+  answer: string
+  agent: string
+  attachments: AttachmentInfo[]
+  attachmentUrls?: string[]
+  source: MistakeSource
+  questionBankId?: string
+  sourceRef: MistakeSourceRef
+  attempt?: MistakeAttemptSnapshot
+  solution?: MistakeSolutionSnapshot
+  recognition?: PhotoRecognition
+  suggestedReason?: MistakeReason
+  title?: string
+}
+
+export type MistakeCandidate = MistakeCandidateDraft & {
+  id: string
+  student_id: string
+  session_id: string
+  status: 'pending' | 'confirmed' | 'dismissed'
+  knowledge_points: string[]
+  summary: string
+}
 
 export type MistakeKnowledgeTag = {
   tag_id: string
@@ -202,6 +262,23 @@ export type MistakeItem = {
   messages: MistakeMessage[]
   annotations: MistakeAnnotation[]
   attachments?: AttachmentInfo[]
+  candidate_id?: string
+  source_ref?: MistakeSourceRef
+  decision?: {
+    reason?: MistakeReason
+    confirmed_by_user?: boolean
+    confirmed_at?: string
+    photo_retention?: MistakePhotoRetention
+  }
+  attempt?: MistakeAttemptSnapshot
+  photo_evidence?: {
+    retention?: MistakePhotoRetention
+    recognition?: PhotoRecognition
+    user_corrected_transcription?: string
+    original_assets?: AttachmentInfo[]
+    processed_assets?: AttachmentInfo[]
+  }
+  solution?: MistakeSolutionSnapshot
   created_at: string
   updated_at: string
 }
@@ -442,6 +519,69 @@ export type SessionSummary = {
   message_count: number
 }
 
+export type PhotoRecognition = {
+  transcription: string
+  question_type: string
+  knowledge_points: string[]
+  component_types: string[]
+  topology: string
+  knowns: string[]
+  unknowns: string[]
+  constraints: string[]
+  confidence: number
+  is_complete: boolean
+  has_circuit: boolean
+  uncertain_regions: string[]
+}
+
+export type AnswerReview = {
+  triggered?: boolean
+  passed?: boolean
+  repaired?: boolean
+  issues?: string[]
+  risk_reasons?: string[]
+  sympy_checked?: boolean
+}
+
+export type PracticeExercise = {
+  question_type: string
+  question: string
+  question_stem: string
+  question_parts: string[]
+  knowledge_point: string
+  difficulty: string
+  solution: string
+  solution_steps: string[]
+  answer: string
+  answer_items: string[]
+  common_mistakes: string[]
+  verification?: Record<string, unknown>
+  circuit_diagram?: {
+    mode: 'topology_reference'
+    attachments: AttachmentInfo[]
+    topology: string
+    component_types: string[]
+    notice: string
+  }
+}
+
+export type PracticeGradingIssue = {
+  title: string
+  detail: string
+  suggestion: string
+}
+
+export type PracticeGrading = {
+  score: number
+  max_score: number
+  is_correct: boolean
+  summary: string
+  extracted_answer: string
+  strengths: string[]
+  issues: PracticeGradingIssue[]
+  next_steps: string[]
+}
+
 export type StoredMessage = {
   role: 'user' | 'assistant'
   content: string
@@ -453,11 +593,17 @@ export type StoredMessage = {
   attachments?: AttachmentInfo[]
   sources?: SourceInfo[]
   cited_sources?: SourceInfo[]
+  recognition?: PhotoRecognition
+  needs_confirmation?: boolean
+  evidence_mode?: 'grounded' | 'mixed' | 'general_only'
+  review?: AnswerReview
+  practice?: PracticeExercise
+  grading?: PracticeGrading
 }
 
 type SSECallbacks = {
   onStatus: (data: { stage: string; message: string; agent: string }) => void
-  onMeta: (data: { intent: string; agent: string; provider: ModelProviderId; model: string; sources: SourceInfo[]; cited_sources: SourceInfo[]; verification?: Record<string, unknown> }) => void
+  onMeta: (data: { intent: string; agent: string; provider: ModelProviderId; model: string; sources: SourceInfo[]; cited_sources: SourceInfo[]; verification?: Record<string, unknown>; recognition?: PhotoRecognition; needs_confirmation?: boolean; evidence_mode?: 'grounded' | 'mixed' | 'general_only'; review?: AnswerReview; practice?: PracticeExercise; grading?: PracticeGrading }) => void
   onDelta: (content: string) => void
   onDone: () => void
   onError: (message: string) => void
@@ -481,10 +627,15 @@ export async function streamChat(
     mode: string
     knowledge_base: string
     attachment_ids: string[]
+    scene?: 'chat' | 'image_answer' | 'quiz_grade'
+    recognition_confirmed?: boolean
     model_provider: ModelProviderId
     model: string
     api_key: string
     base_url: string
+    vision_model?: string
+    vision_api_key?: string
+    vision_base_url?: string
   },
   callbacks: SSECallbacks,
   signal?: AbortSignal,
@@ -643,6 +794,86 @@ export async function addMistake(
   const result = await response.json()
   if (!response.ok) throw new Error(result.detail || result.error || '加入错题本失败')
   return result.mistake
+}
+
+export async function createMistakeCandidate(
+  studentId: string,
+  sessionId: string,
+  draft: MistakeCandidateDraft,
+  modelConfig: ModelConfig,
+  knowledgeBase = 'default',
+): Promise<MistakeCandidate> {
+  const response = await fetch('/api/mistake-candidates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      student_id: studentId,
+      session_id: sessionId,
+      question: draft.question,
+      answer: draft.answer,
+      agent: draft.agent,
+      knowledge_base: knowledgeBase,
+      source: draft.source,
+      question_bank_id: draft.questionBankId || '',
+      messages: [
+        { role: 'user', content: draft.question },
+        { role: 'assistant', content: draft.answer, agent: draft.agent },
+      ],
+      attachment_ids: draft.attachments.map((attachment) => attachment.id),
+      model_provider: modelConfig.provider,
+      model: modelConfig.model,
+      api_key: modelConfig.apiKey,
+      base_url: modelConfig.baseUrl,
+      source_ref: draft.sourceRef,
+      attempt: draft.attempt || {},
+      solution: draft.solution || { answer: draft.answer },
+      recognition: draft.recognition || {},
+    }),
+  })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(result.detail || '错题候选创建失败')
+  return result.candidate
+}
+
+export async function confirmMistakeCandidate(
+  studentId: string,
+  candidateId: string,
+  decision: {
+    reason: MistakeReason
+    categoryId: string
+    title: string
+    photoRetention: MistakePhotoRetention
+  },
+): Promise<MistakeItem> {
+  const response = await fetch(`/api/mistake-candidates/${encodeURIComponent(candidateId)}/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      student_id: studentId,
+      reason: decision.reason,
+      category_id: decision.categoryId,
+      title: decision.title,
+      photo_retention: decision.photoRetention,
+    }),
+  })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(result.detail || '加入错题本失败')
+  return result.mistake
+}
+
+export async function dismissMistakeCandidate(
+  studentId: string,
+  candidateId: string,
+): Promise<void> {
+  const query = new URLSearchParams({ student_id: studentId })
+  const response = await fetch(
+    `/api/mistake-candidates/${encodeURIComponent(candidateId)}?${query.toString()}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}))
+    throw new Error(result.detail || '错题候选处理失败')
+  }
 }
 
 export async function deleteMistake(studentId: string, mistakeId: string): Promise<void> {

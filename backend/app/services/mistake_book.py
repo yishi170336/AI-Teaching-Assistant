@@ -185,6 +185,21 @@ class MistakeBook:
         prerequisites = item.get("prerequisites")
         if not isinstance(prerequisites, list):
             prerequisites = []
+        source_ref = item.get("source_ref")
+        if not isinstance(source_ref, dict):
+            source_ref = {"kind": "chat"}
+        decision = item.get("decision")
+        if not isinstance(decision, dict):
+            decision = {}
+        attempt = item.get("attempt")
+        if not isinstance(attempt, dict):
+            attempt = {}
+        photo_evidence = item.get("photo_evidence")
+        if not isinstance(photo_evidence, dict):
+            photo_evidence = {}
+        solution = item.get("solution")
+        if not isinstance(solution, dict):
+            solution = {}
         item.update(
             {
                 "schema_version": "2.0",
@@ -212,7 +227,13 @@ class MistakeBook:
                 "annotations": [entry for entry in annotations if isinstance(entry, dict)],
                 "attachments": [
                     entry for entry in item.get("attachments", []) if isinstance(entry, dict)
-                ][:5],
+                ][:10],
+                "candidate_id": str(item.get("candidate_id") or ""),
+                "source_ref": source_ref,
+                "decision": decision,
+                "attempt": attempt,
+                "photo_evidence": photo_evidence,
+                "solution": solution,
                 "created_at": created_at,
                 "updated_at": str(item.get("updated_at") or created_at),
             }
@@ -283,6 +304,13 @@ class MistakeBook:
         prerequisites: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         category_id: str = DEFAULT_CATEGORY_ID,
+        mistake_id: str = "",
+        candidate_id: str = "",
+        source_ref: dict[str, Any] | None = None,
+        decision: dict[str, Any] | None = None,
+        attempt: dict[str, Any] | None = None,
+        photo_evidence: dict[str, Any] | None = None,
+        solution: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         normalized_question = _normalized_content(question)
         normalized_answer = _normalized_content(answer)
@@ -338,6 +366,12 @@ class MistakeBook:
                         "prerequisites": prerequisites or upgraded["prerequisites"],
                         "messages": messages or upgraded["messages"],
                         "category_id": category_id,
+                        "candidate_id": candidate_id or upgraded.get("candidate_id", ""),
+                        "source_ref": source_ref or upgraded.get("source_ref", {"kind": "chat"}),
+                        "decision": decision or upgraded.get("decision", {}),
+                        "attempt": attempt or upgraded.get("attempt", {}),
+                        "photo_evidence": photo_evidence or upgraded.get("photo_evidence", {}),
+                        "solution": solution or upgraded.get("solution", {}),
                         "updated_at": _now(),
                     }
                 )
@@ -350,7 +384,7 @@ class MistakeBook:
             now = _now()
             item = self._normalize_item(
                 {
-                    "id": uuid4().hex,
+                    "id": mistake_id or uuid4().hex,
                     "student_id": student_id,
                     "session_id": session_id,
                     "question": normalized_question,
@@ -373,6 +407,12 @@ class MistakeBook:
                     or self._default_messages(normalized_question, normalized_answer, agent),
                     "annotations": [],
                     "attachments": stored_attachments,
+                    "candidate_id": candidate_id,
+                    "source_ref": source_ref or {"kind": "chat"},
+                    "decision": decision or {},
+                    "attempt": attempt or {},
+                    "photo_evidence": photo_evidence or {},
+                    "solution": solution or {},
                     "created_at": now,
                     "updated_at": now,
                 }
