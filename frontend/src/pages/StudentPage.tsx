@@ -1057,6 +1057,7 @@ function mistakeDraftForAssistant(messages: ChatMessage[], index: number): Mista
     sourceRef: {
       kind: isGenerated ? 'ai_practice' : isPhoto ? 'photo' : 'chat',
       practice_id: isGenerated ? message.id : '',
+      question_id: previousUser.id,
     },
     attempt: message.grading ? {
       student_answer: message.grading.extracted_answer,

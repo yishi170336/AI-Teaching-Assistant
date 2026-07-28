@@ -47,7 +47,11 @@ from backend.app.services.memory import ConversationMemory
 from backend.app.services.ollama_client import OllamaClient
 from backend.app.services.openai_compatible_client import OpenAICompatibleClient
 from backend.app.services.attachments import ALLOWED_ATTACHMENT_SUFFIXES, AttachmentStore
-from backend.app.services.mistake_book import MistakeBook, related_mistake_context
+from backend.app.services.mistake_book import (
+    MistakeBook,
+    related_mistake_context,
+    resolve_mistake_source,
+)
 from backend.app.services.mistake_candidates import MistakeCandidateStore
 from backend.app.services.mistake_insights import MistakeKnowledgeService
 from backend.app.services.schedule import StudentSchedule
@@ -490,10 +494,84 @@ async def list_mistakes(student_id: str) -> dict[str, Any]:
     }
 
 
+def _validated_candidate_source_context(
+    payload: MistakeCandidateCreateRequest,
+) -> tuple[str, dict[str, Any]]:
+    """Verify source references that can be resolved against server-owned homework data."""
+
+    source_ref = payload.source_ref.model_dump()
+    kind = source_ref["kind"]
+    question_bank_id = payload.question_bank_id
+    if kind == "homework_question":
+        try:
+            homework = homework_store.get_raw_homework(source_ref["homework_id"])
+        except (FileNotFoundError, ValueError) as exc:
+            raise ValueError("作业题来源引用不存在") from exc
+        question = next(
+            (
+                item
+                for item in homework.get("questions", [])
+                if isinstance(item, dict) and item.get("id") == source_ref["question_id"]
+            ),
+            None,
+        )
+        if question is None:
+            raise ValueError("作业题来源引用不存在")
+        actual_bank_id = str(question.get("origin_question_bank_id") or "")
+        actual_question_id = str(question.get("origin_question_id") or "")
+        if bool(actual_bank_id) != bool(actual_question_id):
+            raise ValueError("作业题的原题库引用不完整")
+        expected_question_bank_id = (
+            f"QB:{actual_bank_id}:{actual_question_id}" if actual_bank_id else ""
+        )
+        if (
+            source_ref["question_bank_id"] != actual_bank_id
+            or source_ref["origin_question_id"] != actual_question_id
+            or question_bank_id != expected_question_bank_id
+        ):
+            raise ValueError("作业题来源与服务端记录不一致")
+        if source_ref["submission_id"]:
+            try:
+                submission = homework_store.get_raw_submission(source_ref["submission_id"])
+            except (FileNotFoundError, ValueError) as exc:
+                raise ValueError("作业提交来源引用不存在") from exc
+            if (
+                submission.get("homework_id") != source_ref["homework_id"]
+                or submission.get("student_id") != payload.student_id
+            ):
+                raise ValueError("作业提交来源与当前学生或作业不一致")
+    elif kind == "question_bank":
+        bank_id = source_ref["question_bank_id"]
+        original_id = source_ref["origin_question_id"] or source_ref["question_id"]
+        try:
+            bank = homework_store.get_raw_question_bank(bank_id)
+        except (FileNotFoundError, ValueError) as exc:
+            raise ValueError("题库来源引用不存在") from exc
+        if not original_id or not any(
+            isinstance(item, dict) and item.get("id") == original_id
+            for item in bank.get("questions", [])
+        ):
+            raise ValueError("题库原题来源引用不存在")
+        if question_bank_id != f"QB:{bank_id}:{original_id}":
+            raise ValueError("题库题目标识与服务端记录不一致")
+        source_ref["origin_question_id"] = original_id
+    return question_bank_id, source_ref
+
+
 @app.post("/api/mistake-candidates")
 async def create_mistake_candidate(
     payload: MistakeCandidateCreateRequest,
 ) -> dict[str, Any]:
+    try:
+        question_bank_id, source_ref = _validated_candidate_source_context(payload)
+        resolved_source = resolve_mistake_source(
+            agent=payload.agent,
+            requested_source=payload.source or "",
+            question_bank_id=question_bank_id,
+            source_ref=source_ref,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     (knowledge_points, summary), resolved = await asyncio.gather(
         _extract_mistake_metadata(payload),
         attachments.resolve(payload.session_id, payload.attachment_ids),
@@ -511,8 +589,8 @@ async def create_mistake_candidate(
             "knowledge_base": payload.knowledge_base,
             "knowledge_points": knowledge_points,
             "summary": summary,
-            "source": payload.source,
-            "question_bank_id": payload.question_bank_id,
+            "source": resolved_source,
+            "question_bank_id": question_bank_id,
             "category_id": payload.category_id,
             "messages": [message.model_dump() for message in payload.messages],
             "attachment_ids": payload.attachment_ids,
@@ -520,7 +598,7 @@ async def create_mistake_candidate(
             "knowledge_tags": alignment["knowledge_tags"],
             "location": alignment["location"],
             "prerequisites": alignment["prerequisites"],
-            "source_ref": payload.source_ref.model_dump(),
+            "source_ref": source_ref,
             "attempt": payload.attempt.model_dump(),
             "solution": payload.solution.model_dump(),
             "recognition": payload.recognition,

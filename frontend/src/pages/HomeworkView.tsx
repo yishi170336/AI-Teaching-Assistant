@@ -169,7 +169,7 @@ function formatDeadline(value: string) {
   })
 }
 
-function homeworkMistakeDraft(
+export function homeworkMistakeDraft(
   homework: Homework,
   item: HomeworkGradingItem,
 ): MistakeCandidateDraft | null {
@@ -185,20 +185,27 @@ function homeworkMistakeDraft(
     item.feedback ? `### 批改反馈\n${item.feedback}` : '',
     item.evidence ? `### 判分依据\n${item.evidence}` : '',
   ].filter(Boolean).join('\n\n')
+  const bankId = question.origin_question_bank_id?.trim() || ''
+  const originQuestionId = question.origin_question_id?.trim() || ''
+  const fromQuestionBank = Boolean(bankId && originQuestionId)
+  const stableQuestionBankId = fromQuestionBank
+    ? `QB:${bankId}:${originQuestionId}`
+    : ''
   return {
     question: question.prompt,
     answer: reference || '作业批改结果已归档。',
     agent: '作业批改 Agent',
     attachments: [],
     attachmentUrls: [...questionImages, ...answerImages].map((asset) => asset.url).filter(Boolean),
-    source: 'question_bank',
-    questionBankId: `QB:${homework.id}:${question.id}`,
+    source: fromQuestionBank ? 'question_bank' : 'user_uploaded',
+    questionBankId: stableQuestionBankId,
     sourceRef: {
       kind: 'homework_question',
       homework_id: homework.id,
       submission_id: submission.id,
       question_id: question.id,
-      question_bank_id: `QB:${homework.id}:${question.id}`,
+      question_bank_id: bankId,
+      origin_question_id: originQuestionId,
     },
     attempt: {
       student_answer: item.student_answer,

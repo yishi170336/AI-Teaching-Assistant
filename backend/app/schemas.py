@@ -192,10 +192,16 @@ class MistakeSourceRef(BaseModel):
     submission_id: str = Field(default="", max_length=128)
     question_id: str = Field(default="", max_length=128)
     question_bank_id: str = Field(default="", max_length=128)
+    origin_question_id: str = Field(default="", max_length=128)
     practice_id: str = Field(default="", max_length=128)
 
     @field_validator(
-        "homework_id", "submission_id", "question_id", "question_bank_id", "practice_id"
+        "homework_id",
+        "submission_id",
+        "question_id",
+        "question_bank_id",
+        "origin_question_id",
+        "practice_id",
     )
     @classmethod
     def safe_source_reference(cls, value: str) -> str:

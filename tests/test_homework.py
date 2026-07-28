@@ -255,6 +255,8 @@ def test_question_bank_is_durable_and_selected_questions_become_independent_home
     assert homework["question_count"] == 1
     assert homework["questions"][0]["number"] == "1"
     assert homework["questions"][0]["answer"] == "B"
+    assert homework["questions"][0]["origin_question_bank_id"] == bank_id
+    assert homework["questions"][0]["origin_question_id"] == question_id
     assert "source_url" not in homework
     copied_figure = homework["questions"][0]["figures"][0]
     assert copied_figure["url"].startswith(f"/api/homeworks/{homework['id']}/assets/")
@@ -265,6 +267,8 @@ def test_question_bank_is_durable_and_selected_questions_become_independent_home
     store.publish(homework["id"])
     student = store.get_homework(homework["id"], role="student", student_id="learner-test")
     assert "answer" not in student["questions"][0]
+    assert student["questions"][0]["origin_question_bank_id"] == bank_id
+    assert student["questions"][0]["origin_question_id"] == question_id
 
 
 def test_question_bank_questions_can_be_deleted_individually(tmp_path):
@@ -461,6 +465,53 @@ def test_structured_submission_maps_direct_answers_and_images_to_questions(tmp_p
             ],
             file_question_ids=[calculation_id],
         )
+
+
+def test_student_receives_reference_answer_only_after_homework_is_graded(tmp_path):
+    store = HomeworkStore(tmp_path / "homework")
+    homework_id, question_id = extracted_homework(store)
+    store.publish(homework_id)
+    submission = store.create_submission(
+        homework_id=homework_id,
+        student_id="learner-test",
+        files=[("answer.png", "image/png", sample_image_bytes())],
+        answers=[{"question_id": question_id, "answer": "见作答图片"}],
+        file_question_ids=[question_id],
+    )
+
+    submitted = store.get_homework(
+        homework_id, role="student", student_id="learner-test"
+    )
+    assert submitted["submission"]["status"] == "submitted"
+    assert "answer" not in submitted["questions"][0]
+    assert not submitted["questions"][0].get("origin_question_bank_id")
+
+    store.update_submission(
+        submission["id"],
+        status="graded",
+        grading={
+            "items": [
+                {
+                    "question_id": question_id,
+                    "number": "1",
+                    "student_answer": "见作答图片",
+                    "score": 4,
+                    "max_score": 10,
+                    "is_correct": False,
+                    "feedback": "计算过程缺少关键步骤",
+                    "evidence": "结果与参考答案不一致",
+                }
+            ],
+            "total_score": 4,
+            "max_score": 10,
+            "summary": "需要复习",
+        },
+    )
+    graded = store.get_homework(
+        homework_id, role="student", student_id="learner-test"
+    )
+    assert graded["submission"]["status"] == "graded"
+    assert graded["questions"][0]["answer"] == "I = 2 mA"
 
 
 def test_cross_page_figures_are_reassigned_by_nearby_native_captions():
