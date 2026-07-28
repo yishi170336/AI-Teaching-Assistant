@@ -144,6 +144,7 @@ export type MistakeSourceRef = {
   submission_id?: string
   question_id?: string
   question_bank_id?: string
+  origin_question_id?: string
   practice_id?: string
 }
 
@@ -358,6 +359,8 @@ export type HomeworkQuestionPart = { label: string; text: string }
 
 export type HomeworkQuestion = {
   id: string
+  origin_question_bank_id?: string
+  origin_question_id?: string
   section_key: string
   section_title: string
   number: string

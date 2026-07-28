@@ -436,9 +436,13 @@ class HomeworkStore:
             for key in (
                 "id", "section_key", "section_title", "number", "question_type",
                 "prompt", "subquestions", "options", "option_columns", "figure_position", "points",
-                "page_start", "page_end", "sequence",
+                "page_start", "page_end", "sequence", "origin_question_bank_id",
+                "origin_question_id",
             )
         }
+        for provenance_key in ("origin_question_bank_id", "origin_question_id"):
+            if not result.get(provenance_key):
+                result.pop(provenance_key, None)
         result["section_key"] = result.get("section_key") or "questions"
         result["section_title"] = result.get("section_title") or "题目"
         result["options"] = _normalize_options(result.get("options"))
@@ -498,6 +502,11 @@ class HomeworkStore:
     ) -> dict[str, Any]:
         homework_id = str(homework["id"])
         include_answers = role == "teacher"
+        own = [item for item in submissions if item.get("student_id") == student_id]
+        latest = max(own, key=lambda item: str(item.get("created_at", "")), default=None)
+        reveal_student_answers = bool(
+            latest and latest.get("status") in {"graded", "review_required"}
+        )
         result = {
             key: homework.get(key)
             for key in (
@@ -517,7 +526,11 @@ class HomeworkStore:
         )
         result["question_count"] = len(homework.get("questions", []))
         result["questions"] = [
-            self._public_question(homework_id, question, include_answers=include_answers)
+            self._public_question(
+                homework_id,
+                question,
+                include_answers=include_answers or reveal_student_answers,
+            )
             for question in homework.get("questions", [])
             if isinstance(question, dict)
         ]
@@ -527,8 +540,6 @@ class HomeworkStore:
             result["submissions"] = [self._public_submission(item) for item in submissions]
             result["submission_count"] = len(submissions)
         else:
-            own = [item for item in submissions if item.get("student_id") == student_id]
-            latest = max(own, key=lambda item: str(item.get("created_at", "")), default=None)
             result["submission"] = self._public_submission(latest) if latest else None
         return result
 

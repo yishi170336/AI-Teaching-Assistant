@@ -6,9 +6,13 @@
 
 三类来源统一为：
 
-- `ai_generated`：出题 Agent 生成。服务端根据 Agent 身份自动推断，客户端不能将 AI 题伪装成其他来源。
+- `ai_generated`：AI 相似题、同类题、变式题或拓展题。新流程以 `source_ref.kind=ai_practice` 和 `practice_id` 为准，Agent 名称只用于旧数据降级兼容。
 - `user_uploaded`：学生手动上传或从普通问答保存。
-- `question_bank`：外部题库，必须同时提供 `question_bank_id`；当前没有题库 UI，也不依赖未来 UI 才能保存或展示。
+- `question_bank`：外部题库，必须同时提供 `question_bank_id` 和可靠题库引用；题库选入作业后继续保留原题库与原题 ID。
+
+来源解析优先级为：有效题库题目标识与题库引用、结构化 AI 生成引用、
+结构化上传/拍照/作业引用、旧 Agent 名称降级判断、安全默认值。作答图片属于
+`attempt`/`photo_evidence`，不会覆盖题目本身的来源。
 
 ## 数据流
 

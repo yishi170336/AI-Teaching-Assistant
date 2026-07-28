@@ -12,6 +12,20 @@ from backend.app.config import settings
 
 
 MISTAKE_SOURCES = {"question_bank", "ai_generated", "user_uploaded"}
+MISTAKE_SOURCE_ALIASES = {
+    "题库": "question_bank",
+    "题库来源": "question_bank",
+    "AI生成": "ai_generated",
+    "AI 生成": "ai_generated",
+    "用户上传": "user_uploaded",
+}
+MISTAKE_SOURCE_REF_KINDS = {
+    "photo",
+    "homework_question",
+    "question_bank",
+    "ai_practice",
+    "chat",
+}
 DEFAULT_CATEGORY_ID = "uncategorized"
 MAX_ANNOTATION_LENGTH = 4000
 
@@ -32,27 +46,63 @@ def _message_attachments(message: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def resolve_mistake_source(
-    *, agent: str, requested_source: str = "", question_bank_id: str = ""
+    *,
+    agent: str,
+    requested_source: str = "",
+    question_bank_id: str = "",
+    source_ref: dict[str, Any] | None = None,
 ) -> str:
-    """Validate and infer provenance without trusting a free-form client label."""
+    """Resolve provenance from structured context, with Agent names only as legacy fallback."""
 
     source = requested_source.strip()
     if source and source not in MISTAKE_SOURCES:
         raise ValueError("错题来源不合法")
+    reference = source_ref if isinstance(source_ref, dict) else {}
+    kind = str(reference.get("kind") or "").strip()
+    if kind and kind not in MISTAKE_SOURCE_REF_KINDS:
+        raise ValueError("错题来源引用不合法")
+
+    structured_source = ""
+    if kind == "question_bank":
+        if not question_bank_id or not str(reference.get("question_bank_id") or "").strip():
+            raise ValueError("题库来源必须提供题库题目标识和来源引用")
+        structured_source = "question_bank"
+    elif kind == "homework_question":
+        if not str(reference.get("homework_id") or "").strip() or not str(
+            reference.get("question_id") or ""
+        ).strip():
+            raise ValueError("作业题来源必须提供作业和题目标识")
+        structured_source = "question_bank" if question_bank_id else "user_uploaded"
+        if question_bank_id and not str(reference.get("question_bank_id") or "").strip():
+            raise ValueError("题库作业题必须保留原题库引用")
+    elif kind == "ai_practice":
+        if not str(reference.get("practice_id") or "").strip():
+            raise ValueError("AI 生成来源必须提供生成任务标识")
+        structured_source = "ai_generated"
+    elif kind in {"photo", "chat"}:
+        structured_source = "user_uploaded"
+
     if question_bank_id:
         if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", question_bank_id):
             raise ValueError("题库题目标识不合法")
         if source and source != "question_bank":
             raise ValueError("题库题目标识与错题来源不一致")
+        if structured_source and structured_source != "question_bank":
+            raise ValueError("题库题目标识与错题来源引用不一致")
         return "question_bank"
     if source == "question_bank":
         raise ValueError("题库来源必须提供题库题目标识")
+
+    if structured_source:
+        if source and source != structured_source:
+            raise ValueError("错题来源与结构化来源引用不一致")
+        return structured_source
 
     generated = any(marker in agent for marker in ("出题", "生成", "拓展题", "同类题"))
     inferred = "ai_generated" if generated else "user_uploaded"
     if source == "ai_generated" and not generated:
         raise ValueError("AI 生成来源与错题上下文不一致")
-    # An AI-generated exercise must not be downgraded by a forged client value.
+    # A legacy AI-generated exercise must not be downgraded by a forged client value.
     return inferred
 
 
@@ -160,9 +210,22 @@ class MistakeBook:
         answer = _normalized_content(str(item.get("answer", "")))
         agent = str(item.get("agent") or "学习 Agent").strip()
         created_at = str(item.get("created_at") or _now())
-        source = str(item.get("source") or "").strip()
+        raw_source = str(item.get("source") or "").strip()
+        source = MISTAKE_SOURCE_ALIASES.get(raw_source, raw_source)
+        source_ref = item.get("source_ref")
+        if not isinstance(source_ref, dict):
+            source_ref = {"kind": "chat"}
+        elif str(source_ref.get("kind") or "") not in MISTAKE_SOURCE_REF_KINDS:
+            source_ref = {**source_ref, "kind": "chat"}
         if source not in MISTAKE_SOURCES:
-            source = resolve_mistake_source(agent=agent)
+            try:
+                source = resolve_mistake_source(
+                    agent=agent,
+                    question_bank_id=str(item.get("question_bank_id") or ""),
+                    source_ref=source_ref,
+                )
+            except ValueError:
+                source = resolve_mistake_source(agent=agent)
         messages = item.get("messages")
         if not isinstance(messages, list) or not messages:
             messages = cls._default_messages(question, answer, agent)
@@ -185,9 +248,6 @@ class MistakeBook:
         prerequisites = item.get("prerequisites")
         if not isinstance(prerequisites, list):
             prerequisites = []
-        source_ref = item.get("source_ref")
-        if not isinstance(source_ref, dict):
-            source_ref = {"kind": "chat"}
         decision = item.get("decision")
         if not isinstance(decision, dict):
             decision = {}
@@ -318,6 +378,7 @@ class MistakeBook:
             agent=agent,
             requested_source=source,
             question_bank_id=question_bank_id,
+            source_ref=source_ref,
         )
         stored_attachments = [
             dict(attachment)

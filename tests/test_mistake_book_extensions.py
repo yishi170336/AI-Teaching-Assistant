@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from backend.app.services.attachments import AttachmentStore
+from backend.app.services.homework import HomeworkStore
 from backend.app.services.mistake_candidates import MistakeCandidateStore
 from backend.app.services.mistake_book import (
     DEFAULT_CATEGORY_ID,
@@ -58,6 +59,59 @@ def test_source_is_inferred_and_question_bank_requires_server_verifiable_context
         resolve_mistake_source(agent="答疑 Agent", requested_source="ai_generated")
 
 
+def test_structured_source_reference_precedes_mutable_agent_names():
+    assert resolve_mistake_source(
+        agent="练习编排服务",
+        requested_source="ai_generated",
+        source_ref={
+            "kind": "ai_practice",
+            "practice_id": "practice-42",
+            "question_id": "original-17",
+        },
+    ) == "ai_generated"
+    assert resolve_mistake_source(
+        agent="作业批改 Agent",
+        requested_source="user_uploaded",
+        source_ref={
+            "kind": "homework_question",
+            "homework_id": "homework-1",
+            "question_id": "question-1",
+        },
+    ) == "user_uploaded"
+    assert resolve_mistake_source(
+        agent="作业批改 Agent",
+        requested_source="question_bank",
+        question_bank_id="QB:bank-1:question-1",
+        source_ref={
+            "kind": "homework_question",
+            "homework_id": "homework-1",
+            "question_id": "question-copy-1",
+            "question_bank_id": "bank-1",
+            "origin_question_id": "question-1",
+        },
+    ) == "question_bank"
+
+    with pytest.raises(ValueError, match="结构化来源引用"):
+        resolve_mistake_source(
+            agent="练习编排服务",
+            requested_source="user_uploaded",
+            source_ref={"kind": "ai_practice", "practice_id": "practice-42"},
+        )
+    with pytest.raises(ValueError, match="生成任务标识"):
+        resolve_mistake_source(
+            agent="练习编排服务",
+            requested_source="ai_generated",
+            source_ref={"kind": "ai_practice"},
+        )
+    with pytest.raises(ValueError, match="来源引用不一致"):
+        resolve_mistake_source(
+            agent="答疑 Agent",
+            requested_source="question_bank",
+            question_bank_id="QB:bank-1:question-1",
+            source_ref={"kind": "photo"},
+        )
+
+
 def test_legacy_items_get_schema_defaults_without_losing_original_fields(tmp_path):
     path = tmp_path / "mistakes.json"
     path.write_text(
@@ -88,6 +142,68 @@ def test_legacy_items_get_schema_defaults_without_losing_original_fields(tmp_pat
     assert item["messages"][0]["content"] == "历史错题"
     assert item["annotations"] == []
     assert item["location"]["chapter"] == "暂未确定"
+
+
+def test_legacy_chinese_and_invalid_sources_are_normalized_without_rewriting(tmp_path):
+    path = tmp_path / "mistakes.json"
+    records = [
+        {
+            "id": "a" * 32,
+            "student_id": "student-a",
+            "session_id": "session-a",
+            "question": "中文 AI 来源",
+            "answer": "答案",
+            "agent": "已改名的服务",
+            "source": "AI 生成",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        },
+        {
+            "id": "b" * 32,
+            "student_id": "student-a",
+            "session_id": "session-a",
+            "question": "旧题库来源但缺少 ID",
+            "answer": "答案",
+            "agent": "答疑 Agent",
+            "source": "题库",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        },
+        {
+            "id": "c" * 32,
+            "student_id": "student-a",
+            "session_id": "session-a",
+            "question": "非法来源但有可靠题库引用",
+            "answer": "答案",
+            "agent": "答疑 Agent",
+            "source": "外部导入",
+            "question_bank_id": "QB:bank-1:q-1",
+            "source_ref": {"kind": "question_bank", "question_bank_id": "bank-1"},
+            "created_at": "2026-01-01T00:00:00+00:00",
+        },
+        {
+            "id": "d" * 32,
+            "student_id": "student-a",
+            "session_id": "session-a",
+            "question": "非法来源安全降级",
+            "answer": "答案",
+            "agent": "答疑 Agent",
+            "source": "我的分类",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        },
+    ]
+    path.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+    original = path.read_bytes()
+    book = MistakeBook(path)
+
+    first = asyncio.run(book.list("student-a"))
+    second = asyncio.run(book.list("student-a"))
+
+    by_question = {item["question"]: item for item in first}
+    assert by_question["中文 AI 来源"]["source"] == "ai_generated"
+    assert by_question["旧题库来源但缺少 ID"]["source"] == "question_bank"
+    assert by_question["非法来源但有可靠题库引用"]["source"] == "question_bank"
+    assert by_question["非法来源安全降级"]["source"] == "user_uploaded"
+    assert first == second
+    assert path.read_bytes() == original
 
 
 def test_categories_annotations_deduplication_and_user_isolation(tmp_path):
@@ -436,6 +552,317 @@ def test_candidate_requires_explicit_confirmation_before_it_enters_mistake_book(
             "photo_retention": "processed_only",
         },
     ).status_code == 404
+
+
+def test_candidate_source_matrix_survives_confirmation_and_reload(tmp_path, monkeypatch):
+    from backend.app import main as main_module
+
+    book = MistakeBook(tmp_path / "mistakes.json")
+    candidates = MistakeCandidateStore(tmp_path / "candidates.json")
+    homework_store = HomeworkStore(tmp_path / "homework")
+    bank = homework_store.create_question_bank(
+        title="测试题库",
+        filename="bank.png",
+        content_type="image/png",
+        data=b"test-bank",
+    )
+    original_question_id = "7" * 32
+    homework_store.update_question_bank(
+        bank["id"],
+        status="ready",
+        questions=[
+            {
+                "id": original_question_id,
+                "number": "1",
+                "question_type": "short_answer",
+                "prompt": "戴维南等效题",
+                "options": [],
+                "points": 5,
+                "answer": "等效电压与等效电阻",
+                "figures": [],
+                "layout_images": [],
+                "answer_figures": [],
+            }
+        ],
+    )
+    bank_homework = homework_store.create_homework_from_question_bank(
+        title="题库作业",
+        instructions="",
+        due_at="",
+        selections=[{"bank_id": bank["id"], "question_ids": [original_question_id]}],
+    )
+    homework_store.publish(bank_homework["id"])
+    copied_question_id = bank_homework["questions"][0]["id"]
+    bank_submission = homework_store.create_submission(
+        homework_id=bank_homework["id"],
+        student_id="student-a",
+        files=[],
+        answers=[{"question_id": copied_question_id, "answer": "学生题库作答"}],
+        file_question_ids=[],
+    )
+
+    uploaded_homework = homework_store.create_homework(
+        title="上传型作业",
+        instructions="",
+        due_at="",
+        filename="uploaded.png",
+        content_type="image/png",
+        data=b"test-uploaded",
+    )
+    uploaded_question_id = "8" * 32
+    homework_store.update_homework(
+        uploaded_homework["id"],
+        status="draft",
+        questions=[
+            {
+                "id": uploaded_question_id,
+                "number": "1",
+                "question_type": "short_answer",
+                "prompt": "外部电路题",
+                "options": [],
+                "points": 5,
+                "answer": "外部题参考答案",
+            }
+        ],
+    )
+    homework_store.publish(uploaded_homework["id"])
+    uploaded_submission = homework_store.create_submission(
+        homework_id=uploaded_homework["id"],
+        student_id="student-a",
+        files=[],
+        answers=[{"question_id": uploaded_question_id, "answer": "学生上传题作答"}],
+        file_question_ids=[],
+    )
+    monkeypatch.setattr(main_module, "mistake_book", book)
+    monkeypatch.setattr(main_module, "mistake_candidates", candidates)
+    monkeypatch.setattr(main_module, "homework_store", homework_store)
+    monkeypatch.setattr(
+        main_module,
+        "mistake_knowledge",
+        MistakeKnowledgeService(FakeKnowledgeBases(error=True)),
+    )
+
+    async def metadata(payload):
+        return [payload.question.split("：", 1)[0]], payload.question
+
+    async def resolve(_session_id, _attachment_ids):
+        return SimpleNamespace(items=[])
+
+    async def promote(**_kwargs):
+        return [], {"retention": "text_only"}
+
+    monkeypatch.setattr(main_module, "_extract_mistake_metadata", metadata)
+    monkeypatch.setattr(main_module.attachments, "resolve", resolve)
+    monkeypatch.setattr(main_module.attachments, "promote_to_mistake", promote)
+    client = TestClient(main_module.app)
+    scenarios = [
+        {
+            "question": "题库直接：戴维南等效题",
+            "agent": "题库服务",
+            "source": "question_bank",
+            "question_bank_id": f"QB:{bank['id']}:{original_question_id}",
+            "source_ref": {
+                "kind": "question_bank",
+                "question_id": original_question_id,
+                "question_bank_id": bank["id"],
+                "origin_question_id": original_question_id,
+            },
+        },
+        {
+            "question": "题库：戴维南等效题",
+            "agent": "作业批改 Agent",
+            "source": "question_bank",
+            "question_bank_id": f"QB:{bank['id']}:{original_question_id}",
+            "source_ref": {
+                "kind": "homework_question",
+                "homework_id": bank_homework["id"],
+                "submission_id": bank_submission["id"],
+                "question_id": copied_question_id,
+                "question_bank_id": bank["id"],
+                "origin_question_id": original_question_id,
+            },
+        },
+        {
+            "question": "AI：同类二极管练习",
+            "agent": "练习编排服务",
+            "source": "ai_generated",
+            "question_bank_id": "",
+            "source_ref": {
+                "kind": "ai_practice",
+                "practice_id": "practice-2",
+                "question_id": "original-user-2",
+            },
+        },
+        {
+            "question": "上传作业：外部电路题",
+            "agent": "作业批改 Agent",
+            "source": "user_uploaded",
+            "question_bank_id": "",
+            "source_ref": {
+                "kind": "homework_question",
+                "homework_id": uploaded_homework["id"],
+                "submission_id": uploaded_submission["id"],
+                "question_id": uploaded_question_id,
+            },
+        },
+    ]
+
+    confirmed = []
+    for index, scenario in enumerate(scenarios, 1):
+        created = client.post(
+            "/api/mistake-candidates",
+            json={
+                "student_id": "student-a",
+                "session_id": f"session-{index}",
+                "question": scenario["question"],
+                "answer": f"参考答案 {index}",
+                "agent": scenario["agent"],
+                "knowledge_base": "default",
+                "source": scenario["source"],
+                "question_bank_id": scenario["question_bank_id"],
+                "source_ref": scenario["source_ref"],
+                "attempt": {
+                    "student_answer": f"学生作答 {index}",
+                    "grading_feedback": f"反馈 {index}",
+                },
+                "solution": {"answer": f"参考答案 {index}"},
+            },
+        )
+        assert created.status_code == 200, created.text
+        candidate = created.json()["candidate"]
+        assert candidate["source"] == scenario["source"]
+        assert candidate["source_ref"] == {
+            "homework_id": "",
+            "submission_id": "",
+            "question_id": "",
+            "question_bank_id": "",
+            "origin_question_id": "",
+            "practice_id": "",
+            **scenario["source_ref"],
+        }
+        result = client.post(
+            f"/api/mistake-candidates/{candidate['id']}/confirm",
+            json={
+                "student_id": "student-a",
+                "reason": "wrong",
+                "category_id": "uncategorized",
+                "title": scenario["question"],
+                "photo_retention": "text_only",
+            },
+        )
+        assert result.status_code == 200, result.text
+        confirmed.append(result.json()["mistake"])
+
+    reloaded = {
+        item["question"]: item for item in asyncio.run(MistakeBook(book.path).list("student-a"))
+    }
+    for scenario, item in zip(scenarios, confirmed, strict=True):
+        persisted = reloaded[scenario["question"]]
+        assert item["source"] == scenario["source"]
+        assert persisted["source"] == scenario["source"]
+        assert persisted["source_ref"] == item["source_ref"]
+        assert persisted["question_bank_id"] == scenario["question_bank_id"]
+        assert persisted["attempt"]["student_answer"].startswith("学生作答")
+        assert persisted["solution"]["answer"].startswith("参考答案")
+        assert persisted["candidate_id"]
+
+    forged_question_id = client.post(
+        "/api/mistake-candidates",
+        json={
+            "student_id": "student-a",
+            "session_id": "session-forged-bank",
+            "question": "伪造题库原题",
+            "answer": "答案",
+            "agent": "作业批改 Agent",
+            "source": "question_bank",
+            "question_bank_id": f"QB:{bank['id']}:{'9' * 32}",
+            "source_ref": scenarios[1]["source_ref"],
+        },
+    )
+    cross_student_submission = client.post(
+        "/api/mistake-candidates",
+        json={
+            "student_id": "student-b",
+            "session_id": "session-cross-student",
+            "question": "跨学生作业来源",
+            "answer": "答案",
+            "agent": "作业批改 Agent",
+            "source": "question_bank",
+            "question_bank_id": scenarios[1]["question_bank_id"],
+            "source_ref": scenarios[1]["source_ref"],
+        },
+    )
+    assert forged_question_id.status_code == 400
+    assert cross_student_submission.status_code == 400
+
+    rejected = client.post(
+        "/api/mistake-candidates",
+        json={
+            "student_id": "student-a",
+            "session_id": "session-rejected",
+            "question": "不加入的手动题",
+            "answer": "答案",
+            "agent": "答疑 Agent",
+            "source": "user_uploaded",
+            "source_ref": {"kind": "chat", "question_id": "manual-4"},
+        },
+    )
+    assert rejected.status_code == 200
+    rejected_id = rejected.json()["candidate"]["id"]
+    assert client.delete(
+        f"/api/mistake-candidates/{rejected_id}",
+        params={"student_id": "student-a"},
+    ).status_code == 200
+    assert asyncio.run(candidates.get("student-a", rejected_id)) is None
+    assert len(asyncio.run(book.list("student-a"))) == len(scenarios)
+
+
+def test_candidate_rejects_contradictory_or_untraceable_source_before_staging(
+    tmp_path, monkeypatch
+):
+    from backend.app import main as main_module
+
+    candidates = MistakeCandidateStore(tmp_path / "candidates.json")
+    monkeypatch.setattr(main_module, "mistake_candidates", candidates)
+    client = TestClient(main_module.app)
+    base = {
+        "student_id": "student-a",
+        "session_id": "session-a",
+        "question": "来源校验题",
+        "answer": "答案",
+        "agent": "练习编排服务",
+    }
+
+    ai_without_task = client.post(
+        "/api/mistake-candidates",
+        json={
+            **base,
+            "source": "ai_generated",
+            "source_ref": {"kind": "ai_practice"},
+        },
+    )
+    forged_bank = client.post(
+        "/api/mistake-candidates",
+        json={
+            **base,
+            "source": "question_bank",
+            "question_bank_id": "QB:bank-1:q-1",
+            "source_ref": {"kind": "photo"},
+        },
+    )
+    contradictory = client.post(
+        "/api/mistake-candidates",
+        json={
+            **base,
+            "source": "user_uploaded",
+            "source_ref": {"kind": "ai_practice", "practice_id": "practice-1"},
+        },
+    )
+
+    assert ai_without_task.status_code == 400
+    assert forged_bank.status_code == 400
+    assert contradictory.status_code == 400
+    assert candidates._read() == []
 
 
 def test_photo_assets_are_promoted_out_of_chat_session_with_original_untouched(tmp_path):
