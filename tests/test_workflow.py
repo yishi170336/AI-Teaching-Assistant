@@ -7,7 +7,7 @@ from backend.app.agents.workflow import (
     _detect_quiz_family,
     _filter_grounding_hits,
     _finalize_answer_citations,
-    _plan_schedule_guidance,
+    _plan_structure_guidance,
     _quiz_reference,
     _quiz_family_matches,
     _recent_generated_questions,
@@ -611,7 +611,7 @@ def test_learning_plan_reports_the_sources_referenced_in_its_answer():
             "message": "制定学习规划",
             "llm": FakePlanModel(),
             "hits": [_retrieval_hit(index) for index in range(1, 5)],
-            "plan_profile": {"schedule_guidance": {"calendar_required": False}},
+            "plan_profile": {"plan_guidance": {"time_arrangement": "disabled"}},
             "on_delta": on_delta,
         })
         return result, deltas
@@ -641,23 +641,17 @@ def test_router_uses_model_to_select_learning_plan_intent():
     assert routed["intent"] == "plan"
 
 
-def test_learning_plan_pace_scales_with_scope_and_only_uses_calendar_when_requested():
-    focused = _plan_schedule_guidance(
+def test_learning_plan_structure_scales_with_scope_without_time_arrangements():
+    focused = _plan_structure_guidance(
         {"knowledge_points": ["静态工作点"], "prerequisite_points": []},
-        "帮我补习静态工作点",
     )
-    broad = _plan_schedule_guidance(
+    broad = _plan_structure_guidance(
         {
             "knowledge_points": [f"知识点{i}" for i in range(1, 8)],
             "prerequisite_points": ["KCL", "KVL"],
         },
-        "制定知识补全规划",
     )
-    timed = _plan_schedule_guidance(
-        {"knowledge_points": ["静态工作点", "失真分析"]},
-        "请在两周内完成复习",
-    )
-    clustered = _plan_schedule_guidance(
+    clustered = _plan_structure_guidance(
         {
             "knowledge_points": [
                 "共射电压放大能力",
@@ -670,14 +664,19 @@ def test_learning_plan_pace_scales_with_scope_and_only_uses_calendar_when_reques
             ],
             "prerequisite_points": [],
         },
-        "依据错题本制定知识补全规划",
     )
 
     assert focused["scope_level"] == "聚焦"
-    assert focused["calendar_required"] is False
-    assert "2-4个学习课次" in focused["recommended_pace"]
+    assert focused["time_arrangement"] == "disabled"
+    assert focused["required_stage_fields"] == [
+        "目标",
+        "核心内容",
+        "具体行动",
+        "练习与复盘",
+        "完成标准",
+        "资料依据",
+    ]
     assert broad["scope_level"] == "系统"
-    assert "周" not in broad["recommended_pace"]
     assert clustered["scope_level"] == "中等"
     assert clustered["scope_module_count"] == 3
     assert clustered["learning_modules"] == [
@@ -685,10 +684,13 @@ def test_learning_plan_pace_scales_with_scope_and_only_uses_calendar_when_reques
         "旁路电容与发射极支路",
         "反馈机制与稳定性",
     ]
-    assert timed["calendar_required"] is True
+    for guidance in (focused, broad, clustered):
+        assert "calendar_required" not in guidance
+        assert "recommended_pace" not in guidance
+        assert "schedule_format" not in guidance
 
 
-def test_learning_goal_analysis_rejects_hallucinated_seven_day_horizon():
+def test_learning_goal_analysis_drops_hallucinated_time_horizon():
     class FakePlannerModel:
         model = "test-planner"
 
@@ -707,9 +709,10 @@ def test_learning_goal_analysis_rejects_hallucinated_seven_day_horizon():
         "llm": FakePlannerModel(),
     }))["plan_profile"]
 
-    assert profile["time_horizon"] == "未指定（不得假设固定天数）"
-    assert profile["schedule_guidance"]["calendar_required"] is False
-    assert profile["schedule_guidance"]["scope_point_count"] == 1
+    assert "time_horizon" not in profile
+    assert "schedule_guidance" not in profile
+    assert profile["plan_guidance"]["time_arrangement"] == "disabled"
+    assert profile["plan_guidance"]["scope_point_count"] == 1
 
 
 def test_attachment_analysis_uses_request_selected_client():

@@ -857,12 +857,6 @@ def _finalize_answer_citations(
     return body + "\n\n### 检索依据\n\n" + "\n".join(lines), cited_sources
 
 
-_EXPLICIT_TIME_PATTERN = re.compile(
-    r"(?:[一二两三四五六七八九十半\d]+\s*(?:小时|天|周|个月|月)"
-    r"|每天|每周|截止|期限|考前|考试前|开学前|期末前|(?:之前|以内)完成)"
-)
-
-
 def _string_list(value: Any, limit: int) -> list[str]:
     values = value if isinstance(value, list) else [value] if value else []
     return list(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))[:limit]
@@ -895,46 +889,40 @@ def _learning_module_labels(points: list[str]) -> list[str]:
     return modules[:8]
 
 
-def _plan_schedule_guidance(
-    profile: dict[str, Any], message: str
-) -> dict[str, Any]:
+def _plan_structure_guidance(profile: dict[str, Any]) -> dict[str, Any]:
     knowledge_points = _string_list(profile.get("knowledge_points"), 12)
     prerequisites = _string_list(profile.get("prerequisite_points"), 6)
     scope_points = list(dict.fromkeys([*knowledge_points, *prerequisites])) or ["电路基础"]
     modules = _learning_module_labels(scope_points)
     point_count = len(scope_points)
     module_count = len(modules)
-    explicit_time = bool(_EXPLICIT_TIME_PATTERN.search(message))
     if module_count <= 1:
         scope_level = "聚焦"
-        recommended_pace = "2-4个学习课次，建议总投入3-6小时"
-        stage_guidance = "合并为诊断、学习练习、验收2-3个阶段"
+        stage_guidance = "合并为诊断补全、学习练习、复盘验收2-3个阶段"
     elif module_count <= 3:
         scope_level = "中等"
-        recommended_pace = "5-9个学习课次，建议总投入8-16小时"
         stage_guidance = "围绕学习模块安排3-4个阶段，合并相邻环节"
     elif module_count <= 5:
         scope_level = "较广"
-        recommended_pace = "8-12个学习课次，建议总投入14-24小时"
         stage_guidance = "按依赖关系安排4-6个阶段"
     else:
         scope_level = "系统"
-        recommended_pace = "12-20个学习课次，建议总投入24-40小时"
         stage_guidance = "拆分为多个知识模块并设置阶段验收"
     return {
         "scope_point_count": point_count,
         "scope_module_count": module_count,
         "learning_modules": modules,
         "scope_level": scope_level,
-        "explicit_time_request": explicit_time,
-        "calendar_required": explicit_time,
-        "recommended_pace": recommended_pace,
         "stage_guidance": stage_guidance,
-        "schedule_format": (
-            "依据学生明确给出的时间约束倒排日程"
-            if explicit_time
-            else "只给课次顺序和总投入范围，不生成按天日历"
-        ),
+        "required_stage_fields": [
+            "目标",
+            "核心内容",
+            "具体行动",
+            "练习与复盘",
+            "完成标准",
+            "资料依据",
+        ],
+        "time_arrangement": "disabled",
     }
 
 
@@ -1453,14 +1441,13 @@ class CircuitTutorEngine:
         return dict(result)
 
     async def _analyze_learning_goal(self, state: AgentState) -> AgentState:
-        await _emit(state, "plan-analyze", "正在识别目标、薄弱点与可用学习时间", "学习规划 Agent")
+        await _emit(state, "plan-analyze", "正在识别学习目标、薄弱点与前置依赖", "学习规划 Agent")
         client = state.get("llm") or self.ollama
         prompt = (
             "从学生请求中提取可执行学习规划信息。只输出合法 JSON，字段：goal（字符串）、"
             "knowledge_points（1-12个实际需要学习的知识点）、prerequisite_points（0-6个必要前置知识）、"
             "current_level（基础/进阶/未知）、difficulty（聚焦/中等/较广/系统）、"
-            "time_horizon（字符串）、constraints（字符串数组）。"
-            "只在学生明确给出小时、天数、周数或截止时间时填写 time_horizon，否则写未指定；禁止自行设为7天。\n"
+            "constraints（字符串数组）。不要提取或生成课次、小时、天数、周数、截止日期等时间安排。\n"
             f"最近对话：{_history_text(state.get('history', []))}\n"
             f"本轮请求：{state['message']}\n附件信息：{state.get('attachment_context', '')[:4000]}"
         )
@@ -1484,7 +1471,6 @@ class CircuitTutorEngine:
                 "prerequisite_points": [],
                 "current_level": "未知",
                 "difficulty": "中等",
-                "time_horizon": "未指定",
                 "constraints": [],
             }
         profile["knowledge_points"] = _string_list(
@@ -1494,10 +1480,9 @@ class CircuitTutorEngine:
             profile.get("prerequisite_points"), 6
         )
         profile["constraints"] = _string_list(profile.get("constraints"), 8)
-        schedule_guidance = _plan_schedule_guidance(profile, state["message"])
-        if not schedule_guidance["explicit_time_request"]:
-            profile["time_horizon"] = "未指定（不得假设固定天数）"
-        profile["schedule_guidance"] = schedule_guidance
+        profile.pop("time_horizon", None)
+        profile.pop("schedule_guidance", None)
+        profile["plan_guidance"] = _plan_structure_guidance(profile)
         return {"plan_profile": profile}
 
     async def _plan_retrieve(self, state: AgentState) -> AgentState:
@@ -1520,29 +1505,36 @@ class CircuitTutorEngine:
         )
         context = _source_context(state.get("hits", []))
         profile = state.get("plan_profile", {})
-        schedule_guidance = profile.get("schedule_guidance", {})
+        plan_guidance = profile.get("plan_guidance") or _plan_structure_guidance(profile)
         prompt = (
-            "你是大学电路课程学习规划师。依据学生画像和检索资料制定可执行路线。"
-            "先按 schedule_guidance.learning_modules 聚合同类细粒度标签，再决定阶段数量与节奏；"
+            "你是大学电路课程学习规划师。依据学生画像和检索资料制定一份完整、可直接执行的学习规划。"
+            "先按 plan_guidance.learning_modules 聚合同类细粒度标签，再决定阶段结构；"
             "不得把输入/输出电阻、相位、高频等同一电路模块的属性分别计为独立学习模块。"
             "路线遵循“诊断→前置补全→核心学习→专项练习→复盘验收”的逻辑顺序，但不强制五个阶段全部单列。"
             "只保留3-5个真正需要学生执行的阶段；“总体说明、阶段划分原则、范围评估”只能放在三级标题下，"
-            "绝不能写成阶段。每个阶段写清目标、建议投入、具体行动、完成标准和资料依据[资料n]。"
-            "严格遵守 schedule_guidance：只有 calendar_required=true 时才能输出按天/按周日历；"
-            "否则只给学习课次顺序和总投入区间，不得输出周数、7天清单、Day 1或虚构每日时长。"
-            "结尾给与本次范围匹配、口径明确的3-5项量化验收指标。"
+            "绝不能写成阶段。每个阶段必须完整写清目标、核心内容、具体行动、练习与复盘、完成标准和资料依据[资料n]。"
+            "任何情况下都不得输出时间安排，包括建议投入、阶段时长、课次、小时、按天/按周日历、Day编号、截止日期或总投入区间；"
+            "即使学生原始请求包含时间约束，也只规划知识依赖、学习行动和验收闭环。"
+            "核心内容写2-5项，具体行动写3-6项，练习与复盘写1-3项，完成标准写2-4项；"
+            "这份规划将直接制作成学生逐页执行的学习指导PPT，不是内容摘要或生成过程记录。"
+            "核心内容要写清需要掌握的概念、关系、公式适用条件和易错点；"
+            "具体行动必须使用学生可执行的动词开头，并说明使用什么资料、完成什么产出；"
+            "练习与复盘必须说明题型或复盘对象，完成标准必须可观察、可自测。"
+            "不得用空泛的“认真学习、加强理解”，不得用省略号代替必要指导。"
+            "结尾给与本次范围匹配、口径明确的3-6项量化验收指标。"
             "数学公式使用标准 LaTeX，并注明近似公式的适用条件；禁止用两个相同表达式进行对比。"
-            "不要输出 schedule_guidance 等内部字段名，不使用 Markdown 引用块“>”。"
+            "不要输出 plan_guidance 等内部字段名，不使用 Markdown 引用块“>”。"
             "严格使用以下可解析结构："
             "# 简短学习规划标题；"
-            "### 学习诊断（写总体目标和2-3条执行原则）；"
+            "### 学习诊断（写总体目标、知识缺口和2-3条执行原则）；"
             "## 第一阶段：简短阶段名；"
-            "目标：...；建议投入：...；具体行动：用列表写1-3项；完成标准：用列表写1-3项；资料依据：仅列[资料n]；"
+            "目标：...；核心内容：用列表写2-5项；具体行动：用列表写3-6项；"
+            "练习与复盘：用列表写1-3项；完成标准：用列表写2-4项；资料依据：列出对应[资料n]及用途；"
             "后续阶段保持相同结构；"
             "### 可量化验收指标（使用三列表格：指标/测量方式/达标阈值）。"
             "可见内容面向学生，句子简洁，不写生成过程或内容选择说明。\n\n"
             f"学生画像：{json.dumps(profile, ensure_ascii=False)}\n"
-            f"节奏约束：{json.dumps(schedule_guidance, ensure_ascii=False)}\n\n"
+            f"规划结构约束：{json.dumps(plan_guidance, ensure_ascii=False)}\n\n"
             f"学生原始请求：{state['message']}\n\n课程检索资料：\n{context or '未检索到资料'}"
         )
         parts: list[str] = []

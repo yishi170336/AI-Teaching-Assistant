@@ -146,12 +146,14 @@ def test_parse_learning_plan_builds_a_logical_story() -> None:
     assert plan.title == "晶体管放大电路学习规划"
     assert "完整知识链" in plan.goal
     assert len(plan.stages) == 4
-    assert plan.stages[0].duration == "1～2 小时"
     assert "直流通路" in plan.stages[0].actions[0]
-    assert "$I_{BQ}$" in plan.stages[1].goal
+    assert "完成 5 道前置自测题" in plan.stages[0].practices[0]
+    assert "I_BQ" in plan.stages[1].goal
     assert "旁路电容" in " ".join(plan.stages[2].actions)
+    assert "完成 4 道综合计算题" in " ".join(plan.stages[2].practices)
     assert "85%" in " ".join(plan.metrics)
-    assert len(plan.schedule) == 5
+    assert not hasattr(plan, "schedule")
+    assert all("小时" not in stage.title for stage in plan.stages)
 
     generic = parse_learning_plan(
         "# 学习规划\n\n目标：掌握反馈放大电路。\n\n## 阶段一：基础\n- 行动：完成概念复习",
@@ -165,7 +167,7 @@ def test_build_learning_plan_ppt_is_editable_and_in_bounds(tmp_path: Path) -> No
     plan, slide_count = build_learning_plan_ppt(SAMPLE_PLAN, output)
 
     assert output.stat().st_size > 30_000
-    assert slide_count == 11
+    assert slide_count >= 13
     presentation = Presentation(str(output))
     assert len(presentation.slides) == slide_count
     all_text = "\n".join(
@@ -177,12 +179,18 @@ def test_build_learning_plan_ppt_is_editable_and_in_bounds(tmp_path: Path) -> No
     assert "晶体管放大电路学习规划" in all_text
     assert "学习路线一图看懂" in all_text
     assert "静态工作点分析" in all_text
+    assert "学什么，怎么做" in all_text
+    assert "练什么，如何自测" in all_text
+    assert "对应资料" in all_text
     assert "什么时候算真正学会" in all_text
-    assert "资料索引" in all_text
+    assert "完成 5 道前置自测题" in all_text
+    assert "完成 4 道综合计算题" in all_text
     assert "$" not in all_text
     assert "\\frac" not in all_text
     assert "…" not in all_text
-    assert validate_learning_plan_ppt(output) == []
+    for forbidden in ("1～2 小时", "7 天学习安排", "Day 1", "24 小时后", "3 分钟内"):
+        assert forbidden not in all_text
+    assert validate_learning_plan_ppt(output, plan) == []
 
     for slide in presentation.slides:
         for shape in slide.shapes:
@@ -202,8 +210,8 @@ def test_realistic_plan_does_not_promote_meta_sections_or_table_headers(tmp_path
     assert plan.title == "反馈机制、三种基本组态、旁路电容 · 学习规划"
     assert len(plan.stages) == 4
     assert all("整体阶段划分原则" not in stage.title for stage in plan.stages)
-    assert plan.stages[0].duration == "2–4 课次"
-    assert len(plan.stages[0].actions) == 3
+    assert len(plan.stages[0].actions) == 2
+    assert len(plan.stages[0].practices) == 1
     assert len(plan.metrics) == 4
     assert all("指标项" not in metric for metric in plan.metrics)
     assert all("schedule_guidance" not in metric for metric in plan.metrics)
@@ -220,12 +228,96 @@ def test_realistic_plan_does_not_promote_meta_sections_or_table_headers(tmp_path
         if getattr(shape, "has_text_frame", False)
     )
 
-    assert slide_count == 10
-    assert "资料索引：每个阶段用到什么" in all_text
+    assert slide_count >= 13
+    assert "对应资料" in all_text
+    assert "学什么，怎么做" in all_text
+    assert "练什么，如何自测" in all_text
     assert "整体阶段划分原则" not in all_text
     assert "schedule_guidance" not in all_text
+    assert "课次" not in all_text
+    assert "小时" not in all_text
+    assert "3–6 周" not in all_text
     assert "…" not in all_text
     assert "\n>" not in all_text
+    assert validate_learning_plan_ppt(output, plan) == []
+
+
+def test_complete_student_guide_paginates_without_dropping_content(tmp_path: Path) -> None:
+    markdown = """
+# 反馈放大电路学习规划
+
+总体目标：能够从电路结构判断反馈类型，并用计算结果解释反馈对性能的影响。
+
+### 学习原则
+
+- 先识别输出取样与输入求和，再判断反馈极性。
+- 每完成一个模块，都要留下可检查的图、表或解题过程。
+- 错题必须归因并重做，直到能独立讲清判断依据。
+- 用反例检查公式适用条件，避免只背结论。
+
+## 阶段一：反馈结构识别
+
+- 目标：建立结构、极性和组态之间的对应关系。
+- 核心内容：电压取样与电流取样的结构差异。
+- 核心内容：串联求和与并联求和对输入电阻的影响。
+- 核心内容：瞬时极性法的判断步骤与常见误区。
+- 具体行动：标出典型电路的输出取样点和输入求和节点。
+- 具体行动：绘制四种反馈组态的结构对照表。
+- 具体行动：为每种组态写出判断依据。
+- 具体行动：对照错题本标记发生误判的步骤。
+- 具体行动：用自己的话解释负反馈形成条件。
+- 练习与复盘：完成四种反馈组态的判断题并逐题写出依据。
+- 练习与复盘：设计一个容易误判的反例并完成纠错说明。
+- 完成标准：能独立标出反馈网络、取样点和求和节点。
+- 完成标准：能说明四种反馈组态对输入输出电阻的影响。
+- 完成标准：反馈类型判断正确率达到 90%。
+- 完成标准：能解释至少两个常见误判原因。
+- 资料依据：[资料1] 反馈的基本概念与分类。
+- 资料依据：[资料2] 负反馈放大电路的四种组态。
+
+### 可量化验收指标
+
+- 能独立完成反馈类型判断。
+- 能用结构依据解释反馈极性。
+- 能把错题归入概念、识图或计算错误。
+- 能完成一页反馈组态对照表。
+- 同类错题重做正确率达到 95%。
+- 能根据新电路迁移判断方法。
+
+### 检索依据
+
+- [资料1] 电子电路基础 · 第五章 · 反馈的基本概念。
+- [资料2] 电子电路基础 · 第五章 · 负反馈放大电路的四种组态。
+- [资料3] 电子电路基础 · 第五章 · 1.0 mA · 第 300 页。
+""".strip()
+
+    output = tmp_path / "complete-guide.pptx"
+    plan, slide_count = build_learning_plan_ppt(markdown, output)
+    presentation = Presentation(str(output))
+    all_text = "\n".join(
+        shape.text
+        for slide in presentation.slides
+        for shape in slide.shapes
+        if getattr(shape, "has_text_frame", False)
+    )
+
+    assert slide_count > 8
+    expected_fragments = [
+        *plan.principles,
+        *plan.metrics,
+        *plan.references,
+        *plan.stages[0].concepts,
+        *plan.stages[0].actions,
+        *plan.stages[0].practices,
+        *plan.stages[0].standards,
+        *plan.stages[0].sources,
+    ]
+    assert expected_fragments
+    assert all(fragment in all_text for fragment in expected_fragments)
+    assert "1.0 mA" not in all_text
+    assert "[资料3] 电子电路基础 · 第五章 · 第 300 页" in all_text
+    assert "…" not in all_text
+    assert validate_learning_plan_ppt(output, plan) == []
 
 
 def test_generate_learning_plan_ppt_reuses_content_cache(tmp_path: Path) -> None:

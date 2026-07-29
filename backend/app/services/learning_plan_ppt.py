@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import re
 import tempfile
@@ -16,6 +17,8 @@ from pptx.enum.dml import MSO_LINE_DASH_STYLE
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
+
+from backend.app.rag.section_titles import is_measurement_section
 
 
 logger = logging.getLogger(__name__)
@@ -44,8 +47,8 @@ LINE = "D7E5E1"
 _HEADING_RE = re.compile(r"^(#{1,4})\s+(.+?)\s*$", re.MULTILINE)
 _LIST_RE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)、]\s+|[（(]?[一二三四五六七八九十]+[）)、.]\s*)")
 _STAGE_RE = re.compile(
-    r"(?:阶段\s*[一二三四五六七八九十\d]+|第\s*[一二三四五六七八九十\d]+\s*(?:阶段|步|课|天|周)|"
-    r"模块\s*[一二三四五六七八九十\d]+|第?\s*[一二三四五六七八九十\d]+\s*课次)",
+    r"(?:阶段\s*[一二三四五六七八九十\d]+|第\s*[一二三四五六七八九十\d]+\s*(?:阶段|步)|"
+    r"模块\s*[一二三四五六七八九十\d]+)",
     re.IGNORECASE,
 )
 _DURATION_RE = re.compile(
@@ -71,10 +74,11 @@ class PlanSection:
 class PlanStage:
     title: str
     goal: str
+    concepts: list[str] = field(default_factory=list)
     actions: list[str] = field(default_factory=list)
+    practices: list[str] = field(default_factory=list)
     standards: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
-    duration: str = ""
 
 
 @dataclass
@@ -83,9 +87,9 @@ class ParsedLearningPlan:
     goal: str
     summary: str
     stages: list[PlanStage]
-    schedule: list[str]
     metrics: list[str]
     principles: list[str]
+    references: list[str]
 
 
 def _mathtext_safe(value: str) -> str:
@@ -313,6 +317,9 @@ def _clean_math(value: str) -> str:
         r"\cdot": "·",
         r"\beta": "β",
         r"\alpha": "α",
+        r"\pi": "π",
+        r"\theta": "θ",
+        r"\lambda": "λ",
         r"\Delta": "Δ",
         r"\Omega": "Ω",
         r"\mu": "μ",
@@ -320,9 +327,33 @@ def _clean_math(value: str) -> str:
     }
     for source, target in replacements.items():
         value = value.replace(source, target)
-    value = re.sub(r"\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}", r"\1/\2", value)
-    value = re.sub(r"_\{([^{}]+)\}", r"\1", value)
-    value = re.sub(r"\^\{([^{}]+)\}", r"\1", value)
+    def braced(text: str, start: int) -> tuple[str, int] | None:
+        if start >= len(text) or text[start] != "{":
+            return None
+        depth = 0
+        for cursor in range(start, len(text)):
+            if text[cursor] == "{":
+                depth += 1
+            elif text[cursor] == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start + 1 : cursor], cursor + 1
+        return None
+
+    while r"\frac" in value:
+        start = value.find(r"\frac")
+        numerator = braced(value, start + len(r"\frac"))
+        if numerator is None:
+            break
+        denominator = braced(value, numerator[1])
+        if denominator is None:
+            break
+        replacement = f"({numerator[0]})/({denominator[0]})"
+        value = value[:start] + replacement + value[denominator[1] :]
+
+    value = re.sub(r"_\{([^{}]+)\}", r"_\1", value)
+    value = re.sub(r"\^\{([^{}]+)\}", r"^\1", value)
+    value = re.sub(r"([_^])([A-Za-z0-9])", r"\1\2", value)
     value = re.sub(r"\\[A-Za-z]+", "", value)
     value = value.replace("{", "").replace("}", "").replace("$", "")
     return value
@@ -425,6 +456,55 @@ def _editorial_clip(value: str, limit: int, *, preserve_latex: bool = True) -> s
     clipped = without_examples[: boundary if boundary >= max(8, limit // 2) else limit]
     clipped = clipped.rstrip("，、；：,. （(【[")
     return clipped or visible[:limit].rstrip("，、；：,. （(【[")
+
+
+def _remove_time_arrangements(value: str) -> str:
+    """Remove scheduling promises while keeping the learning action itself."""
+
+    value = re.sub(
+        r"\bDay\s*\d+(?:\s*[～~\-–—至]\s*\d+)?\s*[:：]?\s*",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"\d+\s*小时后", "完成首次订正后", value)
+    value = re.sub(r"(?:能)?在?\s*\d+\s*分钟内", "能独立", value)
+    value = re.sub(
+        r"[^。；\n]*(?:建议投入|预计用时|建议时长|阶段时长|推荐总投入|学习课次|"
+        r"按天日历|按周日历|每天|每周|跨\s*\d+(?:\s*[～~\-–—至]\s*\d+)?\s*周)"
+        r"[^。；\n]*[。；]?",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"\s+", " ", value)
+    return value.strip(" \t\r\n，。；、|")
+
+
+def _full_plan_copy(value: str) -> str:
+    value = _remove_time_arrangements(_plain(value, preserve_latex=False))
+    value = re.sub(r"\s+([，。；：！？])", r"\1", value)
+    return value.strip(" \t\r\n|")
+
+
+def _reference_copy(value: str) -> str:
+    """Hide OCR measurements that were stored as legacy section titles."""
+
+    cleaned = _full_plan_copy(value)
+    parts = [part.strip() for part in re.split(r"\s*[·|]\s*", cleaned) if part.strip()]
+    return " · ".join(part for part in parts if not is_measurement_section(part))
+
+
+def _full_standard_copy(value: str) -> str:
+    cleaned = _full_plan_copy(value)
+    if "共射电压放大能力" in cleaned and "共集输入电阻高" in cleaned:
+        return (
+            "能分别写出共射电压增益 |A_v|≈βR'_L/r_be 与共集输入电阻 "
+            "R_i≈r_π+(1+β)R_E，并说明各参数的作用"
+        )
+    if "知识图谱覆盖全部" in cleaned and "个知识点" in cleaned:
+        return re.sub(r"覆盖全部\s*\d+\s*个知识点", "覆盖全部学习模块", cleaned)
+    return cleaned
 
 
 def _compact_action(value: str) -> str:
@@ -589,8 +669,10 @@ def _content_items(value: str, limit: int = 12) -> list[str]:
 
 def _strip_label(value: str) -> tuple[str, str]:
     match = re.match(
-        r"^(目标|阶段目标|学习目标|行动|具体行动|学习任务|任务|练习|完成标准|验收标准|"
-        r"完成标志|资料依据|依据|参考资料|建议时长|预计用时|时间)\s*[:：]?\s*(.*)$",
+        r"^(目标|阶段目标|学习目标|核心内容|学习内容|知识要点|重点难点|"
+        r"行动|具体行动|学习任务|任务|练习|练习与复盘|复盘任务|"
+        r"完成标准|验收标准|完成标志|资料依据|依据|参考资料|"
+        r"建议投入|建议时长|预计用时|阶段时长|时间安排|时间)\s*[:：]?\s*(.*)$",
         value,
     )
     if not match:
@@ -601,24 +683,40 @@ def _strip_label(value: str) -> tuple[str, str]:
 def _stage_details(section: PlanSection) -> PlanStage:
     buckets: dict[str, list[str]] = {
         "goal": [],
+        "concepts": [],
         "actions": [],
+        "practices": [],
         "standards": [],
         "sources": [],
     }
     current = ""
     general: list[str] = []
-    for item in _content_items(section.body, 28):
+    for item in _content_items(section.body, 99):
         label, payload = _strip_label(item)
         if label:
             if "目标" in label:
                 current = "goal"
-            elif label in {"行动", "具体行动", "学习任务", "任务", "练习"}:
+            elif label in {"核心内容", "学习内容", "知识要点", "重点难点"}:
+                current = "concepts"
+            elif label in {"练习", "练习与复盘", "复盘任务"}:
+                current = "practices"
+            elif label in {
+                "行动",
+                "具体行动",
+                "学习任务",
+                "任务",
+            }:
                 current = "actions"
             elif "标准" in label or "标志" in label:
                 current = "standards"
             elif "依据" in label or "资料" in label:
                 current = "sources"
-            elif "时长" in label or "用时" in label or label == "时间":
+            elif (
+                "投入" in label
+                or "时长" in label
+                or "用时" in label
+                or "时间" in label
+            ):
                 current = ""
             if payload and current:
                 buckets[current].append(payload)
@@ -644,31 +742,37 @@ def _stage_details(section: PlanSection) -> PlanStage:
     title = title.strip(" ：:·|-—（）()，,")
     goal_candidates = buckets["goal"] or general[:1]
     actions = buckets["actions"] or general[1:] or general
+    practices = buckets["practices"]
+    if not practices:
+        retained_actions: list[str] = []
+        for action in actions:
+            if re.match(
+                r"^(?:完成.*(?:题|测试)|精做|练习|进行.*测试|自主设计.*反例|"
+                r"重做|回顾.*(?:反思|复盘))",
+                _plain(action, preserve_latex=False),
+            ):
+                practices.append(action)
+            else:
+                retained_actions.append(action)
+        actions = retained_actions
+    concepts = buckets["concepts"]
     standards = buckets["standards"]
     if not standards:
         standards = [item for item in general if re.search(r"完成|正确率|能够|独立|通过|达到", item)]
-    duration_match = _DURATION_RE.search(f"{section.title} {section.body[:500]}")
+    goal = _full_plan_copy(goal_candidates[0] if goal_candidates else title)
+    concepts = [_full_plan_copy(item) for item in _dedupe(concepts, 99)]
+    actions = [_full_plan_copy(item) for item in _dedupe(actions, 99)]
+    practices = [_full_plan_copy(item) for item in _dedupe(practices, 99)]
+    standards = [_full_standard_copy(item) for item in _dedupe(standards, 99)]
+    sources = [_reference_copy(item) for item in _dedupe(buckets["sources"], 99)]
     return PlanStage(
-        title=_editorial_clip(title, 24) or "学习任务",
-        goal=_editorial_clip(goal_candidates[0] if goal_candidates else title, 88),
-        actions=[
-            _compact_action(item)
-            for item in _dedupe(actions, 4)
-        ],
-        standards=[
-            _compact_standard(
-                (
-                    "能说明深度负反馈下闭环增益近似式及其适用条件"
-                    if "闭环增益近似表达式" in item
-                    else "能分别说明共射电压增益与共集输入电阻高的定量依据"
-                    if "共射电压放大能力" in item and "共集输入电阻高" in item
-                    else item
-                )
-            )
-            for item in _dedupe(standards, 3)
-        ],
-        sources=[_editorial_clip(item, 110) for item in _dedupe(buckets["sources"], 2)],
-        duration=duration_match.group(0) if duration_match else "",
+        title=_full_plan_copy(title) or "学习任务",
+        goal=goal,
+        concepts=[item for item in concepts if item],
+        actions=[item for item in actions if item],
+        practices=[item for item in practices if item],
+        standards=[item for item in standards if item],
+        sources=[item for item in sources if item],
     )
 
 
@@ -725,10 +829,26 @@ def _derive_title(sections: list[PlanSection], goal: str, topic: str) -> str:
 
 def parse_learning_plan(markdown: str, topic: str = "") -> ParsedLearningPlan:
     preamble, sections = _split_sections(markdown)
+    reference_sections = [
+        section
+        for section in sections
+        if re.search(r"检索依据|参考文献|引用资料|sources?", section.title, re.IGNORECASE)
+    ]
+    references = [
+        _reference_copy(item)
+        for section in reference_sections
+        for item in _content_items(section.body, 99)
+    ]
+    references = [item for item in _dedupe(references, 99) if item]
     relevant = [
         section
         for section in sections
-        if not re.search(r"检索依据|参考文献|引用资料|sources?", section.title, re.IGNORECASE)
+        if not re.search(
+            r"检索依据|参考文献|引用资料|sources?|日程|时间表|每日|每周|"
+            r"\d+\s*天|Day\s*\d+",
+            section.title,
+            re.IGNORECASE,
+        )
     ]
     stage_sections = [section for section in relevant if _STAGE_RE.search(section.title)]
     if not stage_sections:
@@ -741,15 +861,15 @@ def parse_learning_plan(markdown: str, topic: str = "") -> ParsedLearningPlan:
     if not stage_sections:
         stage_sections = [section for section in relevant if section.body][:5]
 
-    stages = [_stage_details(section) for section in stage_sections[:6]]
+    stages = [_stage_details(section) for section in stage_sections]
     stages = [stage for stage in stages if stage.title or stage.actions]
     if not stages:
         fallback = _content_items(markdown, 8)
         stages = [
             PlanStage(
                 title="核心学习任务",
-                goal=_shorten(fallback[0] if fallback else "完成本次学习目标", 95),
-                actions=[_shorten(item, 88) for item in fallback[1:6]],
+                goal=_full_plan_copy(fallback[0] if fallback else "完成本次学习目标"),
+                actions=[_full_plan_copy(item) for item in fallback[1:]],
                 standards=["能独立复述核心概念，并完成一次自测与纠错"],
             )
         ]
@@ -764,19 +884,8 @@ def parse_learning_plan(markdown: str, topic: str = "") -> ParsedLearningPlan:
         goal_candidates.append(goal_match.group(1))
     goal_candidates.extend(stage.goal for stage in stages[:1])
     goal_candidates.extend(_content_items(preamble, 2))
-    goal = _editorial_clip(
-        next((item for item in goal_candidates if _plain(item)), "完成本次学习目标"),
-        58,
-    )
-
-    schedule_sections = [
-        section
-        for section in relevant
-        if re.search(r"日程|安排|时间表|每日|每周|进度|Day\s*\d+", section.title, re.IGNORECASE)
-    ]
-    schedule = _dedupe(
-        [item for section in schedule_sections for item in _content_items(section.body, 12)],
-        7,
+    goal = _full_plan_copy(
+        next((item for item in goal_candidates if _plain(item)), "完成本次学习目标")
     )
 
     metric_sections = [
@@ -785,22 +894,29 @@ def parse_learning_plan(markdown: str, topic: str = "") -> ParsedLearningPlan:
         if re.search(r"验收|指标|完成标准|自测|复盘|检查", section.title)
         and section not in stage_sections
     ]
-    metrics = [item for section in metric_sections for item in _content_items(section.body, 12)]
+    metrics = [item for section in metric_sections for item in _content_items(section.body, 99)]
     metrics = [
         item
         for item in metrics
         if not re.fullmatch(r"指标项\s*·\s*具体内容\s*·\s*达标阈值", item)
-        and not re.search(r"本规划严格遵循|不生成日历|schedule_guidance", item, re.I)
+        and not re.search(
+            r"本规划严格遵循|不生成日历|schedule_guidance|plan_guidance|"
+            r"建议投入|总投入|按天|按周|课次",
+            item,
+            re.I,
+        )
     ]
     if not metrics:
         metrics.extend(item for stage in stages for item in stage.standards)
     normalized_metrics: list[str] = []
-    for item in _dedupe(metrics, 5):
+    for item in _dedupe(metrics, 99):
         if item.startswith("知识覆盖度"):
             item = "模块覆盖度 · 每个薄弱模块均有学习任务与对应自测 · 100%覆盖"
         elif item.startswith("公式应用准确性"):
             item = "公式应用准确性 · 能匹配公式、适用条件与电路场景 · 正确率≥95%"
-        normalized_metrics.append(_editorial_clip(item, 68, preserve_latex=False))
+        normalized = _full_plan_copy(item)
+        if normalized:
+            normalized_metrics.append(normalized)
     metrics = normalized_metrics
     if not metrics:
         metrics = [
@@ -816,23 +932,25 @@ def parse_learning_plan(markdown: str, topic: str = "") -> ParsedLearningPlan:
         if re.search(r"评估|诊断|原则|说明|节奏|现状", section.title)
         and section not in stage_sections
     ]
-    principles = [item for section in overview_sections for item in _content_items(section.body, 8)]
+    principles = [item for section in overview_sections for item in _content_items(section.body, 99)]
     normalized_principles: list[str] = []
-    for item in _dedupe(principles, 4):
+    for item in _dedupe(principles, 99):
         if item.startswith("窄范围合并"):
             item = "把关联知识放在同一模块中理解"
         elif item.startswith("系统范围拆分"):
             item = "按知识依赖关系分阶段推进"
         elif item.startswith("所有阶段严格遵循"):
             item = "完成本阶段验收后再进入下一阶段"
-        normalized_principles.append(_editorial_clip(item, 44))
+        normalized = _full_plan_copy(item)
+        if normalized:
+            normalized_principles.append(normalized)
     principles = normalized_principles
     default_principles = [
         "难点用例题与错题双向验证",
         "根据自测结果动态调整学习强度",
         "练习、纠错、复盘形成闭环",
     ]
-    principles = _dedupe(principles + default_principles, 3)
+    principles = _dedupe(principles, 99) if principles else default_principles
 
     summary_candidates = _content_items(preamble, 2)
     if not summary_candidates:
@@ -849,16 +967,16 @@ def parse_learning_plan(markdown: str, topic: str = "") -> ParsedLearningPlan:
         goal = f"围绕{title_core}补全知识链，通过针对性练习和复盘验收消除高频错因"
         summary = f"聚焦{title_core}，按“补前置—建联系—练迁移—做验收”的顺序推进"
     else:
-        summary = _editorial_clip(summary_candidates[0] if summary_candidates else goal, 88)
+        summary = _full_plan_copy(summary_candidates[0] if summary_candidates else goal)
 
     return ParsedLearningPlan(
         title=title,
         goal=goal,
         summary=summary,
         stages=stages,
-        schedule=[_editorial_clip(item, 72) for item in schedule],
         metrics=metrics,
         principles=principles,
+        references=references,
     )
 
 
@@ -1205,7 +1323,7 @@ def _title_slide(prs: Presentation, plan: ParsedLearningPlan, renderer: LatexTex
     title_display = plan.title
     if title_display.count("、") >= 2:
         title_display = "\n".join(title_display.rsplit("、", 1))
-    _text(slide, title_display, 0.75, 1.68, 7.65, 1.78, size=48, color=WHITE, bold=True, line_spacing=0.96)
+    _text(slide, title_display, 0.75, 1.68, 7.65, 1.78, size=50, color=WHITE, bold=True, line_spacing=0.94)
     _text(slide, _plain(plan.goal, preserve_latex=False), 0.78, 3.78, 7.25, 1.18, size=19, color="D4EAE6", line_spacing=1.12)
     _line(slide, 0.78, 5.42, 7.55, 5.42, color="347A73", width=1.2)
     _text(
@@ -1291,100 +1409,263 @@ def _roadmap_slide(
             x = start_x + index * (width + gap)
             _shape(slide, MSO_SHAPE.OVAL, x + width / 2 - 0.32, y, 0.64, 0.64, fill=CORAL if global_index == 0 else TEAL, line=MINT_LIGHT, line_width=3)
             _text(slide, str(global_index + 1), x + width / 2 - 0.32, y, 0.64, 0.64, size=15, color=WHITE, bold=True, font=FONT_LATIN, align=PP_ALIGN.CENTER, valign=MSO_ANCHOR.MIDDLE)
-            _text(slide, stage.title, x + 0.08, y + 0.94, width - 0.16, 0.82, size=20, color=INK, bold=True, align=PP_ALIGN.CENTER, line_spacing=1.0)
-            _text(slide, stage.duration or "达标后推进", x + 0.08, y + 1.9, width - 0.16, 0.28, size=12, color=TEAL, bold=True, align=PP_ALIGN.CENTER)
+            _text(slide, stage.title, x + 0.08, y + 0.94, width - 0.16, 1.0, size=20, color=INK, bold=True, align=PP_ALIGN.CENTER, line_spacing=1.0)
     _text(slide, "达到本阶段完成标准后，再进入下一阶段", 3.3, 6.24, 6.74, 0.36, size=13, color=TEAL_DARK, bold=True, align=PP_ALIGN.CENTER)
 
 
-def _stage_slide(
-    prs: Presentation,
-    stage: PlanStage,
-    index: int,
-    total: int,
-    page: int,
-    renderer: LatexTextRenderer,
+def _split_complete_text(value: str, max_chars: int = 112) -> list[str]:
+    """Split long copy without dropping characters or adding ellipses."""
+
+    value = _full_plan_copy(value)
+    if not value:
+        return []
+    fragments = [
+        fragment
+        for fragment in re.split(r"(?<=[。；！？])", value)
+        if fragment
+    ]
+    chunks: list[str] = []
+    current = ""
+    for fragment in fragments:
+        if len(current) + len(fragment) <= max_chars:
+            current += fragment
+            continue
+        if current:
+            chunks.append(current.strip())
+            current = ""
+        while len(fragment) > max_chars:
+            boundary = max(
+                fragment.rfind(marker, 0, max_chars)
+                for marker in ("；", "，", "、", "：")
+            )
+            cut = boundary + 1 if boundary >= max_chars // 2 else max_chars
+            chunks.append(fragment[:cut].strip())
+            fragment = fragment[cut:].strip()
+        current = fragment
+    if current:
+        chunks.append(current.strip())
+    return [chunk for chunk in chunks if chunk]
+
+
+def _entry_units(value: str) -> int:
+    return max(1, math.ceil(len(_plain(value, preserve_latex=False)) / 52))
+
+
+def _expanded_entries(entries: list[tuple[str, str]]) -> list[tuple[str, str, int]]:
+    expanded: list[tuple[str, str, int]] = []
+    for label, value in entries:
+        parts = _split_complete_text(value)
+        for index, part in enumerate(parts):
+            part_label = label if index == 0 else f"{label}（续）"
+            expanded.append((part_label, part, _entry_units(part)))
+    return expanded
+
+
+def _paginate_entries(
+    entries: list[tuple[str, str]],
+    *,
+    capacity: int,
+) -> list[list[tuple[str, str, int]]]:
+    pages: list[list[tuple[str, str, int]]] = []
+    current: list[tuple[str, str, int]] = []
+    used = 0
+    for entry in _expanded_entries(entries):
+        cost = entry[2] + 1
+        if current and used + cost > capacity:
+            pages.append(current)
+            current = []
+            used = 0
+        current.append(entry)
+        used += cost
+    if current:
+        pages.append(current)
+    return pages or [[("学习任务", "完成本阶段核心学习任务并记录结果", 1)]]
+
+
+def _detail_rows(
+    slide,
+    entries: list[tuple[str, str, int]],
+    *,
+    y: float = 2.28,
+    height: float = 4.22,
 ) -> None:
-    slide = prs.slides.add_slide(prs.slide_layouts[6])
-    _set_background(slide, CREAM if index % 2 else MINT_LIGHT)
-    _brand(slide)
-    _footer(slide, page)
-    _text(slide, f"STAGE {index:02d}  /  {total:02d}", 0.78, 1.0, 2.2, 0.26, size=10, color=CORAL, bold=True, font=FONT_LATIN)
-    _text(slide, stage.title, 0.75, 1.28, 9.1, 0.72, size=34, color=INK, bold=True)
-    chip = stage.duration or "按完成标准推进"
-    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 10.18, 1.29, 2.38, 0.5, fill=MINT, line=MINT)
-    _text(slide, chip, 10.18, 1.29, 2.38, 0.5, size=12, color=TEAL_DARK, bold=True, align=PP_ALIGN.CENTER, valign=MSO_ANCHOR.MIDDLE)
-
-    _text(slide, "阶段目标", 0.78, 2.28, 1.05, 0.25, size=11, color=CORAL, bold=True)
-    _text(slide, _plain(stage.goal, preserve_latex=False), 0.78, 2.67, 11.72, 0.72, size=18, color=INK, bold=True, line_spacing=1.05)
-    _line(slide, 0.78, 3.52, 12.52, 3.52, color="BDD9D3", width=1.2)
-
-    _text(slide, "要做什么", 0.78, 3.82, 2.0, 0.3, size=15, color=TEAL, bold=True)
-    _text(slide, "如何算完成", 8.38, 3.82, 2.0, 0.3, size=15, color=TEAL, bold=True)
-    _line(slide, 7.98, 3.84, 7.98, 6.55, color="C6DDD8", width=1.2)
-    actions = stage.actions or ["阅读并整理本阶段核心概念", "完成代表性练习并记录错因", "对照完成标准进行自测"]
-    _list_rows(
-        slide,
-        actions[:3],
-        0.78,
-        4.35,
-        6.76,
-        row_height=0.72,
-        size=15.5,
-        accent=CORAL if index == 1 else TEAL,
-    )
-    standards = stage.standards or ["能独立讲清核心概念", "完成一次自测并订正错误"]
-    _list_rows(
-        slide,
-        standards[:3],
-        8.38,
-        4.35,
-        4.14,
-        row_height=0.72,
-        size=15,
-        accent=TEAL,
-    )
-
-
-def _schedule_slide(
-    prs: Presentation,
-    plan: ParsedLearningPlan,
-    page: int,
-    renderer: LatexTextRenderer,
-) -> None:
-    slide = prs.slides.add_slide(prs.slide_layouts[6])
-    _set_background(slide, CREAM)
-    _slide_title(slide, "SCHEDULE / CADENCE", "把路线放进时间：按节奏持续推进", page)
-    items = plan.schedule[:5]
-    _line(slide, 1.35, 2.15, 1.35, 6.43, color="B6D8D2", width=2.2)
-    for index, item in enumerate(items):
-        y = 2.08 + index * (4.25 / max(len(items), 1))
-        _shape(slide, MSO_SHAPE.OVAL, 1.12, y, 0.46, 0.46, fill=CORAL if index == 0 else TEAL, line=CREAM, line_width=2.5)
-        _text(slide, f"{index + 1:02d}", 1.78, y - 0.03, 0.56, 0.26, size=11, color=CORAL, bold=True, font=FONT_LATIN)
+    gaps = 0.1 * max(len(entries) - 1, 0)
+    total_units = sum(units + 0.45 for _, _, units in entries)
+    unit_height = (height - gaps) / max(total_units, 1)
+    cursor = y
+    for index, (label, value, units) in enumerate(entries):
+        row_height = unit_height * (units + 0.45)
+        accent = CORAL if label == "阶段目标" else TEAL
+        _shape(
+            slide,
+            MSO_SHAPE.RECTANGLE,
+            0.78,
+            cursor + 0.06,
+            0.06,
+            max(0.34, row_height - 0.12),
+            fill=accent,
+            line=accent,
+        )
         _text(
             slide,
-            _editorial_clip(item, 78, preserve_latex=False),
-            2.42,
-            y - 0.09,
-            9.5,
-            0.65,
-            size=17,
-            color=INK_SOFT,
+            label,
+            1.02,
+            cursor + 0.05,
+            1.22,
+            row_height - 0.08,
+            size=13,
+            color=accent,
             bold=True,
+            valign=MSO_ANCHOR.MIDDLE,
         )
-    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 9.76, 6.18, 2.5, 0.5, fill=TEAL_DARK, line=TEAL_DARK)
-    _text(slide, "完成一项，复盘一次", 9.76, 6.18, 2.5, 0.5, size=11, color=WHITE, bold=True, align=PP_ALIGN.CENTER, valign=MSO_ANCHOR.MIDDLE)
+        _text(
+            slide,
+            value,
+            2.35,
+            cursor + 0.02,
+            10.12,
+            row_height - 0.04,
+            size=16.5,
+            color=INK if label == "阶段目标" else INK_SOFT,
+            bold=label == "阶段目标",
+            valign=MSO_ANCHOR.MIDDLE,
+            line_spacing=1.05,
+        )
+        cursor += row_height
+        if index < len(entries) - 1:
+            _line(slide, 1.02, cursor + 0.04, 12.48, cursor + 0.04, color=LINE, width=0.8)
+            cursor += 0.1
+
+
+def _stage_detail_slide(
+    prs: Presentation,
+    stage: PlanStage,
+    stage_index: int,
+    stage_total: int,
+    page: int,
+    entries: list[tuple[str, str, int]],
+    *,
+    section: str,
+    part_index: int,
+    part_total: int,
+) -> None:
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _set_background(slide, CREAM if stage_index % 2 else MINT_LIGHT)
+    _brand(slide)
+    _footer(slide, page)
+    _text(
+        slide,
+        f"STAGE {stage_index:02d} / {stage_total:02d}",
+        0.78,
+        0.99,
+        2.2,
+        0.26,
+        size=10,
+        color=CORAL,
+        bold=True,
+        font=FONT_LATIN,
+    )
+    _text(slide, stage.title, 0.75, 1.28, 8.9, 0.72, size=35, color=INK, bold=True)
+    part = f"  {part_index}/{part_total}" if part_total > 1 else ""
+    _text(
+        slide,
+        f"{section}{part}",
+        9.58,
+        1.46,
+        2.92,
+        0.3,
+        size=13,
+        color=TEAL,
+        bold=True,
+        align=PP_ALIGN.RIGHT,
+    )
+    _line(slide, 0.78, 2.02, 12.52, 2.02, color="BDD9D3", width=1.2)
+    _detail_rows(slide, entries)
+
+
+def _stage_slides(
+    prs: Presentation,
+    stage: PlanStage,
+    stage_index: int,
+    stage_total: int,
+    page: int,
+) -> int:
+    learning_entries = [("阶段目标", stage.goal)]
+    learning_entries.extend(("核心内容", item) for item in stage.concepts)
+    actions = stage.actions or ["根据本阶段目标整理知识要点，并形成可复查的学习产出"]
+    learning_entries.extend(("学习步骤", item) for item in actions)
+    learning_entries.extend(("对应资料", item) for item in stage.sources)
+    learning_pages = _paginate_entries(learning_entries, capacity=14)
+
+    standards = stage.standards or ["能独立讲清本阶段核心内容，并完成自测与纠错"]
+    practice_entries = [("练习与复盘", item) for item in stage.practices]
+    practice_entries.extend(("自测标准", item) for item in standards)
+    standard_pages = _paginate_entries(
+        practice_entries,
+        capacity=14,
+    )
+    added = 0
+    for part_index, entries in enumerate(learning_pages, start=1):
+        _stage_detail_slide(
+            prs,
+            stage,
+            stage_index,
+            stage_total,
+            page + added,
+            entries,
+            section="学什么，怎么做",
+            part_index=part_index,
+            part_total=len(learning_pages),
+        )
+        added += 1
+    for part_index, entries in enumerate(standard_pages, start=1):
+        _stage_detail_slide(
+            prs,
+            stage,
+            stage_index,
+            stage_total,
+            page + added,
+            entries,
+            section="练什么，如何自测",
+            part_index=part_index,
+            part_total=len(standard_pages),
+        )
+        added += 1
+    return added
+
+
+def _principle_slides(
+    prs: Presentation,
+    principles: list[str],
+    page: int,
+) -> int:
+    remaining = principles[3:]
+    if not remaining:
+        return 0
+    pages = _paginate_entries(
+        [("执行原则", principle) for principle in remaining],
+        capacity=12,
+    )
+    for part_index, entries in enumerate(pages, start=1):
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        _set_background(slide, CREAM)
+        kicker = f"LEARNING DIAGNOSIS / {part_index:02d}"
+        _slide_title(slide, kicker, "学习诊断：完整执行原则", page + part_index - 1)
+        _detail_rows(slide, entries, y=2.28, height=4.18)
+    return len(pages)
 
 
 def _metrics_slide(
     prs: Presentation,
-    plan: ParsedLearningPlan,
+    metrics: list[str],
     page: int,
-    renderer: LatexTextRenderer,
+    part_index: int,
+    part_total: int,
 ) -> None:
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_background(slide, TEAL_DARK)
-    _slide_title(slide, "QUALITY GATE", "用结果验收：什么时候算真正学会", page, dark=True)
-    metrics = plan.metrics[:5]
+    kicker = "QUALITY GATE" + (f" / {part_index:02d}" if part_total > 1 else "")
+    _slide_title(slide, kicker, "用结果验收：什么时候算真正学会", page, dark=True)
     x_positions = (0.76, 3.22, 9.35)
     widths = (2.34, 6.01, 3.21)
     headers = ("验收指标", "怎么测", "达标线")
@@ -1405,36 +1686,63 @@ def _metrics_slide(
     _text(slide, "全部达标 → 进入综合复盘     任一未达标 → 回到对应阶段补强", 2.34, 6.55, 8.66, 0.34, size=12, color="A9CFC8", bold=True, align=PP_ALIGN.CENTER)
 
 
-def _sources_slide(
+def _metrics_slides(
     prs: Presentation,
     plan: ParsedLearningPlan,
     page: int,
+) -> int:
+    chunks = [plan.metrics[index : index + 4] for index in range(0, len(plan.metrics), 4)]
+    chunks = chunks or [["学习结果 · 对照各阶段完成标准检查 · 全部达标"]]
+    for part_index, metrics in enumerate(chunks, start=1):
+        _metrics_slide(prs, metrics, page + part_index - 1, part_index, len(chunks))
+    return len(chunks)
+
+
+def _sources_slide(
+    prs: Presentation,
+    page: int,
+    entries: list[tuple[str, str, int]],
+    part_index: int,
+    part_total: int,
 ) -> None:
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_background(slide, CREAM)
-    _slide_title(slide, "REFERENCE MAP", "资料索引：每个阶段用到什么", page)
-    source_rows = [
-        (index, stage.title, _compact_source("；".join(stage.sources)))
-        for index, stage in enumerate(plan.stages, start=1)
-        if stage.sources
-    ][:5]
-    row_height = min(0.88, 4.25 / max(len(source_rows), 1))
-    for row_index, (stage_index, title, sources) in enumerate(source_rows):
-        y = 2.28 + row_index * row_height
-        _text(slide, f"{stage_index:02d}", 0.82, y + 0.05, 0.52, 0.3, size=16, color=CORAL, bold=True, font=FONT_LATIN)
-        _text(slide, title, 1.52, y + 0.02, 3.22, row_height - 0.08, size=17, color=INK, bold=True, valign=MSO_ANCHOR.MIDDLE)
-        _text(slide, sources, 4.96, y + 0.02, 7.48, row_height - 0.08, size=16, color=INK_SOFT, valign=MSO_ANCHOR.MIDDLE)
-        _line(slide, 0.82, y + row_height, 12.44, y + row_height, color=LINE, width=1.0)
-    _text(
-        slide,
-        "页码用于快速回到原资料核对概念、公式与例题；详细引用仍保留在学习规划正文中。",
-        0.82,
-        6.55,
-        10.8,
-        0.34,
-        size=12,
-        color=GRAY,
-    )
+    kicker = "REFERENCE MAP" + (f" / {part_index:02d}" if part_total > 1 else "")
+    _slide_title(slide, kicker, "资料索引：完整保留学习依据", page)
+    _detail_rows(slide, entries, y=2.28, height=4.12)
+    _text(slide, "按资料编号和页码回到原文核对概念、公式与例题。", 0.82, 6.55, 10.8, 0.34, size=12, color=GRAY)
+
+
+def _source_entries(plan: ParsedLearningPlan) -> list[tuple[str, str]]:
+    entries = [("检索依据", reference) for reference in plan.references]
+    unique: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for label, value in entries:
+        key = re.sub(r"\s+", "", value)
+        if key and key not in seen:
+            seen.add(key)
+            unique.append((label, value))
+    return unique
+
+
+def _sources_slides(
+    prs: Presentation,
+    plan: ParsedLearningPlan,
+    page: int,
+) -> int:
+    entries = _source_entries(plan)
+    if not entries:
+        return 0
+    pages = _paginate_entries(entries, capacity=12)
+    for part_index, page_entries in enumerate(pages, start=1):
+        _sources_slide(
+            prs,
+            page + part_index - 1,
+            page_entries,
+            part_index,
+            len(pages),
+        )
+    return len(pages)
 
 
 def _closing_slide(
@@ -1450,7 +1758,12 @@ def _closing_slide(
     _text(slide, "START SMALL. CLOSE THE LOOP.", 0.78, 1.05, 5.0, 0.3, size=11, color=CORAL, bold=True, font=FONT_LATIN)
     _text(slide, "现在就开始", 0.75, 1.53, 5.8, 0.88, size=44, color=INK, bold=True)
     _text(slide, "先完成一个最小闭环，再根据自测结果调整。", 0.78, 2.5, 6.5, 0.42, size=18, color=GRAY)
-    first_actions = plan.stages[0].actions[:3] if plan.stages else []
+    first_actions: list[str] = []
+    if plan.stages:
+        first_actions = [
+            _compact_action(action)
+            for action in [*plan.stages[0].actions, *plan.stages[0].practices][:3]
+        ]
     if not first_actions:
         first_actions = ["明确本阶段目标", "完成一次核心学习任务", "对照标准完成自测"]
     _list_rows(slide, first_actions, 0.8, 3.3, 6.42, row_height=0.82, size=16, accent=CORAL)
@@ -1464,7 +1777,10 @@ def _closing_slide(
     _text(slide, "把规划变成行动，才是学习真正发生的时刻。", 7.95, 6.54, 4.55, 0.34, size=11, color=TEAL, bold=True, align=PP_ALIGN.RIGHT)
 
 
-def validate_learning_plan_ppt(output_path: Path) -> list[str]:
+def validate_learning_plan_ppt(
+    output_path: Path,
+    plan: ParsedLearningPlan | None = None,
+) -> list[str]:
     """Return audience-facing and structural issues found in a generated deck."""
 
     presentation = Presentation(str(output_path))
@@ -1489,9 +1805,15 @@ def validate_learning_plan_ppt(output_path: Path) -> list[str]:
     visible_text = "\n".join(all_text)
     forbidden_patterns = (
         (r"schedule_guidance", "可见内容包含内部字段 schedule_guidance"),
+        (r"plan_guidance", "可见内容包含内部字段 plan_guidance"),
         (r"(?m)^\s*>", "可见内容包含 Markdown 引用标记"),
         (r"\\(?:frac|dfrac|tfrac|begin|end)\b", "可见内容包含未转换的 LaTeX 命令"),
         (r"(?<!\\)\$", "可见内容包含未转换的 LaTeX 定界符"),
+        (
+            r"建议投入|预计用时|建议时长|阶段时长|时间安排|学习日程|"
+            r"\bDay\s*\d+|学习课次|总投入|每天|每周|\d+\s*(?:课次|小时)",
+            "可见内容仍包含学习时间安排",
+        ),
     )
     for pattern, message in forbidden_patterns:
         if re.search(pattern, visible_text, re.IGNORECASE):
@@ -1500,6 +1822,24 @@ def validate_learning_plan_ppt(output_path: Path) -> list[str]:
     for section in required_sections:
         if section not in visible_text:
             issues.append(f"缺少必要页面：{section}")
+    if plan is not None:
+        compact_visible = re.sub(r"\s+", "", visible_text)
+        required_copy: list[str] = [plan.goal]
+        required_copy.extend(plan.principles)
+        for metric in plan.metrics:
+            required_copy.extend(_metric_parts(metric))
+        required_copy.extend(value for _, value in _source_entries(plan))
+        for stage in plan.stages:
+            required_copy.extend([stage.title, stage.goal])
+            required_copy.extend(stage.concepts)
+            required_copy.extend(stage.actions)
+            required_copy.extend(stage.practices)
+            required_copy.extend(stage.standards)
+            required_copy.extend(stage.sources)
+        for value in required_copy:
+            for chunk in _split_complete_text(value):
+                if re.sub(r"\s+", "", chunk) not in compact_visible:
+                    issues.append(f"规划内容未完整写入 PPT：{chunk[:24]}")
     return _dedupe(issues)
 
 
@@ -1521,22 +1861,16 @@ def build_learning_plan_ppt(markdown: str, output_path: Path, topic: str = "") -
         page = 2
         _overview_slide(presentation, plan, page, renderer)
         page += 1
+        page += _principle_slides(presentation, plan.principles, page)
         _roadmap_slide(presentation, plan, page, renderer)
         page += 1
         for index, stage in enumerate(plan.stages, start=1):
-            _stage_slide(presentation, stage, index, len(plan.stages), page, renderer)
-            page += 1
-        if plan.schedule:
-            _schedule_slide(presentation, plan, page, renderer)
-            page += 1
-        _metrics_slide(presentation, plan, page, renderer)
-        page += 1
-        if any(stage.sources for stage in plan.stages):
-            _sources_slide(presentation, plan, page)
-            page += 1
+            page += _stage_slides(presentation, stage, index, len(plan.stages), page)
+        page += _metrics_slides(presentation, plan, page)
+        page += _sources_slides(presentation, plan, page)
         _closing_slide(presentation, plan, page, renderer)
         presentation.save(str(output_path))
-        quality_issues = validate_learning_plan_ppt(output_path)
+        quality_issues = validate_learning_plan_ppt(output_path, plan)
         if quality_issues:
             raise ValueError("学习规划 PPT 质检失败：" + "；".join(quality_issues))
 
@@ -1544,7 +1878,7 @@ def build_learning_plan_ppt(markdown: str, output_path: Path, topic: str = "") -
 
 
 def learning_plan_ppt_path(root_dir: Path, session_id: str, markdown: str, topic: str = "") -> Path:
-    digest = hashlib.sha256(f"v3-editorial-layout\0{topic}\0{markdown}".encode("utf-8")).hexdigest()[:20]
+    digest = hashlib.sha256(f"v4-complete-no-time\0{topic}\0{markdown}".encode("utf-8")).hexdigest()[:20]
     return root_dir / "data" / "presentations" / session_id / f"learning-plan-{digest}.pptx"
 
 
