@@ -12,6 +12,8 @@ from backend.app.services.homework import (
     _clean_text,
     _consolidate_question_keys,
     _deduplicate_overlapping_figures,
+    _apply_question_knowledge_alignment,
+    _extract_question_knowledge_points,
     _grading_reference,
     _infer_figure_captions,
     _merge_prompt_parts,
@@ -269,6 +271,77 @@ def test_question_bank_is_durable_and_selected_questions_become_independent_home
     assert "answer" not in student["questions"][0]
     assert student["questions"][0]["origin_question_bank_id"] == bank_id
     assert student["questions"][0]["origin_question_id"] == question_id
+
+
+def test_question_bank_questions_extract_and_expose_graph_alignment(tmp_path):
+    questions = [{
+        "id": "a" * 32,
+        "number": "2.1",
+        "section_title": "反馈放大电路",
+        "prompt": "判断该电路属于电压串联负反馈还是电流并联负反馈。",
+        "subquestions": [],
+        "options": [],
+        "answer": "电压串联负反馈",
+    }]
+    client = FakeVisionClient({
+        "items": [{
+            "id": "a" * 32,
+            "knowledge_points": ["负反馈", "反馈组态"],
+        }]
+    })
+    points_by_id, warnings = _extract_question_knowledge_points(client, questions)
+    aligned_calls = []
+
+    def aligner(knowledge_base, points):
+        aligned_calls.append((knowledge_base, points))
+        return {
+            "knowledge_tags": [
+                {
+                    "tag_id": f"concept:{index}",
+                    "tag_name": point,
+                    "tag_source": "knowledge_graph",
+                    "knowledge_node_id": f"concept:{index}",
+                    "match_type": "exact" if index == 0 else "approximate",
+                    "confidence": 1.0 if index == 0 else 0.82,
+                    "is_exact": index == 0,
+                    "needs_confirmation": index != 0,
+                }
+                for index, point in enumerate(points)
+            ],
+            "location": {
+                "chapter": "第五章 反馈",
+                "section": "5.2 反馈组态",
+                "source": "knowledge_graph",
+                "confidence": 0.91,
+            },
+            "prerequisites": [],
+        }
+
+    _apply_question_knowledge_alignment(
+        questions,
+        points_by_id,
+        knowledge_base="course-feedback",
+        knowledge_aligner=aligner,
+    )
+
+    assert warnings == []
+    assert aligned_calls == [("course-feedback", ["负反馈", "反馈组态"])]
+    assert questions[0]["knowledge_points"] == ["负反馈", "反馈组态"]
+    assert [tag["confidence"] for tag in questions[0]["knowledge_tags"]] == [1.0, 0.82]
+    assert questions[0]["location"]["section"] == "5.2 反馈组态"
+
+    store = HomeworkStore(tmp_path / "homework")
+    bank = store.create_question_bank(
+        title="反馈题库",
+        filename="feedback.png",
+        content_type="image/png",
+        data=sample_image_bytes(),
+        knowledge_base="course-feedback",
+    )
+    store.update_question_bank(bank["id"], status="ready", questions=questions)
+    public = store.get_question_bank(bank["id"])
+    assert public["knowledge_base"] == "course-feedback"
+    assert public["questions"][0]["knowledge_tags"][1]["match_type"] == "approximate"
 
 
 def test_question_bank_questions_can_be_deleted_individually(tmp_path):

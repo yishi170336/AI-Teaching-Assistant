@@ -380,6 +380,15 @@ export type HomeworkQuestion = {
   answer_subquestions?: HomeworkQuestionPart[]
   answer_figures?: HomeworkAsset[]
   rubric?: string
+  knowledge_points?: string[]
+  knowledge_tags?: MistakeKnowledgeTag[]
+  location?: {
+    chapter: string
+    section: string
+    source: 'knowledge_graph' | 'unmatched' | 'unavailable'
+    confidence: number
+  }
+  prerequisites?: MistakePrerequisite[]
 }
 
 export type HomeworkStudentAnswer = {
@@ -505,6 +514,7 @@ export type QuestionBank = {
   page_count: number
   max_score: number
   question_count: number
+  knowledge_base: string
   questions: HomeworkQuestion[]
 }
 
@@ -1111,10 +1121,15 @@ export async function fetchQuestionBanks(): Promise<QuestionBank[]> {
   return result.question_banks || []
 }
 
-export async function createQuestionBank(file: File, title: string): Promise<QuestionBank> {
+export async function createQuestionBank(
+  file: File,
+  title: string,
+  knowledgeBase = 'default',
+): Promise<QuestionBank> {
   const data = new FormData()
   data.append('file', file)
   data.append('title', title)
+  data.append('knowledge_base', knowledgeBase)
   const response = await fetch('/api/question-banks', { method: 'POST', body: data })
   const result = await homeworkResponse<{ question_bank: QuestionBank }>(response, '题库上传失败')
   return result.question_bank

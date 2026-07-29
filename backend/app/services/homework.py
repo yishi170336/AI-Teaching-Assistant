@@ -12,7 +12,7 @@ import threading
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from uuid import uuid4
 
 import fitz
@@ -31,6 +31,16 @@ ANSWER_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 HOMEWORK_ID_PATTERN = re.compile(r"[a-f0-9]{32}")
 ASSET_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,160}")
 STUDENT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,96}")
+QUESTION_KNOWLEDGE_CANDIDATES = (
+    "PN结", "二极管", "稳压二极管", "晶体管", "三极管", "场效应管",
+    "静态工作点", "共射放大电路", "共集放大电路", "共基放大电路",
+    "差分放大电路", "集成运算放大器", "反馈", "负反馈", "正反馈", "深度负反馈",
+    "虚短", "虚断", "相量", "复阻抗", "功率因数", "有功功率", "无功功率",
+    "RLC", "谐振", "KCL", "KVL", "基尔霍夫电流定律", "基尔霍夫电压定律",
+    "戴维南定理", "诺顿定理", "叠加定理", "节点电压法", "网孔电流法",
+    "一阶电路", "二阶电路", "零输入响应", "零状态响应", "正弦稳态",
+    "滤波器", "振荡电路", "功率放大电路", "直流稳压电源",
+)
 
 
 def _now() -> str:
@@ -113,6 +123,156 @@ def _utf8_safe_json(value: Any) -> Any:
 def _clean_text(value: Any, limit: int = 24000) -> str:
     text = _utf8_safe_text(str(value or ""))
     return re.sub(r"[ \t]+", " ", text).strip()[:limit]
+
+
+def _question_knowledge_text(question: dict[str, Any]) -> str:
+    parts = [
+        _clean_text(question.get("section_title"), 500),
+        _clean_text(question.get("prompt"), 12000),
+        _compose_labeled_text("", question.get("subquestions", [])),
+        " ".join(
+            _clean_text(option.get("text"), 1000)
+            for option in _normalize_options(question.get("options", []))
+        ),
+        _clean_text(question.get("answer"), 4000),
+        _compose_labeled_text("", question.get("answer_subquestions", [])),
+    ]
+    return "\n".join(part for part in parts if part)
+
+
+def _fallback_question_knowledge_points(question: dict[str, Any]) -> list[str]:
+    content = _question_knowledge_text(question).casefold()
+    matched = [
+        point
+        for point in QUESTION_KNOWLEDGE_CANDIDATES
+        if point.casefold() in content
+    ]
+    return list(dict.fromkeys(matched))[:8] or ["电路基础"]
+
+
+def _unmatched_knowledge_alignment(points: list[str]) -> dict[str, Any]:
+    return {
+        "knowledge_tags": [
+            {
+                "tag_id": "custom:" + hashlib.sha1(point.encode("utf-8")).hexdigest()[:16],
+                "tag_name": point,
+                "tag_source": "custom",
+                "knowledge_node_id": None,
+                "match_type": "unmatched",
+                "confidence": 0.0,
+                "is_exact": False,
+                "needs_confirmation": True,
+            }
+            for point in points
+        ],
+        "location": {
+            "chapter": "暂未确定",
+            "section": "暂未确定",
+            "source": "unavailable",
+            "confidence": 0.0,
+        },
+        "prerequisites": [],
+    }
+
+
+def _extract_question_knowledge_points(
+    client: QwenVisionClient | Any,
+    questions: list[dict[str, Any]],
+) -> tuple[dict[str, list[str]], list[str]]:
+    """Extract concise concepts in batches; failures remain local to each batch."""
+    extracted: dict[str, list[str]] = {}
+    warnings: list[str] = []
+    for offset in range(0, len(questions), 24):
+        batch = questions[offset:offset + 24]
+        payload = [
+            {
+                "id": str(question.get("id", "")),
+                "number": _clean_text(question.get("number"), 80),
+                "question": _question_knowledge_text(question)[:12000],
+            }
+            for question in batch
+        ]
+        prompt = f"""你是高校电路课程题库的知识点标注员。请逐题提取 1-8 个准确、可用于课程知识图谱对齐的知识点。
+
+规则：
+1. 知识点必须来自题意，答案只用于消除歧义；不得把“计算”“题目”“选择题”等动作或题型当作知识点。
+2. 优先使用规范课程术语，例如“负反馈”“共射放大电路”“静态工作点”“KCL”。
+3. 不合并题目，不遗漏任何 id，不改写 id。
+
+待标注题目：
+{json.dumps(payload, ensure_ascii=False)}
+
+仅返回 JSON：
+{{"items":[{{"id":"题目标识","knowledge_points":["知识点1","知识点2"]}}]}}"""
+        try:
+            result = client.complete_json(prompt)
+            items = result.get("items", result.get("questions", []))
+            if not isinstance(items, list):
+                raise ValueError("知识点标注结果不是列表")
+            expected_ids = {str(question.get("id", "")) for question in batch}
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                question_id = str(item.get("id", ""))
+                raw_points = item.get("knowledge_points", [])
+                if question_id not in expected_ids or not isinstance(raw_points, list):
+                    continue
+                points = list(dict.fromkeys(
+                    _clean_text(point, 120)
+                    for point in raw_points
+                    if _clean_text(point, 120)
+                ))[:8]
+                if points:
+                    extracted[question_id] = points
+        except Exception as exc:
+            warnings.append(
+                f"第 {offset + 1}-{offset + len(batch)} 题知识点智能标注失败，"
+                f"已使用本地规则：{_clean_text(exc, 180)}"
+            )
+            logger.warning("Question-bank knowledge extraction batch failed: %s", exc)
+
+    for question in questions:
+        question_id = str(question.get("id", ""))
+        extracted.setdefault(
+            question_id,
+            _fallback_question_knowledge_points(question),
+        )
+    return extracted, warnings
+
+
+def _apply_question_knowledge_alignment(
+    questions: list[dict[str, Any]],
+    points_by_id: dict[str, list[str]],
+    *,
+    knowledge_base: str,
+    knowledge_aligner: Callable[[str, list[str]], dict[str, Any]] | None,
+) -> None:
+    for question in questions:
+        points = points_by_id.get(str(question.get("id", ""))) or (
+            _fallback_question_knowledge_points(question)
+        )
+        try:
+            alignment = (
+                knowledge_aligner(knowledge_base, points)
+                if knowledge_aligner is not None
+                else _unmatched_knowledge_alignment(points)
+            )
+        except Exception:
+            logger.warning(
+                "Question-bank graph alignment failed for %s",
+                question.get("id"),
+                exc_info=True,
+            )
+            alignment = _unmatched_knowledge_alignment(points)
+        question.update({
+            "knowledge_points": points,
+            "knowledge_tags": alignment.get("knowledge_tags", []),
+            "location": alignment.get(
+                "location",
+                _unmatched_knowledge_alignment(points)["location"],
+            ),
+            "prerequisites": alignment.get("prerequisites", []),
+        })
 
 
 def _as_bool(value: Any) -> bool:
@@ -437,7 +597,8 @@ class HomeworkStore:
                 "id", "section_key", "section_title", "number", "question_type",
                 "prompt", "subquestions", "options", "option_columns", "figure_position", "points",
                 "page_start", "page_end", "sequence", "origin_question_bank_id",
-                "origin_question_id",
+                "origin_question_id", "knowledge_points", "knowledge_tags", "location",
+                "prerequisites",
             )
         }
         for provenance_key in ("origin_question_bank_id", "origin_question_id"):
@@ -551,8 +712,10 @@ class HomeworkStore:
                 "id", "title", "status", "source_name", "created_at", "updated_at",
                 "extraction_model", "processing_error", "processing_warnings",
                 "processing_progress", "processing_message", "page_count", "max_score",
+                "knowledge_base",
             )
         }
+        result["knowledge_base"] = str(result.get("knowledge_base") or "default")
         result["max_score"] = round(
             sum(
                 _question_scoring_max(question)
@@ -632,6 +795,7 @@ class HomeworkStore:
         filename: str,
         content_type: str | None,
         data: bytes,
+        knowledge_base: str = "default",
     ) -> dict[str, Any]:
         safe_name = Path(filename).name or "question-bank.pdf"
         suffix = Path(safe_name).suffix.lower()
@@ -657,6 +821,7 @@ class HomeworkStore:
             "processing_warnings": [],
             "processing_progress": 0,
             "processing_message": "等待开始识别题库",
+            "knowledge_base": _clean_text(knowledge_base, 48) or "default",
             "page_count": 0,
             "max_score": 0,
             "questions": [],
@@ -707,6 +872,74 @@ class HomeworkStore:
             item.update(updates)
             item["updated_at"] = _now()
             self._write(state)
+
+    def backfill_question_bank_knowledge(
+        self,
+        knowledge_aligner: Callable[[str, list[str]], dict[str, Any]],
+    ) -> bool:
+        """Add graph metadata to ready banks created before knowledge tagging existed."""
+        with self._lock:
+            state = self._read()
+            pending = [
+                (
+                    str(bank.get("id", "")),
+                    str(bank.get("knowledge_base") or "default"),
+                    json.loads(json.dumps(question, ensure_ascii=False)),
+                )
+                for bank in state["question_banks"]
+                if bank.get("status") == "ready"
+                for question in bank.get("questions", [])
+                if isinstance(question, dict)
+                and (
+                    not isinstance(question.get("knowledge_points"), list)
+                    or not question.get("knowledge_points")
+                    or not isinstance(question.get("knowledge_tags"), list)
+                )
+            ]
+        if not pending:
+            return False
+
+        metadata: dict[tuple[str, str], dict[str, Any]] = {}
+        for bank_id, knowledge_base, question in pending:
+            points = _fallback_question_knowledge_points(question)
+            try:
+                alignment = knowledge_aligner(knowledge_base, points)
+            except Exception:
+                logger.warning(
+                    "Legacy question-bank graph alignment failed for %s",
+                    question.get("id"),
+                    exc_info=True,
+                )
+                alignment = _unmatched_knowledge_alignment(points)
+            metadata[(bank_id, str(question.get("id", "")))] = {
+                "knowledge_points": points,
+                "knowledge_tags": alignment.get("knowledge_tags", []),
+                "location": alignment.get(
+                    "location",
+                    _unmatched_knowledge_alignment(points)["location"],
+                ),
+                "prerequisites": alignment.get("prerequisites", []),
+            }
+
+        changed = False
+        with self._lock:
+            state = self._read()
+            for bank in state["question_banks"]:
+                bank_changed = False
+                for question in bank.get("questions", []):
+                    values = metadata.get(
+                        (str(bank.get("id", "")), str(question.get("id", "")))
+                    )
+                    if values is None:
+                        continue
+                    question.update(values)
+                    changed = True
+                    bank_changed = True
+                if bank_changed:
+                    bank["updated_at"] = _now()
+            if changed:
+                self._write(state)
+        return changed
 
     @staticmethod
     def _question_collection(record_kind: str) -> str:
@@ -3331,6 +3564,7 @@ def process_homework(
     *,
     client: QwenVisionClient | Any | None = None,
     layout_adapter: PDFExtractKitAdapter | Any | None = None,
+    knowledge_aligner: Callable[[str, list[str]], dict[str, Any]] | None = None,
     _record_kind: str = "homework",
 ) -> None:
     owned_client = False
@@ -3621,6 +3855,18 @@ def process_homework(
                 "source_segments": segments,
             })
         warnings.extend(_prune_cross_question_answer_leakage(questions))
+        if is_question_bank:
+            points_by_id, knowledge_warnings = _extract_question_knowledge_points(
+                client,
+                questions,
+            )
+            warnings.extend(knowledge_warnings)
+            _apply_question_knowledge_alignment(
+                questions,
+                points_by_id,
+                knowledge_base=str(raw.get("knowledge_base") or "default"),
+                knowledge_aligner=knowledge_aligner,
+            )
         max_score = round(sum(_question_scoring_max(item) for item in questions), 2)
         updater(
             homework_id,
@@ -3668,12 +3914,14 @@ def process_question_bank(
     *,
     client: QwenVisionClient | Any | None = None,
     layout_adapter: PDFExtractKitAdapter | Any | None = None,
+    knowledge_aligner: Callable[[str, list[str]], dict[str, Any]] | None = None,
 ) -> None:
     process_homework(
         store,
         bank_id,
         client=client,
         layout_adapter=layout_adapter,
+        knowledge_aligner=knowledge_aligner,
         _record_kind="question_bank",
     )
 

@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -9,6 +10,7 @@ import { Link } from 'react-router-dom'
 import {
   App as AntApp,
   Button,
+  Empty,
   Input,
   Modal,
   Popconfirm,
@@ -19,11 +21,14 @@ import {
   Tag,
   Tooltip,
   Upload,
+  type UploadFile,
   type UploadProps,
 } from 'antd'
 import {
+  AlertTriangle,
   ArrowUp,
   BookOpen,
+  BookMarked,
   Bot,
   BrainCircuit,
   BookmarkPlus,
@@ -42,11 +47,13 @@ import {
   Database,
   Download,
   FileText,
+  Eye,
   ExternalLink,
   FileCheck2,
   GraduationCap,
   HelpCircle,
   Layers3,
+  LibraryBig,
   Network,
   LoaderCircle,
   ListTodo,
@@ -56,6 +63,7 @@ import {
   Pencil,
   Paperclip,
   Presentation,
+  RefreshCw,
   Search,
   KeyRound,
   ServerCog,
@@ -80,6 +88,7 @@ import {
   cancelKnowledgeBaseBuild,
   ChapterKnowledgeSummary,
   confirmMistakeCandidate,
+  createQuestionBank,
   createMistakeCandidate,
   createMistakeCategory,
   deleteKnowledgeBase,
@@ -87,14 +96,18 @@ import {
   deleteMistakeAnnotation,
   deleteMistakeCategory,
   deleteScheduleItem,
+  deleteQuestionBank,
+  deleteQuestionBankQuestion,
   deleteSession,
   fetchKnowledgeGraph,
   fetchKnowledgeBases,
   fetchMistakeNotebook,
   fetchSchedule,
   fetchModels,
+  fetchQuestionBanks,
   fetchSession,
   fetchSessions,
+  HomeworkQuestion,
   KBStatus,
   knowledgeBaseSourceUrl,
   KnowledgeGraph,
@@ -106,6 +119,7 @@ import {
   PhotoRecognition,
   PracticeExercise,
   PracticeGrading,
+  QuestionBank,
   MistakeAnalysis,
   MistakeCandidateDraft,
   MistakeCategory,
@@ -113,6 +127,7 @@ import {
   MistakeReason,
   MistakeSource,
   renameMistakeCategory,
+  reprocessQuestionBank,
   ScheduleCategory,
   ScheduleItem,
   ScheduleItemDraft,
@@ -129,7 +144,7 @@ import {
 import { CHAT_MODEL, CHAT_MODEL_PROVIDER, ChatMessage, ChatMode, useChatStore } from '../store/chatStore'
 
 const { TextArea } = Input
-type WorkspaceView = 'chat' | 'graph' | 'homework' | 'mistakes' | 'schedule'
+type WorkspaceView = 'chat' | 'graph' | 'question-bank' | 'homework' | 'mistakes' | 'schedule'
 
 const mistakeSourceLabels: Record<MistakeSource, string> = {
   question_bank: '题库',
@@ -318,6 +333,10 @@ function Sidebar({
           <button className={`nav-item ${activeView === 'graph' ? 'active' : ''}`} onClick={() => onView('graph')}>
             <BookOpen size={17} />
             <span>知识图谱</span>
+          </button>
+          <button className={`nav-item ${activeView === 'question-bank' ? 'active' : ''}`} onClick={() => onView('question-bank')}>
+            <LibraryBig size={17} />
+            <span>题库</span>
           </button>
           <button className={`nav-item ${activeView === 'homework' ? 'active' : ''}`} onClick={() => onView('homework')}>
             <FileCheck2 size={17} />
@@ -2024,6 +2043,418 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
   )
 }
 
+const studentQuestionBankStatus = {
+  processing: { label: '提取中', color: 'processing', icon: <LoaderCircle className="spin" size={13} /> },
+  ready: { label: '可使用', color: 'success', icon: <CheckCircle2 size={13} /> },
+  error: { label: '提取失败', color: 'error', icon: <AlertTriangle size={13} /> },
+} as const
+
+function questionBankTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '刚刚'
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function questionTypeName(value: string) {
+  const labels: Record<string, string> = {
+    choice: '选择题',
+    fill_blank: '填空题',
+    true_false: '判断题',
+    short_answer: '简答题',
+    calculation: '计算题',
+    design: '设计题',
+    other: '综合题',
+  }
+  return labels[value] || '题目'
+}
+
+function QuestionKnowledgeAlignment({ question }: { question: HomeworkQuestion }) {
+  const tags = question.knowledge_tags?.length
+    ? question.knowledge_tags
+    : (question.knowledge_points || []).map((point) => ({
+      tag_id: point,
+      tag_name: point,
+      tag_source: 'custom' as const,
+      knowledge_node_id: null,
+      match_type: 'unmatched' as const,
+      confidence: 0,
+      is_exact: false,
+      needs_confirmation: true,
+    }))
+  return (
+    <section className="question-knowledge-alignment">
+      <header>
+        <span>KNOWLEDGE ALIGNMENT</span>
+        <small>
+          {question.location?.chapter || '暂未确定'}
+          {question.location?.section && question.location.section !== '暂未确定' ? ` · ${question.location.section}` : ''}
+        </small>
+      </header>
+      {tags.length ? (
+        <div className="question-knowledge-tags">
+          {tags.map((tag, index) => {
+            const confidence = Math.round(tag.confidence * 100)
+            const matchLabel = tag.match_type === 'exact'
+              ? '图谱精确匹配'
+              : tag.match_type === 'approximate'
+                ? '图谱近似匹配'
+                : '暂未匹配图谱'
+            return (
+              <Tooltip key={`${tag.tag_id}-${index}`} title={`${matchLabel} · 匹配程度 ${confidence}%`}>
+                <span className={`question-knowledge-tag ${tag.match_type}`}>
+                  <Tag color={tag.match_type === 'exact' ? 'green' : tag.match_type === 'approximate' ? 'gold' : 'default'}>
+                    {tag.tag_name}
+                  </Tag>
+                  <b>{confidence}%</b>
+                </span>
+              </Tooltip>
+            )
+          })}
+        </div>
+      ) : (
+        <p className="question-knowledge-empty">知识点正在补充中</p>
+      )}
+      {question.prerequisites?.length ? (
+        <p className="question-prerequisites">
+          前置知识：{question.prerequisites.map((item) => item.name).join('、')}
+        </p>
+      ) : null}
+    </section>
+  )
+}
+
+function QuestionBankQuestionCard({
+  question,
+  deleting,
+  onDelete,
+}: {
+  question: HomeworkQuestion
+  deleting: boolean
+  onDelete: () => void
+}) {
+  return (
+    <article className="student-bank-question">
+      <header className="student-bank-question-head">
+        <span className="student-bank-question-number">{question.number || question.sequence}</span>
+        <div>
+          <small>{question.section_title || '题目'} · {questionTypeName(question.question_type)}</small>
+          <strong>第 {question.number || question.sequence} 题</strong>
+        </div>
+        <Popconfirm
+          title="从题库中删除这道题？"
+          description="删除后无法恢复，已经生成的作业不受影响。"
+          okText="删除"
+          cancelText="取消"
+          okButtonProps={{ danger: true }}
+          onConfirm={onDelete}
+        >
+          <Button danger type="text" loading={deleting} icon={<Trash2 size={14} />}>删除</Button>
+        </Popconfirm>
+      </header>
+      <div className="student-bank-question-body">
+        <MathMarkdown content={question.prompt || '未识别到题干'} />
+        {question.subquestions?.length ? (
+          <div className="student-bank-subquestions">
+            {question.subquestions.map((part) => (
+              <div key={part.label}><b>（{part.label}）</b><MathMarkdown content={part.text} /></div>
+            ))}
+          </div>
+        ) : null}
+        {question.options?.length ? (
+          <div className={`student-bank-options columns-${question.option_columns || 1}`}>
+            {question.options.map((option) => (
+              <div key={option.label}><b>{option.label}.</b><MathMarkdown content={option.text} /></div>
+            ))}
+          </div>
+        ) : null}
+        {question.figures?.length ? (
+          <div className="student-bank-figures">
+            {question.figures.map((figure) => (
+              <figure key={figure.file}>
+                <img src={figure.url} alt={figure.caption || `第 ${question.number} 题题图`} />
+                {figure.caption ? <figcaption>{figure.caption}</figcaption> : null}
+              </figure>
+            ))}
+          </div>
+        ) : null}
+        <QuestionKnowledgeAlignment question={question} />
+        {(question.answer || question.answer_subquestions?.length || question.answer_figures?.length) ? (
+          <details className="student-bank-answer">
+            <summary>查看参考答案</summary>
+            {question.answer ? <MathMarkdown content={question.answer} /> : null}
+            {question.answer_subquestions?.map((part) => (
+              <div key={part.label}><b>（{part.label}）</b><MathMarkdown content={part.text} /></div>
+            ))}
+            {question.answer_figures?.length ? (
+              <div className="student-bank-figures answer">
+                {question.answer_figures.map((figure) => (
+                  <figure key={figure.file}>
+                    <img src={figure.url} alt={figure.caption || `第 ${question.number} 题答案图`} />
+                    {figure.caption ? <figcaption>{figure.caption}</figcaption> : null}
+                  </figure>
+                ))}
+              </div>
+            ) : null}
+          </details>
+        ) : null}
+      </div>
+    </article>
+  )
+}
+
+function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
+  const { message: toast } = AntApp.useApp()
+  const [banks, setBanks] = useState<QuestionBank[]>([])
+  const [loading, setLoading] = useState(true)
+  const [selectedBankId, setSelectedBankId] = useState('')
+  const [uploadOpen, setUploadOpen] = useState(false)
+  const [fileList, setFileList] = useState<UploadFile[]>([])
+  const [title, setTitle] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [actionId, setActionId] = useState('')
+  const [deletingQuestionId, setDeletingQuestionId] = useState('')
+  const selectedBank = banks.find((bank) => bank.id === selectedBankId) || null
+
+  const loadBanks = useCallback(async (withSpinner = false) => {
+    if (withSpinner) setLoading(true)
+    try {
+      setBanks(await fetchQuestionBanks())
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '题库读取失败')
+    } finally {
+      if (withSpinner) setLoading(false)
+    }
+  }, [toast])
+
+  useEffect(() => {
+    void loadBanks(true)
+  }, [loadBanks])
+
+  const hasProcessingBank = banks.some((bank) => bank.status === 'processing')
+  useEffect(() => {
+    const timer = window.setInterval(() => void loadBanks(), hasProcessingBank ? 2800 : 10000)
+    return () => window.clearInterval(timer)
+  }, [hasProcessingBank, loadBanks])
+
+  const closeUpload = () => {
+    if (uploading) return
+    setUploadOpen(false)
+    setFileList([])
+    setTitle('')
+  }
+
+  const uploadBank = async () => {
+    const file = fileList[0]?.originFileObj
+    if (!file) {
+      toast.warning('请先选择 PDF、图片或扫描版习题册')
+      return
+    }
+    setUploading(true)
+    try {
+      const bank = await createQuestionBank(file, title, knowledgeBase)
+      toast.success('题库附件已保存，正在提取题目与知识点')
+      setUploadOpen(false)
+      setFileList([])
+      setTitle('')
+      setSelectedBankId(bank.id)
+      await loadBanks()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '题库上传失败')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const runBankAction = async (bankId: string, action: 'retry' | 'delete') => {
+    setActionId(bankId)
+    try {
+      if (action === 'retry') {
+        await reprocessQuestionBank(bankId)
+        toast.success('已重新开始识别题库')
+      } else {
+        await deleteQuestionBank(bankId)
+        setSelectedBankId('')
+        toast.success('题库已删除')
+      }
+      await loadBanks()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '题库操作失败')
+    } finally {
+      setActionId('')
+    }
+  }
+
+  const removeQuestion = async (bankId: string, questionId: string) => {
+    setDeletingQuestionId(questionId)
+    try {
+      await deleteQuestionBankQuestion(bankId, questionId)
+      toast.success('题目已从题库删除')
+      await loadBanks()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '题目删除失败')
+    } finally {
+      setDeletingQuestionId('')
+    }
+  }
+
+  return (
+    <section className="feature-view student-question-bank-view">
+      <div className="feature-heading">
+        <div>
+          <span>QUESTION BANK</span>
+          <h1>题库</h1>
+          <p>上传习题册并自动提取题目、答案和知识点；每道题都会与当前课程知识图谱对齐。</p>
+        </div>
+        <div className="student-bank-heading-actions">
+          <Button icon={<RefreshCw size={14} />} loading={loading} onClick={() => void loadBanks(true)}>刷新</Button>
+          <Button type="primary" icon={<UploadCloud size={15} />} onClick={() => setUploadOpen(true)}>上传题库</Button>
+        </div>
+      </div>
+
+      <section className="student-bank-library">
+        <header>
+          <div><LibraryBig size={20} /><span><strong>{banks.length}</strong> 本题库</span></div>
+          <small>{banks.reduce((total, bank) => total + bank.question_count, 0)} 道题 · 上传时按所选知识库匹配</small>
+        </header>
+        {loading && !banks.length ? (
+          <div className="workspace-empty"><LoaderCircle className="spin" /><strong>正在读取题库…</strong></div>
+        ) : banks.length ? (
+          <div className="question-bank-grid">
+            {banks.map((bank) => {
+              const status = studentQuestionBankStatus[bank.status]
+              return (
+                <article className="question-bank-card" key={bank.id} onClick={() => setSelectedBankId(bank.id)}>
+                  <div className="question-bank-card-top">
+                    <span><BookMarked size={21} /></span>
+                    <Tag color={status.color} icon={status.icon}>{status.label}</Tag>
+                  </div>
+                  <h3>{bank.title}</h3>
+                  <p>{bank.source_name}</p>
+                  {bank.status === 'processing' ? <Progress percent={bank.processing_progress || 1} showInfo={false} status="active" /> : null}
+                  {bank.processing_error ? <div className="student-bank-card-error">{bank.processing_error}</div> : null}
+                  <div className="question-bank-card-data">
+                    <span><strong>{bank.question_count}</strong> 道题</span>
+                    <span><strong>{bank.page_count || '—'}</strong> 页</span>
+                  </div>
+                  <footer><span>{questionBankTime(bank.updated_at)} 更新</span><ChevronRight size={16} /></footer>
+                </article>
+              )
+            })}
+          </div>
+        ) : (
+          <button className="question-bank-empty" type="button" onClick={() => setUploadOpen(true)}>
+            <span><LibraryBig size={27} /></span>
+            <strong>建立第一本题库</strong>
+            <small>支持 PDF、图片和扫描版习题册</small>
+          </button>
+        )}
+      </section>
+
+      <Modal
+        open={uploadOpen}
+        onCancel={closeUpload}
+        onOk={() => void uploadBank()}
+        okText="保存并开始提取"
+        cancelText="取消"
+        confirmLoading={uploading}
+        width={650}
+        className="student-bank-upload-modal"
+        title={null}
+      >
+        <div className="student-bank-modal-heading">
+          <span><LibraryBig size={23} /></span>
+          <div><small>NEW QUESTION BANK</small><h2>上传一本题库</h2><p>系统将提取题干、题图、答案，并匹配课程知识图谱。</p></div>
+        </div>
+        <div className="student-bank-upload-form">
+          <label>
+            <span>题库名称</span>
+            <Input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="留空时使用附件名称" maxLength={120} />
+          </label>
+          <div className="student-bank-kb-note"><Database size={14} /> 对齐知识库：{knowledgeBaseDisplayName(undefined, knowledgeBase)}</div>
+          <Upload.Dragger
+            accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp"
+            maxCount={1}
+            fileList={fileList}
+            beforeUpload={() => false}
+            onChange={({ fileList: next }) => setFileList(next.slice(-1))}
+          >
+            <p className="ant-upload-drag-icon"><LibraryBig size={34} /></p>
+            <p className="ant-upload-text">拖入学习指导书、习题册或扫描图片</p>
+            <p className="ant-upload-hint">自动提取题号、题目、题图、答案与知识点</p>
+          </Upload.Dragger>
+        </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(selectedBank)}
+        onCancel={() => setSelectedBankId('')}
+        footer={null}
+        width={1120}
+        className="student-bank-detail-modal"
+        title={null}
+        destroyOnHidden
+      >
+        {selectedBank ? (
+          <div className="student-bank-detail">
+            <header className="student-bank-detail-header">
+              <div>
+                <Tag color={studentQuestionBankStatus[selectedBank.status].color}>{studentQuestionBankStatus[selectedBank.status].label}</Tag>
+                <h2>{selectedBank.title}</h2>
+                <p>{selectedBank.source_name} · {selectedBank.question_count} 道题 · {selectedBank.page_count || 0} 页</p>
+                <small><Network size={12} /> 知识图谱：{knowledgeBaseDisplayName(undefined, selectedBank.knowledge_base)}</small>
+              </div>
+              <div>
+                {selectedBank.source_url ? <Button href={selectedBank.source_url} target="_blank" icon={<Eye size={15} />}>原始附件</Button> : null}
+                {selectedBank.status === 'error' ? (
+                  <Button type="primary" icon={<RefreshCw size={15} />} loading={actionId === selectedBank.id} onClick={() => void runBankAction(selectedBank.id, 'retry')}>重新识别</Button>
+                ) : null}
+                <Popconfirm
+                  title="删除整本题库？"
+                  description="题库文件和题目将永久删除。"
+                  okText="删除"
+                  cancelText="取消"
+                  okButtonProps={{ danger: true }}
+                  onConfirm={() => void runBankAction(selectedBank.id, 'delete')}
+                >
+                  <Button danger icon={<Trash2 size={15} />}>删除题库</Button>
+                </Popconfirm>
+              </div>
+            </header>
+            {selectedBank.status === 'processing' ? (
+              <div className="homework-processing-panel">
+                <LoaderCircle className="spin" size={30} />
+                <div><strong>{selectedBank.processing_message || '正在逐页提取题库内容'}</strong><span>进度 {selectedBank.processing_progress || 0}% · 完成后将自动显示知识点匹配程度。</span></div>
+              </div>
+            ) : null}
+            {selectedBank.processing_error ? (
+              <div className="homework-detail-error"><AlertTriangle size={18} /><div><strong>题库识别未完成</strong><span>{selectedBank.processing_error}</span></div></div>
+            ) : null}
+            {selectedBank.status === 'ready' && selectedBank.questions.length ? (
+              <div className="student-bank-question-list">
+                {selectedBank.questions.map((question) => (
+                  <QuestionBankQuestionCard
+                    key={question.id}
+                    question={question}
+                    deleting={deletingQuestionId === question.id}
+                    onDelete={() => void removeQuestion(selectedBank.id, question.id)}
+                  />
+                ))}
+              </div>
+            ) : selectedBank.status === 'ready' ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂未提取到可用题目" />
+            ) : null}
+          </div>
+        ) : null}
+      </Modal>
+    </section>
+  )
+}
+
 function MistakeBookView({
   mistakes,
   categories,
@@ -3325,7 +3756,7 @@ function StudentPageContent() {
             <button className="menu-button" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu size={19} /></button>
             <div>
               <span className="breadcrumb">学生工作台 /</span>
-              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'homework' ? '我的作业' : activeView === 'mistakes' ? '错题本' : activeView === 'schedule' ? '学习日历' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
+              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'question-bank' ? '题库' : activeView === 'homework' ? '我的作业' : activeView === 'mistakes' ? '错题本' : activeView === 'schedule' ? '学习日历' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
             </div>
           </div>
           <div className="topbar-actions">
@@ -3401,6 +3832,8 @@ function StudentPageContent() {
           </section>
         ) : activeView === 'graph' ? (
           <KnowledgeGraphView graph={knowledgeGraph} loading={graphLoading} />
+        ) : activeView === 'question-bank' ? (
+          <QuestionBankView knowledgeBase={knowledgeBase} />
         ) : activeView === 'mistakes' ? (
           <MistakeBookView
             mistakes={mistakes}

@@ -1116,6 +1116,75 @@ button { color: inherit; }
 .review-result strong { font-size: 9px; }
 .review-result span, .review-result p { margin: 1px 0 0; opacity: .8; font-size: 8px; }
 
+.student-question-bank-view .feature-heading,
+.student-bank-library { max-width: 1180px; }
+.student-question-bank-view .feature-heading .ant-btn-primary { background: #0f766e; box-shadow: 0 7px 18px rgba(15,118,110,.17); }
+.student-bank-heading-actions { display: flex; gap: 8px; }
+.student-bank-library { margin: 0 auto; padding: 22px; background: rgba(255,255,255,.84); border: 1px solid #dce7e4; border-radius: 18px; box-shadow: 0 10px 30px rgba(31,76,71,.05); }
+.student-bank-library > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid #e4ecea; }
+.student-bank-library > header > div { display: flex; align-items: center; gap: 8px; color: #207b72; }
+.student-bank-library > header span { color: #718985; font-size: 9px; }
+.student-bank-library > header strong { color: #245e58; font-size: 15px; }
+.student-bank-library > header small { color: #7f938f; font-size: 9px; }
+.student-bank-card-error { margin-top: 9px; padding: 7px; overflow: hidden; color: #ae5947; background: #fff1ee; border-radius: 7px; font-size: 8px; white-space: nowrap; text-overflow: ellipsis; }
+.student-bank-upload-modal .ant-modal-content { padding: 27px; border-radius: 20px; }
+.student-bank-modal-heading { display: flex; gap: 13px; margin-bottom: 20px; }
+.student-bank-modal-heading > span { display: grid; place-items: center; width: 44px; min-width: 44px; height: 44px; color: #fff; background: linear-gradient(140deg, #126e66, #249286); border-radius: 12px; }
+.student-bank-modal-heading small { color: #238077; font-size: 8px; font-weight: 800; letter-spacing: .12em; }
+.student-bank-modal-heading h2 { margin: 2px 0; color: #284f4c; font-size: 19px; }
+.student-bank-modal-heading p { margin: 0; color: #7b908c; font-size: 9px; }
+.student-bank-upload-form { display: grid; gap: 13px; }
+.student-bank-upload-form label { display: grid; gap: 6px; color: #56716d; font-size: 9px; font-weight: 700; }
+.student-bank-kb-note { display: flex; align-items: center; gap: 6px; padding: 9px 11px; color: #2d716a; background: #edf7f4; border: 1px solid #d5eae5; border-radius: 9px; font-size: 9px; }
+.student-bank-detail-modal .ant-modal-content { overflow: hidden; padding: 0; border-radius: 19px; }
+.student-bank-detail { min-height: 350px; background: #f4f7f6; }
+.student-bank-detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 22px; padding: 27px 31px 24px; background: #fff; border-bottom: 1px solid #dfe8e5; }
+.student-bank-detail-header h2 { margin: 8px 0 5px; color: #254c49; font-size: 24px; }
+.student-bank-detail-header p { margin: 0; color: #748b87; font-size: 10px; }
+.student-bank-detail-header > div:first-child > small { display: flex; align-items: center; gap: 5px; margin-top: 9px; color: #2d7a72; font-size: 8px; }
+.student-bank-detail-header > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding-right: 22px; }
+.student-bank-question-list { display: grid; gap: 13px; max-height: min(720px, calc(100vh - 220px)); padding: 17px; overflow-y: auto; }
+.student-bank-question { overflow: hidden; background: #fff; border: 1px solid #dce7e4; border-radius: 14px; box-shadow: 0 5px 17px rgba(30,75,70,.035); }
+.student-bank-question-head { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px 15px; background: #f8fbfa; border-bottom: 1px solid #e4ecea; }
+.student-bank-question-number { display: grid; place-items: center; width: 36px; min-height: 36px; padding: 3px; color: #fff; background: linear-gradient(140deg, #176f68, #269184); border-radius: 10px; font-size: 9px; font-weight: 800; overflow-wrap: anywhere; text-align: center; }
+.student-bank-question-head > div { display: flex; min-width: 0; flex-direction: column; }
+.student-bank-question-head small { color: #2b7d75; font-size: 8px; font-weight: 700; }
+.student-bank-question-head strong { margin-top: 2px; color: #355a56; font-size: 11px; }
+.student-bank-question-body { padding: 17px; color: #314f4c; font-size: 11px; line-height: 1.75; }
+.student-bank-question-body > .math-markdown p { margin: 0 0 8px; }
+.student-bank-subquestions { display: grid; gap: 7px; margin: 8px 0; }
+.student-bank-subquestions > div,
+.student-bank-options > div { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
+.student-bank-subquestions b,
+.student-bank-options b { color: #27786f; white-space: nowrap; }
+.student-bank-subquestions .math-markdown,
+.student-bank-options .math-markdown { min-width: 0; }
+.student-bank-subquestions .math-markdown p,
+.student-bank-options .math-markdown p { margin: 0; }
+.student-bank-options { display: grid; gap: 7px 16px; margin: 10px 0; padding: 11px; background: #f6faf8; border-radius: 9px; }
+.student-bank-options.columns-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.student-bank-options.columns-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.student-bank-figures { display: flex; flex-wrap: wrap; gap: 10px; margin: 11px 0; }
+.student-bank-figures figure { margin: 0; padding: 7px; background: #f8faf9; border: 1px solid #dfe8e5; border-radius: 9px; }
+.student-bank-figures img { display: block; max-width: min(360px, 100%); max-height: 260px; object-fit: contain; border-radius: 5px; }
+.student-bank-figures figcaption { margin-top: 5px; color: #7b908c; font-size: 8px; text-align: center; }
+.question-knowledge-alignment { margin-top: 14px; padding: 12px; background: linear-gradient(135deg, #f0f9f6, #f8fbf9); border: 1px solid #d5e9e4; border-radius: 11px; }
+.question-knowledge-alignment > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.question-knowledge-alignment > header span { color: #277a72; font-size: 7px; font-weight: 800; letter-spacing: .12em; }
+.question-knowledge-alignment > header small { overflow: hidden; color: #6d8682; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.question-knowledge-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.question-knowledge-tag { display: inline-flex; align-items: center; overflow: hidden; background: #fff; border: 1px solid #dce8e5; border-radius: 7px; }
+.question-knowledge-tag .ant-tag { margin: 0; border: 0; border-radius: 0; }
+.question-knowledge-tag b { min-width: 38px; padding: 0 7px; color: #53736f; font-size: 8px; text-align: center; }
+.question-knowledge-tag.exact b { color: #27816d; }
+.question-knowledge-tag.approximate b { color: #a16a1b; }
+.question-knowledge-empty,
+.question-prerequisites { margin: 7px 0 0; color: #7e918d; font-size: 8px; }
+.question-prerequisites { padding-top: 7px; border-top: 1px dashed #d6e5e1; }
+.student-bank-answer { margin-top: 10px; padding: 10px 12px; color: #496964; background: #fbfaf4; border: 1px solid #ebe5cf; border-radius: 9px; }
+.student-bank-answer summary { cursor: pointer; color: #8a6c2f; font-size: 9px; font-weight: 800; }
+.student-bank-answer[open] summary { margin-bottom: 8px; }
+
 @media (max-width: 1180px) {
   .sidebar { width: 226px; min-width: 226px; }
   .learning-grid { grid-template-columns: minmax(500px, 1fr) 270px; }
@@ -1189,6 +1258,8 @@ button { color: inherit; }
   .question-editor-row.columns-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .question-editor-asset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .homework-detail-header { flex-direction: column; }
+  .student-bank-detail-header { flex-direction: column; }
+  .student-bank-detail-header > div:last-child { justify-content: flex-start; padding-right: 0; }
   .homework-detail-actions { flex-wrap: wrap; padding-right: 0; }
   .grading-result { grid-template-columns: 1fr; }
   .homework-paper-actions { width: 100%; justify-content: flex-start; }
@@ -1218,6 +1289,14 @@ button { color: inherit; }
   .model-badge > svg { display: none; }
   .provider-grid { grid-template-columns: 1fr; }
   .mistake-analysis-grid, .mistake-toolbar { grid-template-columns: 1fr; }
+  .student-bank-heading-actions { width: 100%; }
+  .student-bank-heading-actions .ant-btn { flex: 1; }
+  .student-bank-library { padding: 16px; }
+  .student-bank-library > header { align-items: flex-start; flex-direction: column; }
+  .student-bank-detail-header { padding: 22px 18px; }
+  .student-bank-options.columns-2, .student-bank-options.columns-4 { grid-template-columns: 1fr; }
+  .question-knowledge-alignment > header { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .question-knowledge-alignment > header small { max-width: 100%; white-space: normal; }
   .mistake-title-editor { flex-direction: column; }
   .model-modal .ant-modal-content { padding: 19px; }
   .welcome-hero { border-radius: 17px; }

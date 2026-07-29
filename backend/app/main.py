@@ -1415,6 +1415,10 @@ async def create_homework_from_question_bank(
 
 @app.get("/api/question-banks")
 async def list_question_banks() -> dict[str, Any]:
+    await asyncio.to_thread(
+        homework_store.backfill_question_bank_knowledge,
+        mistake_knowledge.align,
+    )
     return {"question_banks": homework_store.list_question_banks()}
 
 
@@ -1423,6 +1427,7 @@ async def create_question_bank(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     title: str = Form(""),
+    knowledge_base: str = Form("default"),
 ) -> dict[str, Any]:
     original_name = Path(file.filename or "question-bank.pdf").name
     content_type = file.content_type
@@ -1432,6 +1437,10 @@ async def create_question_bank(
             status_code=415,
             detail=f"不支持的题库附件类型：{suffix or '未知'}",
         )
+    try:
+        knowledge_base = knowledge_bases.validate_id(knowledge_base)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         content = await _read_bounded_upload(
             file,
@@ -1447,10 +1456,16 @@ async def create_question_bank(
             filename=original_name,
             content_type=content_type,
             data=content,
+            knowledge_base=knowledge_base,
         )
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    background_tasks.add_task(process_question_bank, homework_store, str(bank["id"]))
+    background_tasks.add_task(
+        process_question_bank,
+        homework_store,
+        str(bank["id"]),
+        knowledge_aligner=mistake_knowledge.align,
+    )
     return {
         "ok": True,
         "question_bank": bank,
@@ -1577,7 +1592,12 @@ async def reprocess_question_bank(
         processing_progress=0,
         processing_message="等待重新识别题库",
     )
-    background_tasks.add_task(process_question_bank, homework_store, bank_id)
+    background_tasks.add_task(
+        process_question_bank,
+        homework_store,
+        bank_id,
+        knowledge_aligner=mistake_knowledge.align,
+    )
     return {"ok": True, "message": "已重新开始识别题库"}
 
 
