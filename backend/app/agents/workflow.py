@@ -868,32 +868,63 @@ def _string_list(value: Any, limit: int) -> list[str]:
     return list(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))[:limit]
 
 
+def _learning_module_labels(points: list[str]) -> list[str]:
+    """Collapse fine-grained mistake tags into workload-sized learning modules."""
+
+    module_patterns = (
+        ("旁路电容与发射极支路", ("旁路电容", "发射极电阻", "消除发射极", "交流短路", "直流开路")),
+        ("三种基本放大组态", ("共射", "共集", "共基", "三种接法", "三种组态", "电压放大能力",
+                         "电流放大能力", "输入电阻", "输出电阻", "相位关系", "高频特性")),
+        ("反馈机制与稳定性", ("反馈", "静态工作点", "输出量影响输入量", "取样", "求和")),
+        ("晶体管与小信号模型", ("晶体管", "偏置", "小信号", "等效模型", "工作区")),
+    )
+    modules: list[str] = []
+    for point in points:
+        label = next(
+            (
+                module
+                for module, patterns in module_patterns
+                if any(pattern in point for pattern in patterns)
+            ),
+            "",
+        )
+        if not label:
+            label = point
+        if label and label not in modules:
+            modules.append(label)
+    return modules[:8]
+
+
 def _plan_schedule_guidance(
     profile: dict[str, Any], message: str
 ) -> dict[str, Any]:
     knowledge_points = _string_list(profile.get("knowledge_points"), 12)
     prerequisites = _string_list(profile.get("prerequisite_points"), 6)
     scope_points = list(dict.fromkeys([*knowledge_points, *prerequisites])) or ["电路基础"]
+    modules = _learning_module_labels(scope_points)
     point_count = len(scope_points)
+    module_count = len(modules)
     explicit_time = bool(_EXPLICIT_TIME_PATTERN.search(message))
-    if point_count <= 2:
+    if module_count <= 1:
         scope_level = "聚焦"
         recommended_pace = "2-4个学习课次，建议总投入3-6小时"
         stage_guidance = "合并为诊断、学习练习、验收2-3个阶段"
-    elif point_count <= 5:
+    elif module_count <= 3:
         scope_level = "中等"
-        recommended_pace = "4-8个学习课次，建议总投入6-14小时"
-        stage_guidance = "安排3-5个阶段，允许合并相邻阶段"
-    elif point_count <= 8:
+        recommended_pace = "5-9个学习课次，建议总投入8-16小时"
+        stage_guidance = "围绕学习模块安排3-4个阶段，合并相邻环节"
+    elif module_count <= 5:
         scope_level = "较广"
-        recommended_pace = "8-12个学习课次，建议总投入14-24小时，可跨1-3周弹性推进"
+        recommended_pace = "8-12个学习课次，建议总投入14-24小时"
         stage_guidance = "按依赖关系安排4-6个阶段"
     else:
         scope_level = "系统"
-        recommended_pace = "12-20个学习课次，建议总投入24-40小时，可跨3-6周弹性推进"
+        recommended_pace = "12-20个学习课次，建议总投入24-40小时"
         stage_guidance = "拆分为多个知识模块并设置阶段验收"
     return {
         "scope_point_count": point_count,
+        "scope_module_count": module_count,
+        "learning_modules": modules,
         "scope_level": scope_level,
         "explicit_time_request": explicit_time,
         "calendar_required": explicit_time,
@@ -1492,13 +1523,24 @@ class CircuitTutorEngine:
         schedule_guidance = profile.get("schedule_guidance", {})
         prompt = (
             "你是大学电路课程学习规划师。依据学生画像和检索资料制定可执行路线。"
-            "先评估知识点数量、前置依赖和难度，再决定阶段数量与节奏；窄范围应合并阶段，系统范围才拆分更多模块。"
+            "先按 schedule_guidance.learning_modules 聚合同类细粒度标签，再决定阶段数量与节奏；"
+            "不得把输入/输出电阻、相位、高频等同一电路模块的属性分别计为独立学习模块。"
             "路线遵循“诊断→前置补全→核心学习→专项练习→复盘验收”的逻辑顺序，但不强制五个阶段全部单列。"
-            "每个保留阶段写清目标、资料依据[资料n]、具体行动和完成标准。"
+            "只保留3-5个真正需要学生执行的阶段；“总体说明、阶段划分原则、范围评估”只能放在三级标题下，"
+            "绝不能写成阶段。每个阶段写清目标、建议投入、具体行动、完成标准和资料依据[资料n]。"
             "严格遵守 schedule_guidance：只有 calendar_required=true 时才能输出按天/按周日历；"
-            "否则只给学习课次顺序和基于知识范围的总投入区间，不得输出7天起步清单、Day 1或虚构每日时长。"
-            "时间未指定时不要把‘弹性方案’再次包装成固定七天；结尾给与本次范围匹配的可量化验收指标。"
-            "数学公式使用标准 LaTeX，不展示内部推理。\n\n"
+            "否则只给学习课次顺序和总投入区间，不得输出周数、7天清单、Day 1或虚构每日时长。"
+            "结尾给与本次范围匹配、口径明确的3-5项量化验收指标。"
+            "数学公式使用标准 LaTeX，并注明近似公式的适用条件；禁止用两个相同表达式进行对比。"
+            "不要输出 schedule_guidance 等内部字段名，不使用 Markdown 引用块“>”。"
+            "严格使用以下可解析结构："
+            "# 简短学习规划标题；"
+            "### 学习诊断（写总体目标和2-3条执行原则）；"
+            "## 第一阶段：简短阶段名；"
+            "目标：...；建议投入：...；具体行动：用列表写1-3项；完成标准：用列表写1-3项；资料依据：仅列[资料n]；"
+            "后续阶段保持相同结构；"
+            "### 可量化验收指标（使用三列表格：指标/测量方式/达标阈值）。"
+            "可见内容面向学生，句子简洁，不写生成过程或内容选择说明。\n\n"
             f"学生画像：{json.dumps(profile, ensure_ascii=False)}\n"
             f"节奏约束：{json.dumps(schedule_guidance, ensure_ascii=False)}\n\n"
             f"学生原始请求：{state['message']}\n\n课程检索资料：\n{context or '未检索到资料'}"

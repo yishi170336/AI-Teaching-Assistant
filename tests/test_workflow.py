@@ -657,12 +657,34 @@ def test_learning_plan_pace_scales_with_scope_and_only_uses_calendar_when_reques
         {"knowledge_points": ["静态工作点", "失真分析"]},
         "请在两周内完成复习",
     )
+    clustered = _plan_schedule_guidance(
+        {
+            "knowledge_points": [
+                "共射电压放大能力",
+                "共集输入电阻高",
+                "共基高频特性",
+                "旁路电容对交流通路的影响",
+                "消除发射极交流负反馈",
+                "反馈极性的判别",
+                "静态工作点稳定",
+            ],
+            "prerequisite_points": [],
+        },
+        "依据错题本制定知识补全规划",
+    )
 
     assert focused["scope_level"] == "聚焦"
     assert focused["calendar_required"] is False
     assert "2-4个学习课次" in focused["recommended_pace"]
     assert broad["scope_level"] == "系统"
-    assert "3-6周" in broad["recommended_pace"]
+    assert "周" not in broad["recommended_pace"]
+    assert clustered["scope_level"] == "中等"
+    assert clustered["scope_module_count"] == 3
+    assert clustered["learning_modules"] == [
+        "三种基本放大组态",
+        "旁路电容与发射极支路",
+        "反馈机制与稳定性",
+    ]
     assert timed["calendar_required"] is True
 
 

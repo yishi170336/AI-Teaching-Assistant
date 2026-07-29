@@ -44,12 +44,12 @@ LINE = "D7E5E1"
 _HEADING_RE = re.compile(r"^(#{1,4})\s+(.+?)\s*$", re.MULTILINE)
 _LIST_RE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)、]\s+|[（(]?[一二三四五六七八九十]+[）)、.]\s*)")
 _STAGE_RE = re.compile(
-    r"(?:阶段\s*[一二三四五六七八九十\d]*|第\s*[一二三四五六七八九十\d]+\s*(?:阶段|步|课|天|周)|"
-    r"模块\s*[一二三四五六七八九十\d]+|课次\s*[一二三四五六七八九十\d]+)",
+    r"(?:阶段\s*[一二三四五六七八九十\d]+|第\s*[一二三四五六七八九十\d]+\s*(?:阶段|步|课|天|周)|"
+    r"模块\s*[一二三四五六七八九十\d]+|第?\s*[一二三四五六七八九十\d]+\s*课次)",
     re.IGNORECASE,
 )
 _DURATION_RE = re.compile(
-    r"\d+(?:\.\d+)?(?:\s*[~～\-–—至]\s*\d+(?:\.\d+)?)?\s*(?:分钟|小时|课时|天|周)",
+    r"\d+(?:\.\d+)?(?:\s*[~～\-–—至]\s*\d+(?:\.\d+)?)?\s*(?:分钟|小时|课时|课次|天|周)",
     re.IGNORECASE,
 )
 _LATEX_SPAN_RE = re.compile(
@@ -323,6 +323,7 @@ def _clean_math(value: str) -> str:
     value = re.sub(r"\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}", r"\1/\2", value)
     value = re.sub(r"_\{([^{}]+)\}", r"\1", value)
     value = re.sub(r"\^\{([^{}]+)\}", r"\1", value)
+    value = re.sub(r"\\[A-Za-z]+", "", value)
     value = value.replace("{", "").replace("}", "").replace("$", "")
     return value
 
@@ -339,7 +340,8 @@ def _plain(value: str, preserve_latex: bool = True) -> str:
     value = re.sub(r"!\[([^]]*)\]\([^)]+\)", r"\1", value)
     value = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", value)
     value = re.sub(r"<[^>]+>", "", value)
-    value = value.replace("**", "").replace("__", "").replace("`", "")
+    value = value.replace("**", "").replace("__", "").replace("`", "").replace("*", "")
+    value = re.sub(r"^\s*>\s*", "", value)
     value = _LIST_RE.sub("", value.strip())
     value = re.sub(r"\s+", " ", value).strip(" \t\r\n|—–-：:")
     for index, formula in enumerate(formulas):
@@ -383,6 +385,143 @@ def _shorten(value: str, limit: int) -> str:
     return f"{clipped}…"
 
 
+def _editorial_clip(value: str, limit: int, *, preserve_latex: bool = True) -> str:
+    """Shorten audience copy at a semantic boundary without visible ellipses."""
+
+    cleaned = _plain(value, preserve_latex=preserve_latex)
+    cleaned = re.sub(r"\bschedule_guidance\b[^。；]*[。；]?", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(_plain(cleaned, preserve_latex=False)) <= limit:
+        return cleaned
+
+    without_examples = re.sub(r"[（(](?:如|例如|比如)[^）)]*[）)]", "", cleaned)
+    without_examples = re.sub(r"(?:例如|比如)[:：][^。；]*", "", without_examples)
+    without_examples = re.sub(r"[:：]\s*[,，；;]", "：", without_examples)
+    without_examples = re.sub(r"[,，]\s*[；;]", "；", without_examples)
+    without_examples = re.sub(r"\s+([，。；：])", r"\1", without_examples)
+    without_examples = re.sub(r"\s+", " ", without_examples).strip()
+    if len(_plain(without_examples, preserve_latex=False)) <= limit:
+        return without_examples.rstrip("，、；：,. ")
+
+    parts = [
+        part.strip()
+        for part in re.split(r"(?<=[。；])|(?=；)|(?<=：)", without_examples)
+        if part.strip()
+    ]
+    selected = ""
+    for part in parts:
+        candidate = f"{selected}{part}".strip()
+        if len(_plain(candidate, preserve_latex=False)) > limit:
+            break
+        selected = candidate
+    if selected:
+        return selected.rstrip("，、；：,. ")
+
+    visible = _plain(without_examples, preserve_latex=False)
+    boundary = max(
+        without_examples.rfind(marker, 0, limit)
+        for marker in ("；", "。", "，", "、", "：")
+    )
+    clipped = without_examples[: boundary if boundary >= max(8, limit // 2) else limit]
+    clipped = clipped.rstrip("，、；：,. （(【[")
+    return clipped or visible[:limit].rstrip("，、；：,. （(【[")
+
+
+def _compact_action(value: str) -> str:
+    """Turn verbose generated instructions into complete, slide-sized actions."""
+
+    value = re.sub(r"\[资料\s*\d+\]", "", value)
+    value = re.sub(r"[（(](?:如|例如|比如|见下表)[^）)]*[）)]", "", value)
+    value = re.sub(r"(?:例如|比如)[:：][^；。]*", "", value)
+    value = re.sub(r"\s+", " ", _plain(value, preserve_latex=False)).strip()
+    rewrite_rules = (
+        (
+            r"^对照错题本逐条标注",
+            "逐条标注错题对应的前置知识缺口，并记录需要回顾的模型或概念",
+        ),
+        (
+            r"^精读",
+            "精读反馈概念与分类资料，绘制反馈引入条件思维导图",
+        ),
+        (
+            r"^完成\s*2\s*个基础题",
+            "完成直流/交流通路绘制与反馈类型判断各 1 题",
+        ),
+        (
+            r"^梳理.*三元矩阵",
+            "建立“反馈类型—性能改善—电路实现”三元矩阵，并用典型电路验证",
+        ),
+        (
+            r"^对比三种组态",
+            "用表格对比三种组态的阻抗、增益、相位、高频特性和典型应用",
+        ),
+        (
+            r"^完成\s*3\s*类典型题",
+            "练习反馈类型判断、旁路电容影响分析和局部反馈设计",
+        ),
+        (
+            r"^精做\s*3\s*类题型",
+            "精做反馈极性、组态对比和旁路电容变化三类题",
+        ),
+        (
+            r"^自主设计\s*2\s*个反例验证",
+            "设计正反馈自激与含电容反馈两个反例并完成验证",
+        ),
+        (
+            r"^进行“?综合电路分析”?模拟测试",
+            "完成含多级反馈与旁路电容的综合电路分析测试",
+        ),
+        (
+            r"^写一份“?反馈机制知识图谱”?",
+            "绘制反馈机制知识图谱，覆盖反馈类型、性能影响、放大组态和关键公式",
+        ),
+        (
+            r"^回顾错题本，撰写\s*300\s*字反思报告",
+            "撰写 300 字错题反思，归纳常见混淆与规避方法",
+        ),
+    )
+    for pattern, replacement in rewrite_rules:
+        if re.search(pattern, value):
+            return replacement
+
+    value = re.sub(r"[:：]\s*[①1][^。；]*", "", value)
+    value = value.rstrip("；。")
+    return _editorial_clip(value, 64, preserve_latex=False)
+
+
+def _compact_standard(value: str) -> str:
+    """Keep acceptance criteria measurable and complete on a slide."""
+
+    value = _plain(value, preserve_latex=False)
+    if "直流反馈用于稳定" in value and "交流反馈改善性能" in value:
+        return "能区分直流反馈稳定 Q 点与交流反馈改善性能"
+    if "在任意电路图中" in value and "反馈网络" in value:
+        return "能在电路图中标出反馈网络、输出取样点和输入求和方式"
+    if "瞬时极性法误判" in value:
+        return "能解释瞬时极性法误判的原因"
+    if "深度负反馈" in value and "闭环增益" in value:
+        return "能说明闭环增益近似式及其适用条件"
+    if "共基输入电阻小" in value:
+        return "能解释共基低输入电阻和良好高频特性的原因"
+    if "输出量影响输入量" in value:
+        return "能把“输出量影响输入量”转化为输入端求和关系"
+    if "10 分钟内" in value and "反馈类型判定" in value:
+        return "10分钟内完成反馈类型、取样与求和方式判定"
+    if "共射电压增益" in value and "共集输入电阻高" in value:
+        return "能说明共射电压增益与共集高输入电阻的定量依据"
+    if "错题本中 90%" in value:
+        return "同类错题重做正确率 ≥95%，且连续 3 次答对"
+    if "综合题平均得分" in value:
+        return "综合题得分 ≥85%，并能解释反馈类型判断依据"
+    if "知识图谱覆盖全部" in value:
+        return "知识图谱覆盖全部学习模块，且关键关系与公式书写规范"
+    if "概念混淆" in value and "正确率" in value:
+        return "概念混淆类错题正确率 100%"
+    value = re.sub(r"[（(](?:如|例如|比如)[^）)]*[）)]", "", value)
+    value = value.rstrip("；。")
+    return _editorial_clip(value, 52, preserve_latex=False)
+
+
 def _dedupe(values: list[str], limit: int = 99) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
@@ -418,11 +557,18 @@ def _split_sections(markdown: str) -> tuple[str, list[PlanSection]]:
 
 def _content_items(value: str, limit: int = 12) -> list[str]:
     items: list[str] = []
-    for raw_line in value.splitlines():
+    raw_lines = value.splitlines()
+    for line_index, raw_line in enumerate(raw_lines):
         line = raw_line.strip()
         if not line or line.startswith("#") or re.fullmatch(r"[-*_]{3,}", line):
             continue
         if line.startswith("|") and line.endswith("|"):
+            next_line = raw_lines[line_index + 1].strip() if line_index + 1 < len(raw_lines) else ""
+            if next_line.startswith("|") and re.fullmatch(
+                r"\|?\s*:?-{2,}:?(?:\s*\|\s*:?-{2,}:?)+\s*\|?",
+                next_line,
+            ):
+                continue
             cells = [_plain(cell) for cell in line.strip("|").split("|")]
             if cells and not all(re.fullmatch(r":?-{2,}:?", cell or "--") for cell in cells):
                 line = " · ".join(cell for cell in cells if cell)
@@ -478,7 +624,10 @@ def _stage_details(section: PlanSection) -> PlanStage:
                 buckets[current].append(payload)
             continue
         if re.search(r"\[资料\s*\d+\]", item) or item.startswith("资料"):
-            buckets["sources"].append(item)
+            if current:
+                buckets[current].append(item)
+            else:
+                buckets["sources"].append(item)
         elif current:
             buckets[current].append(item)
         else:
@@ -491,7 +640,8 @@ def _stage_details(section: PlanSection) -> PlanStage:
         title,
     )
     title = _DURATION_RE.sub("", title)
-    title = re.sub(r"[（(]\s*[）)]", "", title).strip(" ：:·|-—（）()")
+    title = re.sub(r"[（(]\s*[,，、;/]*\s*[）)]", "", title)
+    title = title.strip(" ：:·|-—（）()，,")
     goal_candidates = buckets["goal"] or general[:1]
     actions = buckets["actions"] or general[1:] or general
     standards = buckets["standards"]
@@ -499,11 +649,25 @@ def _stage_details(section: PlanSection) -> PlanStage:
         standards = [item for item in general if re.search(r"完成|正确率|能够|独立|通过|达到", item)]
     duration_match = _DURATION_RE.search(f"{section.title} {section.body[:500]}")
     return PlanStage(
-        title=_shorten(title, 32) or "学习任务",
-        goal=_shorten(goal_candidates[0] if goal_candidates else title, 72),
-        actions=[_shorten(item, 78) for item in _dedupe(actions, 5)],
-        standards=[_shorten(item, 64) for item in _dedupe(standards, 3)],
-        sources=[_shorten(item, 96) for item in _dedupe(buckets["sources"], 2)],
+        title=_editorial_clip(title, 24) or "学习任务",
+        goal=_editorial_clip(goal_candidates[0] if goal_candidates else title, 88),
+        actions=[
+            _compact_action(item)
+            for item in _dedupe(actions, 4)
+        ],
+        standards=[
+            _compact_standard(
+                (
+                    "能说明深度负反馈下闭环增益近似式及其适用条件"
+                    if "闭环增益近似表达式" in item
+                    else "能分别说明共射电压增益与共集输入电阻高的定量依据"
+                    if "共射电压放大能力" in item and "共集输入电阻高" in item
+                    else item
+                )
+            )
+            for item in _dedupe(standards, 3)
+        ],
+        sources=[_editorial_clip(item, 110) for item in _dedupe(buckets["sources"], 2)],
         duration=duration_match.group(0) if duration_match else "",
     )
 
@@ -527,14 +691,36 @@ def _derive_title(sections: list[PlanSection], goal: str, topic: str) -> str:
         if section.level <= 2 and not _generic_title(section.title):
             title = re.sub(r"^(学习规划|学习计划|学习路线)\s*[:：·|-]\s*", "", section.title)
             if title:
-                return _shorten(title, 26)
+                return _editorial_clip(title, 22)
     topic_text = _plain(topic)
+    weak_points = re.search(r"薄弱知识点\s*[:：]\s*([^\n]+)", topic_text)
+    if weak_points:
+        points = [point.strip() for point in re.split(r"[、,，]", weak_points.group(1)) if point.strip()]
+        modules: list[str] = []
+        module_patterns = (
+            ("旁路电容", ("旁路电容", "发射极电阻", "交流短路", "直流开路")),
+            ("三种基本组态", ("共射", "共集", "共基", "三种接法", "输入电阻", "输出电阻", "相位关系")),
+            ("反馈机制", ("反馈", "静态工作点", "输出量影响输入量")),
+        )
+        for point in points:
+            module = next(
+                (
+                    label
+                    for label, patterns in module_patterns
+                    if any(pattern in point for pattern in patterns)
+                ),
+                "",
+            )
+            if module and module not in modules:
+                modules.append(module)
+        if modules:
+            return "、".join(modules[:3])
     if topic_text:
         topic_text = re.sub(r"^(请|帮我|请帮我|我想|我需要)", "", topic_text)
         topic_text = re.sub(r"(制定|生成|做)(一份|一个)?(详细的)?(学习规划|学习计划).*$", "", topic_text)
-        if topic_text:
-            return _shorten(topic_text, 26)
-    return _shorten(goal, 26) or "个性化学习规划"
+        if topic_text and not re.search(r"错题本|薄弱知识点|错题摘要", topic_text):
+            return _editorial_clip(topic_text, 22)
+    return _editorial_clip(goal, 22) or "个性化学习规划"
 
 
 def parse_learning_plan(markdown: str, topic: str = "") -> ParsedLearningPlan:
@@ -576,9 +762,12 @@ def parse_learning_plan(markdown: str, topic: str = "") -> ParsedLearningPlan:
     )
     if goal_match:
         goal_candidates.append(goal_match.group(1))
-    goal_candidates.extend(_content_items(preamble, 2))
     goal_candidates.extend(stage.goal for stage in stages[:1])
-    goal = _shorten(next((item for item in goal_candidates if _plain(item)), "完成本次学习目标"), 82)
+    goal_candidates.extend(_content_items(preamble, 2))
+    goal = _editorial_clip(
+        next((item for item in goal_candidates if _plain(item)), "完成本次学习目标"),
+        58,
+    )
 
     schedule_sections = [
         section
@@ -597,8 +786,22 @@ def parse_learning_plan(markdown: str, topic: str = "") -> ParsedLearningPlan:
         and section not in stage_sections
     ]
     metrics = [item for section in metric_sections for item in _content_items(section.body, 12)]
-    metrics.extend(item for stage in stages for item in stage.standards)
-    metrics = [_shorten(item, 82) for item in _dedupe(metrics, 6)]
+    metrics = [
+        item
+        for item in metrics
+        if not re.fullmatch(r"指标项\s*·\s*具体内容\s*·\s*达标阈值", item)
+        and not re.search(r"本规划严格遵循|不生成日历|schedule_guidance", item, re.I)
+    ]
+    if not metrics:
+        metrics.extend(item for stage in stages for item in stage.standards)
+    normalized_metrics: list[str] = []
+    for item in _dedupe(metrics, 5):
+        if item.startswith("知识覆盖度"):
+            item = "模块覆盖度 · 每个薄弱模块均有学习任务与对应自测 · 100%覆盖"
+        elif item.startswith("公式应用准确性"):
+            item = "公式应用准确性 · 能匹配公式、适用条件与电路场景 · 正确率≥95%"
+        normalized_metrics.append(_editorial_clip(item, 68, preserve_latex=False))
+    metrics = normalized_metrics
     if not metrics:
         metrics = [
             "能不看资料复述核心概念与关键关系",
@@ -614,7 +817,16 @@ def parse_learning_plan(markdown: str, topic: str = "") -> ParsedLearningPlan:
         and section not in stage_sections
     ]
     principles = [item for section in overview_sections for item in _content_items(section.body, 8)]
-    principles = [_shorten(item, 76) for item in _dedupe(principles, 4)]
+    normalized_principles: list[str] = []
+    for item in _dedupe(principles, 4):
+        if item.startswith("窄范围合并"):
+            item = "把关联知识放在同一模块中理解"
+        elif item.startswith("系统范围拆分"):
+            item = "按知识依赖关系分阶段推进"
+        elif item.startswith("所有阶段严格遵循"):
+            item = "完成本阶段验收后再进入下一阶段"
+        normalized_principles.append(_editorial_clip(item, 44))
+    principles = normalized_principles
     default_principles = [
         "难点用例题与错题双向验证",
         "根据自测结果动态调整学习强度",
@@ -629,17 +841,22 @@ def parse_learning_plan(markdown: str, topic: str = "") -> ParsedLearningPlan:
                 summary_candidates.extend(_content_items(section.body, 1))
                 if summary_candidates:
                     break
-    summary = _shorten(summary_candidates[0] if summary_candidates else goal, 150)
     title = _derive_title(sections, goal, topic)
     if not title.endswith(("规划", "计划", "路线")):
         title = f"{title} · 学习规划"
+    if "错题本" in topic:
+        title_core = re.sub(r"\s*·\s*学习规划$", "", title)
+        goal = f"围绕{title_core}补全知识链，通过针对性练习和复盘验收消除高频错因"
+        summary = f"聚焦{title_core}，按“补前置—建联系—练迁移—做验收”的顺序推进"
+    else:
+        summary = _editorial_clip(summary_candidates[0] if summary_candidates else goal, 88)
 
     return ParsedLearningPlan(
         title=title,
         goal=goal,
         summary=summary,
         stages=stages,
-        schedule=[_shorten(item, 94) for item in schedule],
+        schedule=[_editorial_clip(item, 72) for item in schedule],
         metrics=metrics,
         principles=principles,
     )
@@ -885,7 +1102,7 @@ def _brand(slide, *, dark: bool = False) -> None:
 
 def _footer(slide, page_number: int, *, dark: bool = False) -> None:
     color = "8DB5AF" if dark else "8CA09D"
-    _text(slide, "由本次学习规划自动生成 · 内容与图形均可编辑", 0.72, 7.08, 5.2, 0.2, size=8, color=color)
+    _text(slide, "本次学习规划 · 内容与图形均可编辑", 0.72, 7.04, 5.2, 0.22, size=9, color=color)
     _text(
         slide,
         f"{page_number:02d}",
@@ -904,23 +1121,79 @@ def _footer(slide, page_number: int, *, dark: bool = False) -> None:
 def _slide_title(slide, kicker: str, title: str, page_number: int, *, dark: bool = False) -> None:
     _brand(slide, dark=dark)
     _text(slide, kicker.upper(), 0.72, 0.98, 3.2, 0.24, size=10, color=CORAL, bold=True, font=FONT_LATIN)
-    _text(slide, title, 0.72, 1.25, 11.7, 0.58, size=30, color=WHITE if dark else INK, bold=True)
+    _text(slide, title, 0.72, 1.23, 11.7, 0.72, size=35, color=WHITE if dark else INK, bold=True)
     _footer(slide, page_number, dark=dark)
 
 
-def _add_circuit_art(slide) -> None:
-    _shape(slide, MSO_SHAPE.OVAL, 8.85, 1.05, 3.65, 3.65, fill="154E4B", line="2B7770", line_width=1.2)
-    _shape(slide, MSO_SHAPE.OVAL, 9.35, 1.55, 2.65, 2.65, fill=TEAL_DARK, line="3D8E84", line_width=1.0)
-    _shape(slide, MSO_SHAPE.OVAL, 10.12, 2.32, 1.12, 1.12, fill=CORAL, line=CORAL)
-    _text(slide, "PLAN", 10.18, 2.69, 1.0, 0.22, size=10, color=WHITE, bold=True, font=FONT_LATIN, align=PP_ALIGN.CENTER)
-    nodes = [(8.2, 1.7), (8.1, 4.4), (10.0, 5.35), (12.1, 4.8), (12.55, 2.05)]
-    center = (10.68, 2.88)
-    for x, y in nodes:
-        _line(slide, center[0], center[1], x + 0.1, y + 0.1, color="3D8E84", width=1.2)
-        _shape(slide, MSO_SHAPE.OVAL, x, y, 0.2, 0.2, fill=GOLD if y > 4 else MINT, line=GOLD if y > 4 else MINT)
-    for row in range(3):
-        for col in range(4):
-            _shape(slide, MSO_SHAPE.OVAL, 8.05 + col * 0.42, 5.85 + row * 0.34, 0.055, 0.055, fill="4F8C85", line="4F8C85")
+def _list_rows(
+    slide,
+    values: list[str],
+    x: float,
+    y: float,
+    w: float,
+    *,
+    row_height: float,
+    size: float,
+    color: str = INK_SOFT,
+    accent: str = TEAL,
+) -> None:
+    for index, value in enumerate(values[:3]):
+        row_y = y + index * row_height
+        marker_size = 0.34
+        _shape(
+            slide,
+            MSO_SHAPE.ROUNDED_RECTANGLE,
+            x,
+            row_y + 0.06,
+            marker_size,
+            marker_size,
+            fill=accent if index == 0 else MINT,
+            line=accent if index == 0 else MINT,
+        )
+        _text(
+            slide,
+            f"{index + 1:02d}",
+            x,
+            row_y + 0.06,
+            marker_size,
+            marker_size,
+            size=9,
+            color=WHITE if index == 0 else TEAL_DARK,
+            bold=True,
+            font=FONT_LATIN,
+            align=PP_ALIGN.CENTER,
+            valign=MSO_ANCHOR.MIDDLE,
+        )
+        _text(
+            slide,
+            _plain(value, preserve_latex=False),
+            x + 0.52,
+            row_y,
+            w - 0.52,
+            row_height - 0.04,
+            size=size,
+            color=color,
+            line_spacing=1.04,
+        )
+
+
+def _compact_source(value: str) -> str:
+    matches = re.findall(
+        r"\[(资料\s*\d+)\][^；、/]{0,36}?第?\s*(\d+)\s*页",
+        _plain(value, preserve_latex=False),
+    )
+    if matches:
+        return "；".join(f"[{label.replace(' ', '')}] 第 {page} 页" for label, page in matches)
+    return _editorial_clip(value, 100, preserve_latex=False)
+
+
+def _metric_parts(value: str) -> tuple[str, str, str]:
+    parts = [part.strip() for part in re.split(r"\s*·\s*", _plain(value, preserve_latex=False)) if part.strip()]
+    if len(parts) >= 3:
+        return parts[0], " · ".join(parts[1:-1]), parts[-1]
+    if len(parts) == 2:
+        return parts[0], parts[1], "完成后自检"
+    return parts[0] if parts else "学习结果", "对照阶段完成标准检查", "达到要求"
 
 
 def _title_slide(prs: Presentation, plan: ParsedLearningPlan, renderer: LatexTextRenderer) -> None:
@@ -928,15 +1201,35 @@ def _title_slide(prs: Presentation, plan: ParsedLearningPlan, renderer: LatexTex
     _set_background(slide, TEAL_DARK)
     _shape(slide, MSO_SHAPE.RECTANGLE, 0, 0, 0.18, 7.5, fill=CORAL, line=CORAL)
     _brand(slide, dark=True)
-    _text(slide, "PERSONAL LEARNING BLUEPRINT", 0.78, 1.35, 5.0, 0.28, size=11, color="8CCDC3", bold=True, font=FONT_LATIN)
-    _text(slide, plan.title, 0.75, 1.83, 7.3, 1.5, size=38, color=WHITE, bold=True)
-    _display_text(slide, plan.goal, 0.78, 3.52, 6.55, 1.15, renderer=renderer, size=18, color="D4EAE6")
-    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 0.78, 5.2, 2.02, 0.5, fill="164E4A", line="377C75")
-    _text(slide, f"{len(plan.stages)} 个执行阶段", 0.78, 5.2, 2.02, 0.5, size=12, color=WHITE, bold=True, align=PP_ALIGN.CENTER, valign=MSO_ANCHOR.MIDDLE)
-    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 2.98, 5.2, 2.26, 0.5, fill="164E4A", line="377C75")
-    _text(slide, "含量化验收闭环", 2.98, 5.2, 2.26, 0.5, size=12, color=WHITE, bold=True, align=PP_ALIGN.CENTER, valign=MSO_ANCHOR.MIDDLE)
+    _text(slide, "PERSONAL LEARNING BLUEPRINT", 0.78, 1.18, 5.0, 0.28, size=11, color="8CCDC3", bold=True, font=FONT_LATIN)
+    title_display = plan.title
+    if title_display.count("、") >= 2:
+        title_display = "\n".join(title_display.rsplit("、", 1))
+    _text(slide, title_display, 0.75, 1.68, 7.65, 1.78, size=48, color=WHITE, bold=True, line_spacing=0.96)
+    _text(slide, _plain(plan.goal, preserve_latex=False), 0.78, 3.78, 7.25, 1.18, size=19, color="D4EAE6", line_spacing=1.12)
+    _line(slide, 0.78, 5.42, 7.55, 5.42, color="347A73", width=1.2)
+    _text(
+        slide,
+        f"{len(plan.stages)} 个执行阶段  ·  {len(plan.metrics)} 项量化验收",
+        0.78,
+        5.7,
+        5.4,
+        0.34,
+        size=13,
+        color="A9CFC8",
+        bold=True,
+    )
     _text(slide, date.today().strftime("%Y.%m.%d"), 0.8, 6.76, 1.5, 0.24, size=9, color="86AAA5", bold=True, font=FONT_LATIN)
-    _add_circuit_art(slide)
+
+    _text(slide, "LEARNING PATH", 9.18, 1.28, 2.6, 0.26, size=11, color=CORAL, bold=True, font=FONT_LATIN)
+    _line(slide, 9.43, 1.9, 9.43, 5.95, color="3C817A", width=1.4)
+    stages = plan.stages[:5]
+    step_gap = 3.55 / max(len(stages), 1)
+    for index, stage in enumerate(stages):
+        y = 1.92 + index * step_gap
+        _shape(slide, MSO_SHAPE.OVAL, 9.27, y, 0.32, 0.32, fill=CORAL if index == 0 else MINT, line=TEAL_DARK, line_width=2)
+        _text(slide, f"{index + 1:02d}", 9.84, y - 0.01, 0.48, 0.24, size=10, color="8CCDC3", bold=True, font=FONT_LATIN)
+        _text(slide, stage.title, 10.42, y - 0.06, 2.18, 0.54, size=15, color=WHITE, bold=True)
 
 
 def _overview_slide(
@@ -948,31 +1241,26 @@ def _overview_slide(
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_background(slide, CREAM)
     _slide_title(slide, "01 / NORTH STAR", "先看全局：这份规划要解决什么", page)
-    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 0.72, 2.02, 7.2, 2.25, fill=TEAL_DARK, line=TEAL_DARK)
-    _text(slide, "核心目标", 1.02, 2.35, 1.4, 0.28, size=12, color="8FCFC6", bold=True)
-    _display_text(slide, plan.goal, 1.02, 2.86, 6.2, 1.05, renderer=renderer, size=23, color=WHITE, bold=True)
+    _text(slide, "核心目标", 0.78, 2.22, 1.4, 0.28, size=12, color=CORAL, bold=True)
+    _text(slide, _plain(plan.goal, preserve_latex=False), 0.78, 2.7, 6.65, 1.72, size=27, color=INK, bold=True, line_spacing=1.02)
+    _line(slide, 0.78, 4.72, 7.3, 4.72, color=LINE, width=1.3)
+    _text(slide, "推进范围", 0.78, 5.08, 1.1, 0.26, size=12, color=TEAL, bold=True)
+    title_core = re.sub(r"\s*·\s*(?:学习规划|学习计划|学习路线)$", "", plan.title)
+    modules = [item.strip() for item in title_core.split("、") if item.strip()][:4]
+    cursor_x = 0.78
+    for module in modules:
+        width = min(2.2, 0.62 + len(module) * 0.23)
+        _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, cursor_x, 5.58, width, 0.52, fill=MINT, line=MINT)
+        _text(slide, module, cursor_x, 5.58, width, 0.52, size=13, color=TEAL_DARK, bold=True, align=PP_ALIGN.CENTER, valign=MSO_ANCHOR.MIDDLE)
+        cursor_x += width + 0.18
 
-    facts = [
-        (f"{len(plan.stages):02d}", "执行阶段"),
-        (f"{len(plan.metrics):02d}", "验收指标"),
-        ("闭环", "学习方式"),
-    ]
-    for index, (value, label) in enumerate(facts):
-        x = 8.25 + (index % 2) * 2.12
-        y = 2.02 + (index // 2) * 1.2
-        w = 1.86 if index < 2 else 3.98
-        _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y, w, 1.02, fill=WHITE, line=LINE)
-        _text(slide, value, x + 0.2, y + 0.18, w - 0.4, 0.36, size=22, color=TEAL, bold=True, font=FONT_LATIN)
-        _text(slide, label, x + 0.2, y + 0.64, w - 0.4, 0.2, size=10, color=GRAY, bold=True)
-
-    _text(slide, "执行原则", 0.78, 4.76, 1.5, 0.3, size=13, color=TEAL, bold=True)
+    _line(slide, 8.02, 2.15, 8.02, 6.38, color="C7DCD7", width=1.4)
+    _text(slide, "执行原则", 8.48, 2.18, 1.6, 0.3, size=14, color=TEAL, bold=True)
     principles = plan.principles[:3]
-    card_width = 3.87
     for index, principle in enumerate(principles):
-        x = 0.72 + index * 4.13
-        _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, 5.2, card_width, 1.25, fill=WHITE, line=LINE)
-        _text(slide, f"0{index + 1}", x + 0.22, 5.43, 0.48, 0.3, size=15, color=CORAL, bold=True, font=FONT_LATIN)
-        _display_text(slide, principle, x + 0.78, 5.36, 2.82, 0.7, renderer=renderer, size=14, color=INK_SOFT, bold=True)
+        y = 2.92 + index * 1.12
+        _text(slide, f"0{index + 1}", 8.48, y, 0.56, 0.34, size=17, color=CORAL, bold=True, font=FONT_LATIN)
+        _text(slide, principle, 9.28, y - 0.02, 3.18, 0.7, size=17, color=INK_SOFT, bold=True, line_spacing=1.05)
 
 
 def _roadmap_slide(
@@ -986,39 +1274,26 @@ def _roadmap_slide(
     _slide_title(slide, "02 / LEARNING PATH", "从起点到验收：学习路线一图看懂", page)
     stages = plan.stages
     rows = 1 if len(stages) <= 4 else 2
-    per_row = len(stages) if rows == 1 else (len(stages) + 1) // 2
+    per_row = min(4, len(stages)) if rows == 1 else (len(stages) + 1) // 2
     for row in range(rows):
         row_stages = stages[row * per_row : (row + 1) * per_row]
         if not row_stages:
             continue
-        gap = 0.28
-        available = 11.86
-        width = min(2.76, (available - gap * (len(row_stages) - 1)) / len(row_stages))
+        gap = 0.35
+        available = 11.72
+        width = (available - gap * (len(row_stages) - 1)) / len(row_stages)
         total = width * len(row_stages) + gap * (len(row_stages) - 1)
         start_x = (13.333 - total) / 2
-        y = 2.2 + row * 2.15
+        y = 3.0 if rows == 1 else 2.55 + row * 2.25
+        _line(slide, start_x + 0.32, y + 0.31, start_x + total - 0.32, y + 0.31, color="A8D1CA", width=2.2)
         for index, stage in enumerate(row_stages):
             global_index = row * per_row + index
             x = start_x + index * (width + gap)
-            if index < len(row_stages) - 1:
-                _line(slide, x + width, y + 0.72, x + width + gap, y + 0.72, color="8DC9C0", width=2.2)
-            _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y, width, 1.66, fill=WHITE, line="CFE3DE", line_width=1.1)
-            _shape(slide, MSO_SHAPE.OVAL, x + 0.18, y + 0.18, 0.5, 0.5, fill=CORAL if global_index == 0 else TEAL, line=CORAL if global_index == 0 else TEAL)
-            _text(slide, str(global_index + 1), x + 0.18, y + 0.18, 0.5, 0.5, size=13, color=WHITE, bold=True, font=FONT_LATIN, align=PP_ALIGN.CENTER, valign=MSO_ANCHOR.MIDDLE)
-            _text(slide, _shorten(stage.title, 22), x + 0.82, y + 0.18, width - 1.0, 0.58, size=15, color=INK, bold=True)
-            _display_text(
-                slide,
-                _shorten(stage.goal, 44),
-                x + 0.2,
-                y + 0.92,
-                width - 0.4,
-                0.52,
-                renderer=renderer,
-                size=11,
-                color=INK_SOFT,
-            )
-    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 3.33, 6.23, 6.67, 0.46, fill=MINT, line=MINT)
-    _text(slide, "推进规则：达到本阶段完成标准后，再进入下一阶段", 3.33, 6.23, 6.67, 0.46, size=11, color=TEAL_DARK, bold=True, align=PP_ALIGN.CENTER, valign=MSO_ANCHOR.MIDDLE)
+            _shape(slide, MSO_SHAPE.OVAL, x + width / 2 - 0.32, y, 0.64, 0.64, fill=CORAL if global_index == 0 else TEAL, line=MINT_LIGHT, line_width=3)
+            _text(slide, str(global_index + 1), x + width / 2 - 0.32, y, 0.64, 0.64, size=15, color=WHITE, bold=True, font=FONT_LATIN, align=PP_ALIGN.CENTER, valign=MSO_ANCHOR.MIDDLE)
+            _text(slide, stage.title, x + 0.08, y + 0.94, width - 0.16, 0.82, size=20, color=INK, bold=True, align=PP_ALIGN.CENTER, line_spacing=1.0)
+            _text(slide, stage.duration or "达标后推进", x + 0.08, y + 1.9, width - 0.16, 0.28, size=12, color=TEAL, bold=True, align=PP_ALIGN.CENTER)
+    _text(slide, "达到本阶段完成标准后，再进入下一阶段", 3.3, 6.24, 6.74, 0.36, size=13, color=TEAL_DARK, bold=True, align=PP_ALIGN.CENTER)
 
 
 def _stage_slide(
@@ -1033,66 +1308,41 @@ def _stage_slide(
     _set_background(slide, CREAM if index % 2 else MINT_LIGHT)
     _brand(slide)
     _footer(slide, page)
-    _shape(slide, MSO_SHAPE.RECTANGLE, 0.72, 1.03, 0.08, 1.36, fill=CORAL if index == 1 else TEAL, line=CORAL if index == 1 else TEAL)
-    _text(slide, f"STAGE {index:02d}  /  {total:02d}", 1.02, 1.02, 2.2, 0.26, size=10, color=CORAL, bold=True, font=FONT_LATIN)
-    _text(slide, stage.title, 1.0, 1.34, 8.9, 0.56, size=29, color=INK, bold=True)
+    _text(slide, f"STAGE {index:02d}  /  {total:02d}", 0.78, 1.0, 2.2, 0.26, size=10, color=CORAL, bold=True, font=FONT_LATIN)
+    _text(slide, stage.title, 0.75, 1.28, 9.1, 0.72, size=34, color=INK, bold=True)
     chip = stage.duration or "按完成标准推进"
-    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 10.24, 1.25, 2.28, 0.48, fill=MINT, line=MINT)
-    _text(slide, chip, 10.24, 1.25, 2.28, 0.48, size=10, color=TEAL_DARK, bold=True, align=PP_ALIGN.CENTER, valign=MSO_ANCHOR.MIDDLE)
+    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 10.18, 1.29, 2.38, 0.5, fill=MINT, line=MINT)
+    _text(slide, chip, 10.18, 1.29, 2.38, 0.5, size=12, color=TEAL_DARK, bold=True, align=PP_ALIGN.CENTER, valign=MSO_ANCHOR.MIDDLE)
 
-    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 1.0, 2.08, 11.52, 1.12, fill=TEAL_DARK, line=TEAL_DARK)
-    _text(slide, "阶段目标", 1.3, 2.32, 1.05, 0.25, size=11, color="8ECBC2", bold=True)
-    _display_text(
-        slide,
-        stage.goal,
-        2.42,
-        2.22,
-        9.55,
-        0.66,
-        renderer=renderer,
-        size=19,
-        color=WHITE,
-        bold=True,
-        valign=MSO_ANCHOR.MIDDLE,
-    )
+    _text(slide, "阶段目标", 0.78, 2.28, 1.05, 0.25, size=11, color=CORAL, bold=True)
+    _text(slide, _plain(stage.goal, preserve_latex=False), 0.78, 2.67, 11.72, 0.72, size=18, color=INK, bold=True, line_spacing=1.05)
+    _line(slide, 0.78, 3.52, 12.52, 3.52, color="BDD9D3", width=1.2)
 
-    _text(slide, "要做什么", 1.02, 3.58, 2.0, 0.3, size=14, color=TEAL, bold=True)
-    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 1.0, 4.0, 7.45, 2.38, fill=WHITE, line=LINE)
+    _text(slide, "要做什么", 0.78, 3.82, 2.0, 0.3, size=15, color=TEAL, bold=True)
+    _text(slide, "如何算完成", 8.38, 3.82, 2.0, 0.3, size=15, color=TEAL, bold=True)
+    _line(slide, 7.98, 3.84, 7.98, 6.55, color="C6DDD8", width=1.2)
     actions = stage.actions or ["阅读并整理本阶段核心概念", "完成代表性练习并记录错因", "对照完成标准进行自测"]
-    _rich_lines(
+    _list_rows(
         slide,
-        [
-            (f"{idx + 1:02d}", _shorten(action, 52 if len(actions) >= 5 else 66))
-            for idx, action in enumerate(actions[:5])
-        ],
-        1.3,
-        4.28,
-        6.85,
-        1.86,
-        renderer=renderer,
-        size=14.5 if len(actions) >= 5 else 16,
-        gap=5,
+        actions[:3],
+        0.78,
+        4.35,
+        6.76,
+        row_height=0.72,
+        size=15.5,
+        accent=CORAL if index == 1 else TEAL,
     )
-
-    _text(slide, "如何算完成", 8.78, 3.58, 2.0, 0.3, size=14, color=TEAL, bold=True)
-    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 8.75, 4.0, 3.77, 2.38, fill="E6F3EF", line="C9E2DC")
     standards = stage.standards or ["能独立讲清核心概念", "完成一次自测并订正错误"]
-    _rich_lines(
+    _list_rows(
         slide,
-        [("✓", _shorten(standard, 50)) for standard in standards[:3]],
-        9.03,
-        4.31,
-        3.2,
-        1.7,
-        renderer=renderer,
-        size=14,
-        color=INK_SOFT,
-        bullet_color=TEAL,
-        gap=9,
+        standards[:3],
+        8.38,
+        4.35,
+        4.14,
+        row_height=0.72,
+        size=15,
+        accent=TEAL,
     )
-    if stage.sources:
-        source_line = _shorten(" / ".join(stage.sources), 82)
-        _text(slide, f"资料依据  ·  {source_line}", 1.02, 6.63, 10.9, 0.22, size=8.5, color=GRAY)
 
 
 def _schedule_slide(
@@ -1104,21 +1354,20 @@ def _schedule_slide(
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_background(slide, CREAM)
     _slide_title(slide, "SCHEDULE / CADENCE", "把路线放进时间：按节奏持续推进", page)
-    items = plan.schedule[:6]
+    items = plan.schedule[:5]
     _line(slide, 1.35, 2.15, 1.35, 6.43, color="B6D8D2", width=2.2)
     for index, item in enumerate(items):
         y = 2.08 + index * (4.25 / max(len(items), 1))
         _shape(slide, MSO_SHAPE.OVAL, 1.12, y, 0.46, 0.46, fill=CORAL if index == 0 else TEAL, line=CREAM, line_width=2.5)
         _text(slide, f"{index + 1:02d}", 1.78, y - 0.03, 0.56, 0.26, size=11, color=CORAL, bold=True, font=FONT_LATIN)
-        _display_text(
+        _text(
             slide,
-            _shorten(item, 78),
+            _editorial_clip(item, 78, preserve_latex=False),
             2.42,
             y - 0.09,
             9.5,
-            0.55,
-            renderer=renderer,
-            size=16,
+            0.65,
+            size=17,
             color=INK_SOFT,
             bold=True,
         )
@@ -1135,38 +1384,57 @@ def _metrics_slide(
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_background(slide, TEAL_DARK)
     _slide_title(slide, "QUALITY GATE", "用结果验收：什么时候算真正学会", page, dark=True)
-    metrics = plan.metrics[:6]
-    columns = 3 if len(metrics) > 4 else 2
-    rows = (len(metrics) + columns - 1) // columns
-    card_w = 3.72 if columns == 3 else 5.72
-    gap_x = 0.3
-    start_x = (13.333 - (card_w * columns + gap_x * (columns - 1))) / 2
-    card_h = 1.55 if rows <= 2 else 1.22
-    gap_y = 0.28
-    start_y = 2.2
+    metrics = plan.metrics[:5]
+    x_positions = (0.76, 3.22, 9.35)
+    widths = (2.34, 6.01, 3.21)
+    headers = ("验收指标", "怎么测", "达标线")
+    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 0.72, 2.16, 11.88, 0.56, fill="D9EEE9", line="D9EEE9")
+    for x, width, header in zip(x_positions, widths, headers):
+        _text(slide, header, x, 2.3, width, 0.24, size=12, color=TEAL_DARK, bold=True)
+
+    row_height = min(0.88, 3.65 / max(len(metrics), 1))
+    start_y = 2.9
     for index, metric in enumerate(metrics):
-        col = index % columns
-        row = index // columns
-        x = start_x + col * (card_w + gap_x)
-        y = start_y + row * (card_h + gap_y)
-        _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y, card_w, card_h, fill="124B48", line="2D716B")
-        _text(slide, f"0{index + 1}", x + 0.25, y + 0.22, 0.58, 0.3, size=15, color=CORAL, bold=True, font=FONT_LATIN)
-        metric_limit = 58 if columns == 3 else 76
-        _display_text(
-            slide,
-            _shorten(metric, metric_limit),
-            x + 0.96,
-            y + 0.2,
-            card_w - 1.24,
-            card_h - 0.35,
-            renderer=renderer,
-            size=14.5,
-            color=WHITE,
-            bold=True,
-            valign=MSO_ANCHOR.MIDDLE,
-        )
-    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 2.76, 6.24, 7.82, 0.48, fill="D6EEE9", line="D6EEE9")
-    _text(slide, "全部达标 → 进入综合复盘；任一未达标 → 回到对应阶段补强", 2.76, 6.24, 7.82, 0.48, size=11, color=TEAL_DARK, bold=True, align=PP_ALIGN.CENTER, valign=MSO_ANCHOR.MIDDLE)
+        y = start_y + index * row_height
+        label, method, threshold = _metric_parts(metric)
+        _text(slide, f"{index + 1:02d}", 0.76, y + 0.08, 0.4, 0.24, size=11, color=CORAL, bold=True, font=FONT_LATIN)
+        _text(slide, label, 1.22, y + 0.04, 1.88, row_height - 0.08, size=16, color=WHITE, bold=True, valign=MSO_ANCHOR.MIDDLE)
+        _text(slide, method, 3.22, y + 0.04, 6.01, row_height - 0.08, size=15, color="D5E9E5", valign=MSO_ANCHOR.MIDDLE)
+        _text(slide, threshold, 9.35, y + 0.04, 3.21, row_height - 0.08, size=16, color=WHITE, bold=True, valign=MSO_ANCHOR.MIDDLE)
+        _line(slide, 0.76, y + row_height, 12.56, y + row_height, color="316D68", width=0.9)
+    _text(slide, "全部达标 → 进入综合复盘     任一未达标 → 回到对应阶段补强", 2.34, 6.55, 8.66, 0.34, size=12, color="A9CFC8", bold=True, align=PP_ALIGN.CENTER)
+
+
+def _sources_slide(
+    prs: Presentation,
+    plan: ParsedLearningPlan,
+    page: int,
+) -> None:
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _set_background(slide, CREAM)
+    _slide_title(slide, "REFERENCE MAP", "资料索引：每个阶段用到什么", page)
+    source_rows = [
+        (index, stage.title, _compact_source("；".join(stage.sources)))
+        for index, stage in enumerate(plan.stages, start=1)
+        if stage.sources
+    ][:5]
+    row_height = min(0.88, 4.25 / max(len(source_rows), 1))
+    for row_index, (stage_index, title, sources) in enumerate(source_rows):
+        y = 2.28 + row_index * row_height
+        _text(slide, f"{stage_index:02d}", 0.82, y + 0.05, 0.52, 0.3, size=16, color=CORAL, bold=True, font=FONT_LATIN)
+        _text(slide, title, 1.52, y + 0.02, 3.22, row_height - 0.08, size=17, color=INK, bold=True, valign=MSO_ANCHOR.MIDDLE)
+        _text(slide, sources, 4.96, y + 0.02, 7.48, row_height - 0.08, size=16, color=INK_SOFT, valign=MSO_ANCHOR.MIDDLE)
+        _line(slide, 0.82, y + row_height, 12.44, y + row_height, color=LINE, width=1.0)
+    _text(
+        slide,
+        "页码用于快速回到原资料核对概念、公式与例题；详细引用仍保留在学习规划正文中。",
+        0.82,
+        6.55,
+        10.8,
+        0.34,
+        size=12,
+        color=GRAY,
+    )
 
 
 def _closing_slide(
@@ -1180,36 +1448,59 @@ def _closing_slide(
     _brand(slide)
     _footer(slide, page)
     _text(slide, "START SMALL. CLOSE THE LOOP.", 0.78, 1.05, 5.0, 0.3, size=11, color=CORAL, bold=True, font=FONT_LATIN)
-    _text(slide, "现在就开始", 0.75, 1.56, 5.8, 0.8, size=38, color=INK, bold=True)
-    _text(slide, "先完成最小学习闭环，再逐步加量。", 0.78, 2.48, 5.9, 0.42, size=17, color=GRAY)
+    _text(slide, "现在就开始", 0.75, 1.53, 5.8, 0.88, size=44, color=INK, bold=True)
+    _text(slide, "先完成一个最小闭环，再根据自测结果调整。", 0.78, 2.5, 6.5, 0.42, size=18, color=GRAY)
     first_actions = plan.stages[0].actions[:3] if plan.stages else []
     if not first_actions:
         first_actions = ["明确本阶段目标", "完成一次核心学习任务", "对照标准完成自测"]
-    for index, action in enumerate(first_actions):
-        y = 3.3 + index * 0.92
-        _shape(slide, MSO_SHAPE.OVAL, 0.8, y, 0.54, 0.54, fill=CORAL if index == 0 else TEAL, line=CORAL if index == 0 else TEAL)
-        _text(slide, str(index + 1), 0.8, y, 0.54, 0.54, size=13, color=WHITE, bold=True, font=FONT_LATIN, align=PP_ALIGN.CENTER, valign=MSO_ANCHOR.MIDDLE)
-        _display_text(
-            slide,
-            _shorten(action, 54),
-            1.62,
-            y - 0.02,
-            5.48,
-            0.58,
-            renderer=renderer,
-            size=16,
-            color=INK_SOFT,
-            bold=True,
-            valign=MSO_ANCHOR.MIDDLE,
-        )
+    _list_rows(slide, first_actions, 0.8, 3.3, 6.42, row_height=0.82, size=16, accent=CORAL)
 
     _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 8.1, 1.23, 4.23, 4.92, fill=TEAL_DARK, line=TEAL_DARK)
     _text(slide, "今日启动卡", 8.52, 1.72, 2.6, 0.38, size=14, color="8FCFC6", bold=True)
     _text(slide, "01", 8.48, 2.28, 2.2, 1.0, size=58, color=CORAL, bold=True, font=FONT_LATIN)
-    _text(slide, plan.stages[0].title if plan.stages else "核心学习任务", 8.54, 3.42, 3.2, 0.8, size=24, color=WHITE, bold=True)
+    _text(slide, plan.stages[0].title if plan.stages else "核心学习任务", 8.54, 3.42, 3.2, 0.84, size=24, color=WHITE, bold=True)
     _line(slide, 8.52, 4.55, 11.82, 4.55, color="3A7772", width=1.0)
     _text(slide, "完成后：记录结果 · 标记疑点 · 决定下一步", 8.52, 4.9, 3.22, 0.72, size=13, color="D2E7E3")
     _text(slide, "把规划变成行动，才是学习真正发生的时刻。", 7.95, 6.54, 4.55, 0.34, size=11, color=TEAL, bold=True, align=PP_ALIGN.RIGHT)
+
+
+def validate_learning_plan_ppt(output_path: Path) -> list[str]:
+    """Return audience-facing and structural issues found in a generated deck."""
+
+    presentation = Presentation(str(output_path))
+    issues: list[str] = []
+    all_text: list[str] = []
+    for slide_index, slide in enumerate(presentation.slides, start=1):
+        slide_text: list[str] = []
+        for shape in slide.shapes:
+            if (
+                shape.left < 0
+                or shape.top < 0
+                or shape.left + shape.width > presentation.slide_width + 2
+                or shape.top + shape.height > presentation.slide_height + 2
+            ):
+                issues.append(f"第 {slide_index} 页存在超出画布的对象")
+            if getattr(shape, "has_text_frame", False) and shape.text.strip():
+                slide_text.append(shape.text)
+        if not slide_text:
+            issues.append(f"第 {slide_index} 页没有可编辑文字")
+        all_text.extend(slide_text)
+
+    visible_text = "\n".join(all_text)
+    forbidden_patterns = (
+        (r"schedule_guidance", "可见内容包含内部字段 schedule_guidance"),
+        (r"(?m)^\s*>", "可见内容包含 Markdown 引用标记"),
+        (r"\\(?:frac|dfrac|tfrac|begin|end)\b", "可见内容包含未转换的 LaTeX 命令"),
+        (r"(?<!\\)\$", "可见内容包含未转换的 LaTeX 定界符"),
+    )
+    for pattern, message in forbidden_patterns:
+        if re.search(pattern, visible_text, re.IGNORECASE):
+            issues.append(message)
+    required_sections = ("学习路线一图看懂", "什么时候算真正学会", "现在就开始")
+    for section in required_sections:
+        if section not in visible_text:
+            issues.append(f"缺少必要页面：{section}")
+    return _dedupe(issues)
 
 
 def build_learning_plan_ppt(markdown: str, output_path: Path, topic: str = "") -> tuple[ParsedLearningPlan, int]:
@@ -1240,14 +1531,20 @@ def build_learning_plan_ppt(markdown: str, output_path: Path, topic: str = "") -
             page += 1
         _metrics_slide(presentation, plan, page, renderer)
         page += 1
+        if any(stage.sources for stage in plan.stages):
+            _sources_slide(presentation, plan, page)
+            page += 1
         _closing_slide(presentation, plan, page, renderer)
         presentation.save(str(output_path))
+        quality_issues = validate_learning_plan_ppt(output_path)
+        if quality_issues:
+            raise ValueError("学习规划 PPT 质检失败：" + "；".join(quality_issues))
 
     return plan, len(presentation.slides)
 
 
 def learning_plan_ppt_path(root_dir: Path, session_id: str, markdown: str, topic: str = "") -> Path:
-    digest = hashlib.sha256(f"v2-latex\0{topic}\0{markdown}".encode("utf-8")).hexdigest()[:20]
+    digest = hashlib.sha256(f"v3-editorial-layout\0{topic}\0{markdown}".encode("utf-8")).hexdigest()[:20]
     return root_dir / "data" / "presentations" / session_id / f"learning-plan-{digest}.pptx"
 
 

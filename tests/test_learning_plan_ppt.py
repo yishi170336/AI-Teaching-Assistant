@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from zipfile import ZipFile
 
 from pptx import Presentation
-from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from backend.app.services.learning_plan_ppt import (
     build_learning_plan_ppt,
     generate_learning_plan_ppt,
     parse_learning_plan,
     presentation_filename,
+    validate_learning_plan_ppt,
 )
 
 
@@ -75,6 +74,72 @@ SAMPLE_PLAN = r"""
 """.strip()
 
 
+REALISTIC_PLAN = r"""
+依据学生画像与错题摘要，本规划聚焦 16 个细粒度标签。根据 schedule_guidance 推荐跨 3–6 周推进。
+
+### 整体阶段划分原则
+
+- 窄范围合并：反馈机制、三种组态与旁路电容按关联模块合并。
+- 系统范围拆分：按知识依赖关系推进。
+- 所有阶段严格遵循诊断→学习→练习→验收。
+
+## 第一阶段：诊断与前置补全（2–4 课次，4–8 小时）
+
+- 目标：定位错题中的前置知识缺口。
+- 资料依据：[资料1]第256页、[资料7]第300页
+- 具体行动：
+  - 对照错题本逐条标注未掌握的前置点。
+  - 精读 [资料1] 并绘制思维导图。
+  - 完成 2 个基础题。
+- 完成标准：
+  - 能区分直流反馈与交流反馈。
+
+## 第二阶段：反馈机制与组态特性融合学习（4–6 课次，8–12 小时）
+
+- 目标：建立反馈类型、性能影响和电路结构的映射关系。
+- 资料依据：[资料1]第282页、[资料3]第300页
+- 具体行动：
+  - 梳理反馈类型—性能改善—电路实现三元矩阵。
+  - 对比三种组态的关键参数。
+  - 完成 3 类典型题。
+- 完成标准：
+  - 能独立说明闭环增益近似式及其适用条件。
+
+## 第三阶段：专项练习与错题重构（4–6 课次）
+
+- 目标：把理论转化为解题能力。
+- 资料依据：[资料6]第267页、[资料8]第277页
+- 具体行动：
+  - 精做 3 类题型。
+  - 建立错题标签库。
+  - 自主设计 2 个反例验证。
+- 完成标准：
+  - 同类错题重做正确率达到 95%。
+
+## 第四阶段：复盘验收与迁移应用（2–4 课次）
+
+- 目标：检验系统理解力与迁移能力。
+- 资料依据：[资料1]第282页、[资料8]第277页
+- 具体行动：
+  - 进行综合电路分析模拟测试。
+  - 写一份反馈机制知识图谱。
+  - 回顾错题本并撰写反思。
+- 完成标准：
+  - 综合题得分不低于 85%。
+
+### 可量化验收指标
+
+| 指标项 | 具体内容 | 达标阈值 |
+| --- | --- | --- |
+| 知识覆盖度 | 所有模块均有学习任务 | 100% |
+| 错题转化率 | 同类题型重做正确率 | ≥90% |
+| 分析独立性 | 无提示完成反馈判定 | 100% |
+| 公式应用准确性 | 公式与场景匹配 | ≥95% |
+
+> 本规划严格遵循 schedule_guidance，不生成日历。
+""".strip()
+
+
 def test_parse_learning_plan_builds_a_logical_story() -> None:
     plan = parse_learning_plan(SAMPLE_PLAN, "请帮我系统学习晶体管放大电路")
 
@@ -84,7 +149,7 @@ def test_parse_learning_plan_builds_a_logical_story() -> None:
     assert plan.stages[0].duration == "1～2 小时"
     assert "直流通路" in plan.stages[0].actions[0]
     assert "$I_{BQ}$" in plan.stages[1].goal
-    assert "\\frac{\\beta R'_L}{r_{be}}" in " ".join(plan.stages[2].actions)
+    assert "旁路电容" in " ".join(plan.stages[2].actions)
     assert "85%" in " ".join(plan.metrics)
     assert len(plan.schedule) == 5
 
@@ -100,7 +165,7 @@ def test_build_learning_plan_ppt_is_editable_and_in_bounds(tmp_path: Path) -> No
     plan, slide_count = build_learning_plan_ppt(SAMPLE_PLAN, output)
 
     assert output.stat().st_size > 30_000
-    assert slide_count == 10
+    assert slide_count == 11
     presentation = Presentation(str(output))
     assert len(presentation.slides) == slide_count
     all_text = "\n".join(
@@ -109,24 +174,15 @@ def test_build_learning_plan_ppt_is_editable_and_in_bounds(tmp_path: Path) -> No
         for shape in slide.shapes
         if getattr(shape, "has_text_frame", False)
     )
-    assert plan.title in all_text
+    assert "晶体管放大电路学习规划" in all_text
     assert "学习路线一图看懂" in all_text
     assert "静态工作点分析" in all_text
     assert "什么时候算真正学会" in all_text
-    assert "I_BQ" not in all_text
-
-    formula_pictures = [
-        shape
-        for slide in presentation.slides
-        for shape in slide.shapes
-        if shape.shape_type == MSO_SHAPE_TYPE.PICTURE
-        and shape._element.nvPicPr.cNvPr.get("name") == "LaTeX formula"
-    ]
-    assert len(formula_pictures) >= 3
-    assert any("IBQ" in (shape._element.nvPicPr.cNvPr.get("descr") or "") for shape in formula_pictures)
-    with ZipFile(output) as package:
-        formula_media = [name for name in package.namelist() if name.startswith("ppt/media/")]
-    assert len(formula_media) >= 3
+    assert "资料索引" in all_text
+    assert "$" not in all_text
+    assert "\\frac" not in all_text
+    assert "…" not in all_text
+    assert validate_learning_plan_ppt(output) == []
 
     for slide in presentation.slides:
         for shape in slide.shapes:
@@ -134,6 +190,42 @@ def test_build_learning_plan_ppt_is_editable_and_in_bounds(tmp_path: Path) -> No
             assert shape.top >= 0
             assert shape.left + shape.width <= presentation.slide_width + 2
             assert shape.top + shape.height <= presentation.slide_height + 2
+
+
+def test_realistic_plan_does_not_promote_meta_sections_or_table_headers(tmp_path: Path) -> None:
+    topic = (
+        "依据我的错题本制定知识补全与巩固学习规划。"
+        "薄弱知识点：反馈极性的判别、共射电压放大能力、共集输入电阻、旁路电容。"
+    )
+    plan = parse_learning_plan(REALISTIC_PLAN, topic)
+
+    assert plan.title == "反馈机制、三种基本组态、旁路电容 · 学习规划"
+    assert len(plan.stages) == 4
+    assert all("整体阶段划分原则" not in stage.title for stage in plan.stages)
+    assert plan.stages[0].duration == "2–4 课次"
+    assert len(plan.stages[0].actions) == 3
+    assert len(plan.metrics) == 4
+    assert all("指标项" not in metric for metric in plan.metrics)
+    assert all("schedule_guidance" not in metric for metric in plan.metrics)
+    assert "16 个" not in plan.summary
+    assert "3–6 周" not in plan.summary
+
+    output = tmp_path / "realistic-plan.pptx"
+    _, slide_count = build_learning_plan_ppt(REALISTIC_PLAN, output, topic)
+    presentation = Presentation(str(output))
+    all_text = "\n".join(
+        shape.text
+        for slide in presentation.slides
+        for shape in slide.shapes
+        if getattr(shape, "has_text_frame", False)
+    )
+
+    assert slide_count == 10
+    assert "资料索引：每个阶段用到什么" in all_text
+    assert "整体阶段划分原则" not in all_text
+    assert "schedule_guidance" not in all_text
+    assert "…" not in all_text
+    assert "\n>" not in all_text
 
 
 def test_generate_learning_plan_ppt_reuses_content_cache(tmp_path: Path) -> None:
