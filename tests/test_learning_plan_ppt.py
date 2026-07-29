@@ -149,7 +149,7 @@ def test_parse_learning_plan_builds_a_logical_story() -> None:
     assert all("复盘" not in stage.title for stage in plan.stages)
     assert "直流通路" in plan.stages[0].actions[0]
     assert "完成 5 道前置自测题" in plan.stages[0].practices[0]
-    assert "I_BQ" in plan.stages[1].goal
+    assert "$I_{BQ}$" in plan.stages[1].goal
     assert "旁路电容" in " ".join(plan.stages[2].actions)
     assert "完成 4 道综合计算题" in " ".join(plan.stages[2].practices)
     assert "85%" in " ".join(plan.metrics)
@@ -189,6 +189,22 @@ def test_build_learning_plan_ppt_is_editable_and_in_bounds(tmp_path: Path) -> No
     assert "$" not in all_text
     assert "\\frac" not in all_text
     assert "…" not in all_text
+    formula_descriptions = [
+        description
+        for slide in presentation.slides
+        for shape in slide.shapes
+        if (
+            (description := getattr(
+                getattr(getattr(shape._element, "nvPicPr", None), "cNvPr", None),
+                "get",
+                lambda *_args: "",
+            )("descr", ""))
+            and description.startswith("LaTeX rendered formula:")
+        )
+    ]
+    assert len(formula_descriptions) >= 3
+    assert any("I_BQ" in description for description in formula_descriptions)
+    assert any("A_u" in description for description in formula_descriptions)
     for forbidden in (
         "1～2 小时",
         "7 天学习安排",
@@ -300,6 +316,7 @@ def test_complete_student_guide_paginates_without_dropping_content(tmp_path: Pat
 - 核心内容：电压取样与电流取样的结构差异。
 - 核心内容：串联求和与并联求和对输入电阻的影响。
 - 核心内容：瞬时极性法的判断步骤与常见误区。
+- 核心内容：旁路电容 C_E 改变 R_E 的交流作用并影响 A_v。
 - 具体行动：标出典型电路的输出取样点和输入求和节点。
 - 具体行动：绘制四种反馈组态的结构对照表。
 - 具体行动：为每种组态写出判断依据。
@@ -349,7 +366,14 @@ def test_complete_student_guide_paginates_without_dropping_content(tmp_path: Pat
         *plan.stages[0].standards,
     ]
     assert expected_fragments
-    assert all(fragment in all_text for fragment in expected_fragments)
+    assert all(fragment in all_text for fragment in expected_fragments if "$" not in fragment)
+    formula_descriptions = [
+        shape._element.nvPicPr.cNvPr.get("descr", "")
+        for slide in presentation.slides
+        for shape in slide.shapes
+        if hasattr(shape._element, "nvPicPr")
+    ]
+    assert any("C_E" in description and "R_E" in description for description in formula_descriptions)
     assert "1.0 mA" not in all_text
     assert "资料索引" not in all_text
     assert "检索依据" not in all_text

@@ -159,8 +159,9 @@ def _wrap_rich_text(value: str, capacity: int) -> str:
 def _fit_rich_text(value: str, width: float, height: float, size: float) -> str:
     capacity = max(7, int(width * 72 / max(size * 0.9, 1)))
     max_lines = max(1, int(height * 72 / max(size * 1.02, 1)))
-    fitted = _shorten(value, capacity * max_lines)
-    return _wrap_rich_text(fitted, capacity)
+    visible_length = len(_plain(value, preserve_latex=False))
+    capacity = max(capacity, math.ceil(visible_length / max_lines))
+    return _wrap_rich_text(value, capacity)
 
 
 class LatexTextRenderer:
@@ -485,10 +486,48 @@ def _remove_time_arrangements(value: str) -> str:
     return value.strip(" \t\r\n，。；、|")
 
 
+def _latexify_inline_symbols(value: str) -> str:
+    """Wrap common circuit variables in LaTeX without touching existing formulas."""
+
+    formulas: list[str] = []
+
+    def protect(match: re.Match[str]) -> str:
+        formulas.append(match.group(0))
+        return f"ZXQFORMULA{len(formulas) - 1}QXZ"
+
+    value = _LATEX_SPAN_RE.sub(protect, _normalize_latex(value))
+    greek = {"β": r"\beta", "π": r"\pi", "θ": r"\theta", "λ": r"\lambda", "Δ": r"\Delta"}
+    value = re.sub(
+        r"(?<![A-Za-z0-9\\])([A-Za-z])_([βπθλΔ])(?![A-Za-z0-9])",
+        lambda match: f"${match.group(1)}_{greek[match.group(2)]}$",
+        value,
+    )
+    value = re.sub(
+        r"(?<![A-Za-z0-9\\])([A-Za-z])_([A-Za-z0-9]+)(?![A-Za-z0-9])",
+        lambda match: (
+            f"${match.group(1)}_{match.group(2)}$"
+            if len(match.group(2)) == 1
+            else f"${match.group(1)}_{{{match.group(2)}}}$"
+        ),
+        value,
+    )
+    value = re.sub(
+        r"(?<![A-Za-z0-9\\])([A-Za-z])_\{([^{}]+)\}(?![A-Za-z0-9])",
+        r"$\1_{\2}$",
+        value,
+    )
+    value = re.sub(r"(?<![A-Za-z0-9])Q(?=\s*点)", r"$Q$", value)
+    for symbol, latex in greek.items():
+        value = value.replace(symbol, f"${latex}$")
+    for index, formula in enumerate(formulas):
+        value = value.replace(f"ZXQFORMULA{index}QXZ", formula)
+    return value
+
+
 def _full_plan_copy(value: str) -> str:
-    value = _remove_time_arrangements(_plain(value, preserve_latex=False))
+    value = _remove_time_arrangements(_plain(value, preserve_latex=True))
     value = re.sub(r"\s+([，。；：！？])", r"\1", value)
-    return value.strip(" \t\r\n|")
+    return _latexify_inline_symbols(value.strip(" \t\r\n|"))
 
 
 def _reference_copy(value: str) -> str:
@@ -503,8 +542,8 @@ def _full_standard_copy(value: str) -> str:
     cleaned = _full_plan_copy(value)
     if "共射电压放大能力" in cleaned and "共集输入电阻高" in cleaned:
         return (
-            "能分别写出共射电压增益 |A_v|≈βR'_L/r_be 与共集输入电阻 "
-            "R_i≈r_π+(1+β)R_E，并说明各参数的作用"
+            r"能分别写出共射电压增益 $|A_v|\approx\beta R'_L/r_{be}$ 与共集输入电阻 "
+            r"$R_i\approx r_\pi+(1+\beta)R_E$，并说明各参数的作用"
         )
     if "知识图谱覆盖全部" in cleaned and "个知识点" in cleaned:
         return re.sub(r"覆盖全部\s*\d+\s*个知识点", "覆盖全部学习模块", cleaned)
@@ -1334,7 +1373,18 @@ def _title_slide(prs: Presentation, plan: ParsedLearningPlan, renderer: LatexTex
     if title_display.count("、") >= 2:
         title_display = "\n".join(title_display.rsplit("、", 1))
     _text(slide, title_display, 0.75, 1.68, 7.65, 1.78, size=50, color=WHITE, bold=True, line_spacing=0.94)
-    _text(slide, _plain(plan.goal, preserve_latex=False), 0.78, 3.78, 7.25, 1.18, size=19, color="D4EAE6", line_spacing=1.12)
+    _display_text(
+        slide,
+        plan.goal,
+        0.78,
+        3.78,
+        7.25,
+        1.18,
+        renderer=renderer,
+        size=19,
+        color="D4EAE6",
+        line_spacing=1.12,
+    )
     _line(slide, 0.78, 5.42, 7.55, 5.42, color="347A73", width=1.2)
     _text(
         slide,
@@ -1370,7 +1420,19 @@ def _overview_slide(
     _set_background(slide, CREAM)
     _slide_title(slide, "LEARNING GOAL", "学习目标与方法", page)
     _text(slide, "学习目标", 0.78, 2.22, 1.4, 0.28, size=12, color=CORAL, bold=True)
-    _text(slide, _plain(plan.goal, preserve_latex=False), 0.78, 2.7, 6.65, 1.72, size=27, color=INK, bold=True, line_spacing=1.02)
+    _display_text(
+        slide,
+        plan.goal,
+        0.78,
+        2.7,
+        6.65,
+        1.72,
+        renderer=renderer,
+        size=27,
+        color=INK,
+        bold=True,
+        line_spacing=1.02,
+    )
     _line(slide, 0.78, 4.72, 7.3, 4.72, color=LINE, width=1.3)
     _text(slide, "学习范围", 0.78, 5.08, 1.1, 0.26, size=12, color=TEAL, bold=True)
     title_core = re.sub(r"\s*·\s*(?:学习规划|学习计划|学习路线)$", "", plan.title)
@@ -1496,6 +1558,7 @@ def _detail_rows(
     slide,
     entries: list[tuple[str, str, int]],
     *,
+    renderer: LatexTextRenderer | None = None,
     y: float = 2.28,
     height: float = 4.22,
 ) -> None:
@@ -1528,13 +1591,14 @@ def _detail_rows(
             bold=True,
             valign=MSO_ANCHOR.MIDDLE,
         )
-        _text(
+        _display_text(
             slide,
             value,
             2.35,
             cursor + 0.02,
             10.12,
             row_height - 0.04,
+            renderer=renderer,
             size=16.5,
             color=INK if label == "阶段目标" else INK_SOFT,
             bold=label == "阶段目标",
@@ -1558,6 +1622,7 @@ def _stage_detail_slide(
     section: str,
     part_index: int,
     part_total: int,
+    renderer: LatexTextRenderer,
 ) -> None:
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_background(slide, CREAM if stage_index % 2 else MINT_LIGHT)
@@ -1590,7 +1655,7 @@ def _stage_detail_slide(
         align=PP_ALIGN.RIGHT,
     )
     _line(slide, 0.78, 2.02, 12.52, 2.02, color="BDD9D3", width=1.2)
-    _detail_rows(slide, entries)
+    _detail_rows(slide, entries, renderer=renderer)
 
 
 def _stage_slides(
@@ -1599,6 +1664,7 @@ def _stage_slides(
     stage_index: int,
     stage_total: int,
     page: int,
+    renderer: LatexTextRenderer,
 ) -> int:
     learning_entries = [("阶段目标", stage.goal)]
     learning_entries.extend(("核心内容", item) for item in stage.concepts)
@@ -1625,6 +1691,7 @@ def _stage_slides(
             section="学什么，怎么做",
             part_index=part_index,
             part_total=len(learning_pages),
+            renderer=renderer,
         )
         added += 1
     for part_index, entries in enumerate(standard_pages, start=1):
@@ -1638,6 +1705,7 @@ def _stage_slides(
             section="练什么，达到什么要求",
             part_index=part_index,
             part_total=len(standard_pages),
+            renderer=renderer,
         )
         added += 1
     return added
@@ -1647,6 +1715,7 @@ def _principle_slides(
     prs: Presentation,
     principles: list[str],
     page: int,
+    renderer: LatexTextRenderer,
 ) -> int:
     remaining = principles[3:]
     if not remaining:
@@ -1660,7 +1729,7 @@ def _principle_slides(
         _set_background(slide, CREAM)
         kicker = f"LEARNING GOAL / {part_index + 1:02d}"
         _slide_title(slide, kicker, "学习目标与方法", page + part_index - 1)
-        _detail_rows(slide, entries, y=2.28, height=4.18)
+        _detail_rows(slide, entries, renderer=renderer, y=2.28, height=4.18)
     return len(pages)
 
 
@@ -1686,6 +1755,13 @@ def validate_learning_plan_ppt(
                 issues.append(f"第 {slide_index} 页存在超出画布的对象")
             if getattr(shape, "has_text_frame", False) and shape.text.strip():
                 slide_text.append(shape.text)
+            else:
+                try:
+                    description = shape._element.nvPicPr.cNvPr.get("descr", "")
+                except AttributeError:
+                    description = ""
+                if description:
+                    slide_text.append(description)
         if not slide_text:
             issues.append(f"第 {slide_index} 页没有可编辑文字")
         all_text.extend(slide_text)
@@ -1717,7 +1793,11 @@ def validate_learning_plan_ppt(
         if section not in visible_text:
             issues.append(f"缺少必要页面：{section}")
     if plan is not None:
-        compact_visible = re.sub(r"\s+", "", visible_text)
+        compact_visible = re.sub(
+            r"\s+",
+            "",
+            _plain(visible_text, preserve_latex=False),
+        )
         required_copy: list[str] = [plan.goal]
         required_copy.extend(plan.principles)
         for stage in plan.stages:
@@ -1728,7 +1808,12 @@ def validate_learning_plan_ppt(
             required_copy.extend(stage.standards)
         for value in required_copy:
             for chunk in _split_complete_text(value):
-                if re.sub(r"\s+", "", chunk) not in compact_visible:
+                compact_chunk = re.sub(
+                    r"\s+",
+                    "",
+                    _plain(chunk, preserve_latex=False),
+                )
+                if compact_chunk not in compact_visible:
                     issues.append(f"规划内容未完整写入 PPT：{chunk[:24]}")
         outline_items = ["学习目标与方法", *(stage.title for stage in plan.stages)]
         contents_text = re.sub(r"\s+", "", slide_texts[1] if len(slide_texts) > 1 else "")
@@ -1762,9 +1847,16 @@ def build_learning_plan_ppt(markdown: str, output_path: Path, topic: str = "") -
         page += 1
         _overview_slide(presentation, plan, page, renderer)
         page += 1
-        page += _principle_slides(presentation, plan.principles, page)
+        page += _principle_slides(presentation, plan.principles, page, renderer)
         for index, stage in enumerate(plan.stages, start=1):
-            page += _stage_slides(presentation, stage, index, len(plan.stages), page)
+            page += _stage_slides(
+                presentation,
+                stage,
+                index,
+                len(plan.stages),
+                page,
+                renderer,
+            )
         presentation.save(str(output_path))
         quality_issues = validate_learning_plan_ppt(output_path, plan)
         if quality_issues:
@@ -1774,7 +1866,7 @@ def build_learning_plan_ppt(markdown: str, output_path: Path, topic: str = "") -
 
 
 def learning_plan_ppt_path(root_dir: Path, session_id: str, markdown: str, topic: str = "") -> Path:
-    digest = hashlib.sha256(f"v5-outline-only\0{topic}\0{markdown}".encode("utf-8")).hexdigest()[:20]
+    digest = hashlib.sha256(f"v6-latex-outline\0{topic}\0{markdown}".encode("utf-8")).hexdigest()[:20]
     return root_dir / "data" / "presentations" / session_id / f"learning-plan-{digest}.pptx"
 
 
