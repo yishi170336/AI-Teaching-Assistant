@@ -1144,6 +1144,11 @@ button { color: inherit; }
 .student-bank-detail-header > div:first-child > small { display: flex; align-items: center; gap: 5px; margin-top: 9px; color: #2d7a72; font-size: 8px; }
 .student-bank-detail-header > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding-right: 22px; }
 .student-bank-question-list { display: grid; gap: 13px; max-height: min(720px, calc(100vh - 220px)); padding: 17px; overflow-y: auto; }
+.student-bank-question-list.is-loading { opacity: .48; pointer-events: none; }
+.student-bank-detail-loading { min-height: 260px; display: flex; align-items: center; justify-content: center; gap: 9px; color: #2b776f; }
+.student-bank-detail-loading strong { font-size: 10px; }
+.student-bank-pagination { display: flex; justify-content: center; padding: 13px 17px 18px; background: #fff; border-top: 1px solid #e1eae7; }
+.student-bank-pagination .ant-pagination { display: flex; flex-wrap: wrap; justify-content: center; }
 .student-bank-question { overflow: hidden; background: #fff; border: 1px solid #dce7e4; border-radius: 14px; box-shadow: 0 5px 17px rgba(30,75,70,.035); }
 .student-bank-question-head { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px 15px; background: #f8fbfa; border-bottom: 1px solid #e4ecea; }
 .student-bank-question-number { display: grid; place-items: center; width: 36px; min-height: 36px; padding: 3px; color: #fff; background: linear-gradient(140deg, #176f68, #269184); border-radius: 10px; font-size: 9px; font-weight: 800; overflow-wrap: anywhere; text-align: center; }
@@ -1295,6 +1300,7 @@ button { color: inherit; }
   .student-bank-library > header { align-items: flex-start; flex-direction: column; }
   .student-bank-detail-header { padding: 22px 18px; }
   .student-bank-options.columns-2, .student-bank-options.columns-4 { grid-template-columns: 1fr; }
+  .student-bank-pagination .ant-pagination-total-text { width: 100%; margin: 0 0 8px; text-align: center; }
   .question-knowledge-alignment > header { align-items: flex-start; flex-direction: column; gap: 3px; }
   .question-knowledge-alignment > header small { max-width: 100%; white-space: normal; }
   .mistake-title-editor { flex-direction: column; }

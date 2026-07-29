@@ -1414,12 +1414,16 @@ async def create_homework_from_question_bank(
 
 
 @app.get("/api/question-banks")
-async def list_question_banks() -> dict[str, Any]:
+async def list_question_banks(include_questions: bool = False) -> dict[str, Any]:
     await asyncio.to_thread(
         homework_store.backfill_question_bank_knowledge,
         mistake_knowledge.align,
     )
-    return {"question_banks": homework_store.list_question_banks()}
+    return {
+        "question_banks": homework_store.list_question_banks(
+            include_questions=include_questions,
+        )
+    }
 
 
 @app.post("/api/question-banks")
@@ -1474,9 +1478,21 @@ async def create_question_bank(
 
 
 @app.get("/api/question-banks/{bank_id}")
-async def get_question_bank(bank_id: str) -> dict[str, Any]:
+async def get_question_bank(
+    bank_id: str,
+    offset: int = 0,
+    limit: int = 0,
+) -> dict[str, Any]:
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="题目偏移量不能为负数")
+    if limit < 0 or limit > 100:
+        raise HTTPException(status_code=400, detail="每次最多读取 100 道题")
     try:
-        bank = homework_store.get_question_bank(bank_id)
+        bank = homework_store.get_question_bank(
+            bank_id,
+            question_offset=offset,
+            question_limit=limit or None,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:

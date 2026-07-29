@@ -13,6 +13,7 @@ import {
   Empty,
   Input,
   Modal,
+  Pagination,
   Popconfirm,
   Progress,
   Segmented,
@@ -104,6 +105,7 @@ import {
   fetchMistakeNotebook,
   fetchSchedule,
   fetchModels,
+  fetchQuestionBank,
   fetchQuestionBanks,
   fetchSession,
   fetchSessions,
@@ -2137,6 +2139,7 @@ function QuestionBankQuestionCard({
   deleting: boolean
   onDelete: () => void
 }) {
+  const [answerOpen, setAnswerOpen] = useState(false)
   return (
     <article className="student-bank-question">
       <header className="student-bank-question-head">
@@ -2176,7 +2179,12 @@ function QuestionBankQuestionCard({
           <div className="student-bank-figures">
             {question.figures.map((figure) => (
               <figure key={figure.file}>
-                <img src={figure.url} alt={figure.caption || `第 ${question.number} 题题图`} />
+                <img
+                  src={figure.url}
+                  alt={figure.caption || `第 ${question.number} 题题图`}
+                  loading="lazy"
+                  decoding="async"
+                />
                 {figure.caption ? <figcaption>{figure.caption}</figcaption> : null}
               </figure>
             ))}
@@ -2184,21 +2192,33 @@ function QuestionBankQuestionCard({
         ) : null}
         <QuestionKnowledgeAlignment question={question} />
         {(question.answer || question.answer_subquestions?.length || question.answer_figures?.length) ? (
-          <details className="student-bank-answer">
+          <details
+            className="student-bank-answer"
+            onToggle={(event) => setAnswerOpen(event.currentTarget.open)}
+          >
             <summary>查看参考答案</summary>
-            {question.answer ? <MathMarkdown content={question.answer} /> : null}
-            {question.answer_subquestions?.map((part) => (
-              <div key={part.label}><b>（{part.label}）</b><MathMarkdown content={part.text} /></div>
-            ))}
-            {question.answer_figures?.length ? (
-              <div className="student-bank-figures answer">
-                {question.answer_figures.map((figure) => (
-                  <figure key={figure.file}>
-                    <img src={figure.url} alt={figure.caption || `第 ${question.number} 题答案图`} />
-                    {figure.caption ? <figcaption>{figure.caption}</figcaption> : null}
-                  </figure>
+            {answerOpen ? (
+              <>
+                {question.answer ? <MathMarkdown content={question.answer} /> : null}
+                {question.answer_subquestions?.map((part) => (
+                  <div key={part.label}><b>（{part.label}）</b><MathMarkdown content={part.text} /></div>
                 ))}
-              </div>
+                {question.answer_figures?.length ? (
+                  <div className="student-bank-figures answer">
+                    {question.answer_figures.map((figure) => (
+                      <figure key={figure.file}>
+                        <img
+                          src={figure.url}
+                          alt={figure.caption || `第 ${question.number} 题答案图`}
+                          loading="lazy"
+                          decoding="async"
+                        />
+                        {figure.caption ? <figcaption>{figure.caption}</figcaption> : null}
+                      </figure>
+                    ))}
+                  </div>
+                ) : null}
+              </>
             ) : null}
           </details>
         ) : null}
@@ -2207,27 +2227,66 @@ function QuestionBankQuestionCard({
   )
 }
 
+const QUESTION_BANK_PAGE_SIZE = 20
+
 function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
   const { message: toast } = AntApp.useApp()
   const [banks, setBanks] = useState<QuestionBank[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedBankId, setSelectedBankId] = useState('')
+  const [selectedBankDetail, setSelectedBankDetail] = useState<QuestionBank | null>(null)
+  const [questionPage, setQuestionPage] = useState(1)
+  const [detailLoading, setDetailLoading] = useState(false)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [fileList, setFileList] = useState<UploadFile[]>([])
   const [title, setTitle] = useState('')
   const [uploading, setUploading] = useState(false)
   const [actionId, setActionId] = useState('')
   const [deletingQuestionId, setDeletingQuestionId] = useState('')
-  const selectedBank = banks.find((bank) => bank.id === selectedBankId) || null
+  const detailRequestId = useRef(0)
+  const selectedBankSummary = banks.find((bank) => bank.id === selectedBankId) || null
+  const selectedBank = selectedBankDetail?.id === selectedBankId
+    ? { ...(selectedBankSummary || selectedBankDetail), ...selectedBankDetail }
+    : selectedBankSummary
 
   const loadBanks = useCallback(async (withSpinner = false) => {
     if (withSpinner) setLoading(true)
     try {
-      setBanks(await fetchQuestionBanks())
+      const nextBanks = await fetchQuestionBanks({ includeQuestions: false })
+      setBanks(nextBanks)
+      return nextBanks
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '题库读取失败')
+      return []
     } finally {
       if (withSpinner) setLoading(false)
+    }
+  }, [toast])
+
+  const loadBankPage = useCallback(async (
+    bankId: string,
+    page: number,
+    withSpinner = true,
+  ) => {
+    const requestId = ++detailRequestId.current
+    if (withSpinner) setDetailLoading(true)
+    try {
+      const detail = await fetchQuestionBank(
+        bankId,
+        (page - 1) * QUESTION_BANK_PAGE_SIZE,
+        QUESTION_BANK_PAGE_SIZE,
+      )
+      if (requestId === detailRequestId.current) {
+        setSelectedBankDetail(detail)
+      }
+      return detail
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '题库详情读取失败')
+      return null
+    } finally {
+      if (withSpinner && requestId === detailRequestId.current) {
+        setDetailLoading(false)
+      }
     }
   }, [toast])
 
@@ -2237,9 +2296,38 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
 
   const hasProcessingBank = banks.some((bank) => bank.status === 'processing')
   useEffect(() => {
-    const timer = window.setInterval(() => void loadBanks(), hasProcessingBank ? 2800 : 10000)
+    if (!hasProcessingBank) return
+    const timer = window.setInterval(() => {
+      void loadBanks()
+      if (
+        selectedBankId
+        && banks.find((bank) => bank.id === selectedBankId)?.status === 'processing'
+      ) {
+        void loadBankPage(selectedBankId, questionPage, false)
+      }
+    }, 2800)
     return () => window.clearInterval(timer)
-  }, [hasProcessingBank, loadBanks])
+  }, [banks, hasProcessingBank, loadBankPage, loadBanks, questionPage, selectedBankId])
+
+  const openBank = (bankId: string) => {
+    setSelectedBankId(bankId)
+    setSelectedBankDetail(null)
+    setQuestionPage(1)
+    void loadBankPage(bankId, 1)
+  }
+
+  const closeBank = () => {
+    detailRequestId.current += 1
+    setSelectedBankId('')
+    setSelectedBankDetail(null)
+    setQuestionPage(1)
+  }
+
+  const changeQuestionPage = (page: number) => {
+    if (!selectedBankId || page === questionPage) return
+    setQuestionPage(page)
+    void loadBankPage(selectedBankId, page)
+  }
 
   const closeUpload = () => {
     if (uploading) return
@@ -2262,7 +2350,10 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
       setFileList([])
       setTitle('')
       setSelectedBankId(bank.id)
+      setSelectedBankDetail(null)
+      setQuestionPage(1)
       await loadBanks()
+      await loadBankPage(bank.id, 1)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '题库上传失败')
     } finally {
@@ -2276,9 +2367,11 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
       if (action === 'retry') {
         await reprocessQuestionBank(bankId)
         toast.success('已重新开始识别题库')
+        setQuestionPage(1)
+        await loadBankPage(bankId, 1)
       } else {
         await deleteQuestionBank(bankId)
-        setSelectedBankId('')
+        closeBank()
         toast.success('题库已删除')
       }
       await loadBanks()
@@ -2294,7 +2387,16 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
     try {
       await deleteQuestionBankQuestion(bankId, questionId)
       toast.success('题目已从题库删除')
-      await loadBanks()
+      const nextTotal = Math.max(0, (selectedBank?.question_count || 1) - 1)
+      const nextPage = Math.min(
+        questionPage,
+        Math.max(1, Math.ceil(nextTotal / QUESTION_BANK_PAGE_SIZE)),
+      )
+      setQuestionPage(nextPage)
+      await Promise.all([
+        loadBanks(),
+        loadBankPage(bankId, nextPage),
+      ])
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '题目删除失败')
     } finally {
@@ -2328,7 +2430,7 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
             {banks.map((bank) => {
               const status = studentQuestionBankStatus[bank.status]
               return (
-                <article className="question-bank-card" key={bank.id} onClick={() => setSelectedBankId(bank.id)}>
+                <article className="question-bank-card" key={bank.id} onClick={() => openBank(bank.id)}>
                   <div className="question-bank-card-top">
                     <span><BookMarked size={21} /></span>
                     <Tag color={status.color} icon={status.icon}>{status.label}</Tag>
@@ -2391,8 +2493,8 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
       </Modal>
 
       <Modal
-        open={Boolean(selectedBank)}
-        onCancel={() => setSelectedBankId('')}
+        open={Boolean(selectedBankId)}
+        onCancel={closeBank}
         footer={null}
         width={1120}
         className="student-bank-detail-modal"
@@ -2434,18 +2536,37 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
             {selectedBank.processing_error ? (
               <div className="homework-detail-error"><AlertTriangle size={18} /><div><strong>题库识别未完成</strong><span>{selectedBank.processing_error}</span></div></div>
             ) : null}
-            {selectedBank.status === 'ready' && selectedBank.questions.length ? (
-              <div className="student-bank-question-list">
-                {selectedBank.questions.map((question) => (
-                  <QuestionBankQuestionCard
-                    key={question.id}
-                    question={question}
-                    deleting={deletingQuestionId === question.id}
-                    onDelete={() => void removeQuestion(selectedBank.id, question.id)}
-                  />
-                ))}
+            {detailLoading && !selectedBankDetail ? (
+              <div className="student-bank-detail-loading">
+                <LoaderCircle className="spin" size={24} />
+                <strong>正在加载第 {questionPage} 页题目…</strong>
               </div>
-            ) : selectedBank.status === 'ready' ? (
+            ) : selectedBank.status === 'ready' && selectedBank.questions.length ? (
+              <>
+                <div className={`student-bank-question-list ${detailLoading ? 'is-loading' : ''}`}>
+                  {selectedBank.questions.map((question) => (
+                    <QuestionBankQuestionCard
+                      key={question.id}
+                      question={question}
+                      deleting={deletingQuestionId === question.id}
+                      onDelete={() => void removeQuestion(selectedBank.id, question.id)}
+                    />
+                  ))}
+                </div>
+                {selectedBank.question_count > QUESTION_BANK_PAGE_SIZE ? (
+                  <div className="student-bank-pagination">
+                    <Pagination
+                      current={questionPage}
+                      pageSize={QUESTION_BANK_PAGE_SIZE}
+                      total={selectedBank.question_count}
+                      showSizeChanger={false}
+                      showTotal={(total, range) => `第 ${range[0]}-${range[1]} 题，共 ${total} 题`}
+                      onChange={changeQuestionPage}
+                    />
+                  </div>
+                ) : null}
+              </>
+            ) : selectedBank.status === 'ready' && !detailLoading ? (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂未提取到可用题目" />
             ) : null}
           </div>

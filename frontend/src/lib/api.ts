@@ -516,6 +516,9 @@ export type QuestionBank = {
   question_count: number
   knowledge_base: string
   questions: HomeworkQuestion[]
+  question_offset?: number
+  question_limit?: number
+  has_more?: boolean
 }
 
 export type GeneratedPresentation = {
@@ -1115,10 +1118,31 @@ export async function createHomeworkFromQuestionBank(fields: {
   return result.homework
 }
 
-export async function fetchQuestionBanks(): Promise<QuestionBank[]> {
-  const response = await fetch('/api/question-banks')
+export async function fetchQuestionBanks(
+  options: { includeQuestions?: boolean } = {},
+): Promise<QuestionBank[]> {
+  const includeQuestions = options.includeQuestions ?? true
+  const response = await fetch(
+    `/api/question-banks?include_questions=${includeQuestions ? 'true' : 'false'}`,
+  )
   const result = await homeworkResponse<{ question_banks: QuestionBank[] }>(response, '题库读取失败')
   return result.question_banks || []
+}
+
+export async function fetchQuestionBank(
+  bankId: string,
+  offset = 0,
+  limit = 20,
+): Promise<QuestionBank> {
+  const query = new URLSearchParams({
+    offset: String(offset),
+    limit: String(limit),
+  })
+  const response = await fetch(
+    `/api/question-banks/${encodeURIComponent(bankId)}?${query.toString()}`,
+  )
+  const result = await homeworkResponse<{ question_bank: QuestionBank }>(response, '题库详情读取失败')
+  return result.question_bank
 }
 
 export async function createQuestionBank(

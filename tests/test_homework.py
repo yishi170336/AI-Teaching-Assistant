@@ -246,6 +246,34 @@ def test_question_bank_is_durable_and_selected_questions_become_independent_home
     assert bank["questions"][0]["figures"][0]["url"].startswith(
         f"/api/question-banks/{bank_id}/assets/"
     )
+    summary = next(
+        item
+        for item in store.list_question_banks(include_questions=False)
+        if item["id"] == bank_id
+    )
+    assert summary["question_count"] == 1
+    assert summary["questions"] == []
+    assert summary["question_limit"] == 0
+    assert summary["has_more"] is True
+
+    first_page = store.get_question_bank(
+        bank_id,
+        question_offset=0,
+        question_limit=1,
+    )
+    assert [question["id"] for question in first_page["questions"]] == [question_id]
+    assert first_page["question_offset"] == 0
+    assert first_page["question_limit"] == 1
+    assert first_page["has_more"] is False
+
+    empty_page = store.get_question_bank(
+        bank_id,
+        question_offset=1,
+        question_limit=1,
+    )
+    assert empty_page["questions"] == []
+    assert empty_page["question_offset"] == 1
+    assert empty_page["has_more"] is False
 
     homework = store.create_homework_from_question_bank(
         title="第一章精选练习",

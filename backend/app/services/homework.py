@@ -704,7 +704,14 @@ class HomeworkStore:
             result["submission"] = self._public_submission(latest) if latest else None
         return result
 
-    def _public_question_bank(self, bank: dict[str, Any]) -> dict[str, Any]:
+    def _public_question_bank(
+        self,
+        bank: dict[str, Any],
+        *,
+        include_questions: bool = True,
+        question_offset: int = 0,
+        question_limit: int | None = None,
+    ) -> dict[str, Any]:
         bank_id = str(bank["id"])
         result = {
             key: bank.get(key)
@@ -716,25 +723,41 @@ class HomeworkStore:
             )
         }
         result["knowledge_base"] = str(result.get("knowledge_base") or "default")
-        result["max_score"] = round(
-            sum(
-                _question_scoring_max(question)
-                for question in bank.get("questions", [])
-                if isinstance(question, dict)
-            ),
-            2,
-        )
-        result["question_count"] = len(bank.get("questions", []))
-        result["questions"] = [
-            self._public_question(
-                bank_id,
-                question,
-                include_answers=True,
-                asset_scope="question-banks",
-            )
+        questions = [
+            question
             for question in bank.get("questions", [])
             if isinstance(question, dict)
         ]
+        result["max_score"] = round(
+            sum(
+                _question_scoring_max(question)
+                for question in questions
+            ),
+            2,
+        )
+        result["question_count"] = len(questions)
+        result["questions"] = []
+        result["question_offset"] = 0
+        result["question_limit"] = 0
+        result["has_more"] = bool(questions)
+        if include_questions:
+            page = (
+                questions[question_offset:]
+                if question_limit is None
+                else questions[question_offset:question_offset + question_limit]
+            )
+            result["questions"] = [
+                self._public_question(
+                    bank_id,
+                    question,
+                    include_answers=True,
+                    asset_scope="question-banks",
+                )
+                for question in page
+            ]
+            result["question_offset"] = question_offset
+            result["question_limit"] = len(page)
+            result["has_more"] = question_offset + len(page) < len(questions)
         if bank.get("source_file"):
             result["source_url"] = f"/api/question-banks/{bank_id}/source"
         return result
@@ -832,21 +855,50 @@ class HomeworkStore:
             self._write(state)
         return self.get_question_bank(bank_id)
 
-    def list_question_banks(self) -> list[dict[str, Any]]:
+    def list_question_banks(
+        self,
+        *,
+        include_questions: bool = True,
+    ) -> list[dict[str, Any]]:
         with self._lock:
             items = self._read()["question_banks"]
-        result = [self._public_question_bank(item) for item in items]
+        result = [
+            self._public_question_bank(
+                item,
+                include_questions=include_questions,
+            )
+            for item in items
+        ]
         return sorted(result, key=lambda item: str(item.get("created_at", "")), reverse=True)
 
-    def get_question_bank(self, bank_id: str) -> dict[str, Any]:
+    def get_question_bank(
+        self,
+        bank_id: str,
+        *,
+        question_offset: int = 0,
+        question_limit: int | None = None,
+    ) -> dict[str, Any]:
         self.validate_homework_id(bank_id)
-        item = next(
-            (value for value in self.list_question_banks() if value.get("id") == bank_id),
-            None,
-        )
+        if question_offset < 0:
+            raise ValueError("题目偏移量不能为负数")
+        if question_limit is not None and not 1 <= question_limit <= 100:
+            raise ValueError("每次最多读取 100 道题")
+        with self._lock:
+            item = next(
+                (
+                    value
+                    for value in self._read()["question_banks"]
+                    if value.get("id") == bank_id
+                ),
+                None,
+            )
         if item is None:
             raise FileNotFoundError("题库不存在")
-        return item
+        return self._public_question_bank(
+            item,
+            question_offset=question_offset,
+            question_limit=question_limit,
+        )
 
     def get_raw_question_bank(self, bank_id: str) -> dict[str, Any]:
         self.validate_homework_id(bank_id)
