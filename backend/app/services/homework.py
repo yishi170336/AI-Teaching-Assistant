@@ -2129,6 +2129,314 @@ def _repair_numbered_key(item: dict[str, Any]) -> str:
     return key
 
 
+_DOTTED_QUESTION_NUMBER = re.compile(r"(?:例\s*)?\d+(?:\.\d+)+")
+_QUESTION_REQUEST_CUE = re.compile(
+    r"试|请|求|计算|画出|绘出|证明|分析|说明|判断|确定|写出|列出|设计|"
+    r"比较|选择|填写|完成|能否|是否|什么|多少|为何|为什么|如何|怎样|"
+    r"讨论|估算|标明|推导"
+)
+_ANSWER_STEP_CUE = re.compile(
+    r"(?:^\s*(?:解[：:]?|首先|其次|再次|因此|所以|因而|"
+    r"由.{0,80}?(?:可知|可得|得到)|根据.{0,80}?(?:可知|可得|得到)|"
+    r"分析方法|计算结果|令\b|则有\b)|[，。；]\s*(?:首先|其次|再次))"
+)
+_RAW_QUESTION_FIELDS = (
+    "_raw_question_key",
+    "_raw_number",
+    "_raw_section_key",
+    "_raw_section_title",
+)
+
+
+def _printed_question_number(value: Any) -> str:
+    matches = _DOTTED_QUESTION_NUMBER.findall(_clean_text(value, 240))
+    if not matches:
+        return ""
+    return re.sub(r"\s+", "", matches[-1])
+
+
+def _question_key_number(value: Any) -> str:
+    return _printed_question_number(_clean_text(value, 160).rsplit("-", 1)[-1])
+
+
+def _has_question_material(item: dict[str, Any]) -> bool:
+    return bool(
+        _clean_text(item.get("question_text"))
+        or item.get("subquestions")
+        or item.get("options")
+        or item.get("question_bboxes")
+    )
+
+
+def _remember_raw_question_identity(items: Iterable[dict[str, Any]]) -> None:
+    for item in items:
+        item.setdefault("_raw_question_key", _clean_text(item.get("question_key"), 80))
+        item.setdefault("_raw_number", _clean_text(item.get("number"), 80))
+        item.setdefault("_raw_section_key", _clean_text(item.get("section_key"), 40))
+        item.setdefault(
+            "_raw_section_title", _clean_text(item.get("section_title"), 240)
+        )
+
+
+def _model_assignment_conflicts_with_printed_number(
+    item: dict[str, Any],
+    canonical_key: str,
+    corrected_number: str,
+) -> bool:
+    """Reject whole-document rewrites that contradict a strong page-level number."""
+    raw_number = _printed_question_number(item.get("_raw_number", item.get("number")))
+    assigned_number = _printed_question_number(corrected_number) or (
+        _question_key_number(canonical_key)
+    )
+    if not raw_number or not assigned_number or raw_number == assigned_number:
+        return False
+    raw_key_number = _question_key_number(
+        item.get("_raw_question_key", item.get("question_key"))
+    )
+    has_strong_page_number = raw_key_number == raw_number or raw_number in re.sub(
+        r"\s+", "", _clean_text(item.get("question_text"), 1200)
+    )
+    return has_strong_page_number and _has_question_material(item)
+
+
+def _raw_identity_key(item: dict[str, Any]) -> str:
+    raw_key = _clean_text(
+        item.get("_raw_question_key", item.get("question_key")), 80
+    )
+    raw_number_text = _clean_text(
+        item.get("_raw_number", item.get("number")), 80
+    )
+    raw_number = _printed_question_number(raw_number_text)
+    if raw_key and (
+        not raw_number or _question_key_number(raw_key) == raw_number
+    ):
+        return raw_key
+    section_key = _clean_text(
+        item.get("_raw_section_key", item.get("section_key")), 40
+    )
+    if section_key and raw_number:
+        marker = "例" if raw_number.startswith("例") else "题"
+        plain_number = re.sub(r"^例", "", raw_number)
+        return f"{section_key}-{marker}{plain_number}"
+    return raw_key
+
+
+def _restore_raw_question_identity(
+    item: dict[str, Any], question_key: str
+) -> None:
+    item["question_key"] = question_key
+    for raw_name, public_name in (
+        ("_raw_number", "number"),
+        ("_raw_section_key", "section_key"),
+        ("_raw_section_title", "section_title"),
+    ):
+        value = _clean_text(item.get(raw_name), 240)
+        if value:
+            item[public_name] = value
+
+
+def _repair_implausible_question_key_reuse(
+    items: list[dict[str, Any]],
+) -> list[str]:
+    """Undo catastrophic key reuse without forbidding legitimate distant answers."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        grouped.setdefault(str(item["question_key"]), []).append(item)
+
+    warnings: list[str] = []
+    for key, parts in grouped.items():
+        question_parts = [
+            item
+            for item in parts
+            if _has_question_material(item)
+            and (
+                item.get("options")
+                or _contains_question_request(
+                    _compose_labeled_text(
+                        item.get("question_text"), item.get("subquestions")
+                    )
+                )
+            )
+        ]
+        pages = sorted({int(item["page"]) for item in question_parts})
+        if len(pages) < 2 or pages[-1] - pages[0] <= 12:
+            continue
+
+        identities = {
+            _raw_identity_key(item)
+            for item in question_parts
+            if _raw_identity_key(item)
+        }
+        if len(identities) >= 2:
+            identity_parts = [
+                item for item in question_parts if _raw_identity_key(item)
+            ]
+            for item in parts:
+                target_key = _raw_identity_key(item)
+                if not target_key and identity_parts:
+                    nearest = min(
+                        identity_parts,
+                        key=lambda candidate: abs(
+                            int(candidate["page"]) - int(item["page"])
+                        ),
+                    )
+                    target_key = _raw_identity_key(nearest)
+                if target_key and target_key != key:
+                    _restore_raw_question_identity(item, target_key)
+            warnings.append(
+                f"题号 {key} 曾跨第 {pages[0]}-{pages[-1]} 页复用，"
+                "已按逐页印刷题号自动拆分"
+            )
+            continue
+
+        # If page-level extraction also lost every number, keep content isolated
+        # instead of silently building one enormous mixed question.
+        page_blocks: list[list[int]] = []
+        for page in pages:
+            if not page_blocks or page - page_blocks[-1][-1] > 6:
+                page_blocks.append([page])
+            else:
+                page_blocks[-1].append(page)
+        if pages[-1] - pages[0] <= 48 or len(page_blocks) < 2:
+            continue
+        block_keys = [
+            key if index == 0 else f"{key}-page-{block[0]}"
+            for index, block in enumerate(page_blocks)
+        ]
+        for item in parts:
+            item_page = int(item["page"])
+            block_index = min(
+                range(len(page_blocks)),
+                key=lambda index: min(
+                    abs(item_page - page) for page in page_blocks[index]
+                ),
+            )
+            item["question_key"] = block_keys[block_index]
+        warnings.append(
+            f"题号 {key} 异常跨越第 {pages[0]}-{pages[-1]} 页且缺少可靠题号，"
+            "已按相邻页分段隔离"
+        )
+    return warnings
+
+
+def _contains_question_request(value: Any) -> bool:
+    return bool(_QUESTION_REQUEST_CUE.search(_clean_text(value, 12000)))
+
+
+def _looks_like_answer_step(value: Any) -> bool:
+    text = _clean_text(value, 12000)
+    if not text:
+        return False
+    if _ANSWER_STEP_CUE.search(text):
+        return True
+    if _contains_question_request(text):
+        return False
+    equation_count = len(re.findall(r"(?:=|\\dfrac|\\frac|\\approx)", text))
+    return equation_count >= 2 and bool(
+        re.search(r"可得|得到|因此|所以|即为|等于|代入", text)
+    )
+
+
+def _repair_question_answer_roles(
+    items: list[dict[str, Any]],
+) -> list[str]:
+    """Move solution prose out of displayed subquestions and prompt continuations."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        grouped.setdefault(str(item["question_key"]), []).append(item)
+
+    warnings: list[str] = []
+    for key, parts in grouped.items():
+        has_request = any(
+            _contains_question_request(
+                _compose_labeled_text(
+                    item.get("question_text"), item.get("subquestions")
+                )
+            )
+            for item in parts
+        )
+        if not has_request:
+            continue
+
+        moved_subquestions = 0
+        moved_prompts = 0
+        for item in parts:
+            question_text = _clean_text(item.get("question_text"))
+            if (
+                question_text
+                and _looks_like_answer_step(question_text)
+                and any(
+                    other is not item
+                    and _contains_question_request(
+                        _compose_labeled_text(
+                            other.get("question_text"), other.get("subquestions")
+                        )
+                    )
+                    for other in parts
+                )
+            ):
+                item["answer_text"] = "\n".join(
+                    value
+                    for value in (
+                        _clean_text(item.get("answer_text")),
+                        question_text,
+                    )
+                    if value
+                )
+                item["question_text"] = ""
+                combined_answer_bboxes: list[list[float]] = []
+                for bbox in (
+                    list(item.get("answer_bboxes", []))
+                    + list(item.get("question_bboxes", []))
+                ):
+                    if bbox not in combined_answer_bboxes:
+                        combined_answer_bboxes.append(bbox)
+                item["answer_bboxes"] = combined_answer_bboxes
+                item["question_bboxes"] = []
+                moved_prompts += 1
+
+            subquestions = _normalize_labeled_parts(item.get("subquestions", []))
+            answer_like = [
+                part for part in subquestions if _looks_like_answer_step(part["text"])
+            ]
+            if not answer_like:
+                continue
+            answer_evidence = bool(
+                _clean_text(item.get("answer_text"))
+                or item.get("answer_subquestions")
+                or item.get("answer_bboxes")
+            )
+            if answer_evidence:
+                answer_like = [
+                    part
+                    for part in subquestions
+                    if _looks_like_answer_step(part["text"])
+                    or not _contains_question_request(part["text"])
+                ]
+            if not answer_evidence and len(answer_like) != len(subquestions):
+                continue
+            answer_like_ids = {id(part) for part in answer_like}
+            item["subquestions"] = [
+                part for part in subquestions if id(part) not in answer_like_ids
+            ]
+            item["answer_subquestions"] = _merge_labeled_parts(
+                _normalize_labeled_parts(item.get("answer_subquestions", []))
+                + answer_like
+            )
+            moved_subquestions += len(answer_like)
+
+        if moved_subquestions or moved_prompts:
+            warnings.append(
+                f"题号 {key} 已将 {moved_subquestions} 个解题步骤移出小问"
+                + (
+                    f"，并校正 {moved_prompts} 个答案续接片段"
+                    if moved_prompts
+                    else ""
+                )
+            )
+    return warnings
+
+
 def _consolidate_question_keys(
     client: QwenVisionClient | Any,
     items: list[dict[str, Any]],
@@ -2137,10 +2445,34 @@ def _consolidate_question_keys(
     page_contexts: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Run a whole-document pass to prevent cross-page key reuse across new questions."""
+    _remember_raw_question_identity(items)
     if page_count <= 1 or len(items) <= 1:
         for item in items:
             item["question_key"] = _repair_numbered_key(item)
         return items, []
+    if len(items) > 72:
+        consolidated: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        for offset in range(0, len(items), 72):
+            batch = items[offset:offset + 72]
+            batch_pages = {int(item["page"]) for item in batch}
+            batch_contexts = [
+                context
+                for context in (page_contexts or [])
+                if int(context.get("page", 0)) in batch_pages
+            ]
+            corrected, batch_warnings = _consolidate_question_keys(
+                client,
+                batch,
+                page_count=page_count,
+                page_contexts=batch_contexts,
+            )
+            consolidated.extend(corrected)
+            warnings.extend(
+                f"第 {offset + 1}-{offset + len(batch)} 个片段：{warning}"
+                for warning in batch_warnings
+            )
+        return consolidated, warnings
     compact = [
         {
             "segment_index": index,
@@ -2219,6 +2551,33 @@ def _consolidate_question_keys(
         if index in assignments:
             key, points, keep, corrected_number, corrected_section_title = assignments[index]
             if not keep:
+                raw_number = _printed_question_number(item.get("_raw_number"))
+                raw_key_number = _question_key_number(item.get("_raw_question_key"))
+                if (
+                    not raw_number
+                    or raw_key_number != raw_number
+                    or not _has_question_material(item)
+                ):
+                    continue
+                warnings.append(
+                    f"第 {item['page']} 页有明确印刷题号 "
+                    f"{_clean_text(item.get('_raw_number'), 80)}，"
+                    "已拒绝全卷复核的误删除"
+                )
+                item["question_key"] = _repair_numbered_key(item)
+                kept_items.append(item)
+                continue
+            if _model_assignment_conflicts_with_printed_number(
+                item, key, corrected_number
+            ):
+                warnings.append(
+                    f"第 {item['page']} 页印刷题号 "
+                    f"{_clean_text(item.get('_raw_number'), 80)} "
+                    f"与全卷归并结果 {corrected_number or key} 冲突，"
+                    "已保留逐页题号"
+                )
+                item["question_key"] = _repair_numbered_key(item)
+                kept_items.append(item)
                 continue
             item["question_key"] = key
             if corrected_number:
@@ -3774,6 +4133,8 @@ def process_homework(
         if not all_items:
             raise RuntimeError("附件中没有识别到可直接布置的独立题目")
         _normalize_document_metadata(all_items)
+        warnings.extend(_repair_implausible_question_key_reuse(all_items))
+        warnings.extend(_repair_question_answer_roles(all_items))
         all_items, answer_continuation_warnings = _recover_missing_answer_continuations(
             client, all_items, page_map
         )
@@ -3812,6 +4173,10 @@ def process_homework(
                 f"仍有 {len(incomplete_choices)} 道选择题缺少完整选项："
                 + "、".join(labels[:12])
             )
+
+        for item in all_items:
+            for field in _RAW_QUESTION_FIELDS:
+                item.pop(field, None)
 
         grouped: dict[str, dict[str, Any]] = {}
         for item_index, item in enumerate(all_items):

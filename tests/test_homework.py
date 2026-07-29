@@ -29,6 +29,8 @@ from backend.app.services.homework import (
     _recover_missing_answer_figures,
     _recover_missing_question_figures,
     _repair_figure_assignments,
+    _repair_implausible_question_key_reuse,
+    _repair_question_answer_roles,
     _repair_small_signal_input_units,
     _split_labeled_text,
     grade_submission,
@@ -2002,6 +2004,175 @@ def test_whole_document_pass_separates_new_cross_page_question_numbers():
 
     assert [item["question_key"] for item in consolidated] == ["二-1", "二-1", "二-2"]
     assert warnings == []
+
+
+def test_whole_document_pass_rejects_model_number_rewrite():
+    items = [
+        {
+            "question_key": "1.3-例1.3.1",
+            "section_key": "1.3",
+            "section_title": "1.3 例题解析",
+            "number": "例1.3.1",
+            "question_type": "calculation",
+            "question_text": "例1.3.1 二极管电路如图所示，试求输出。",
+            "subquestions": [],
+            "options": [],
+            "points": 0,
+            "question_bboxes": [[0, 0, 500, 500]],
+            "answer_bboxes": [],
+            "page": 1,
+        },
+        {
+            "question_key": "4.3-题4.3.3",
+            "section_key": "4.3",
+            "section_title": "4.3 习题解答",
+            "number": "4.3.3",
+            "question_type": "calculation",
+            "question_text": "题4.3.3 放大电路如图所示，试求上限截止频率。",
+            "subquestions": [],
+            "options": [],
+            "points": 0,
+            "question_bboxes": [[0, 0, 500, 500]],
+            "answer_bboxes": [],
+            "page": 104,
+        },
+    ]
+    client = FakeVisionClient({
+        "assignments": [
+            {
+                "segment_index": 0,
+                "canonical_key": "1.3-例1.3.1",
+                "corrected_number": "例1.3.1",
+            },
+            {
+                "segment_index": 1,
+                "canonical_key": "1.3-例1.3.1",
+                "corrected_number": "例1.3.1",
+            },
+        ]
+    })
+
+    consolidated, warnings = _consolidate_question_keys(
+        client, items, page_count=104
+    )
+
+    assert [item["question_key"] for item in consolidated] == [
+        "1.3-例1.3.1",
+        "4.3-题4.3.3",
+    ]
+    assert any("印刷题号 4.3.3" in warning for warning in warnings)
+
+
+def test_large_whole_document_pass_is_batched():
+    items = [
+        {
+            "question_key": f"一-{index + 1}",
+            "section_key": "一",
+            "section_title": "一、计算题",
+            "number": str(index + 1),
+            "question_type": "calculation",
+            "question_text": f"第 {index + 1} 题",
+            "subquestions": [],
+            "options": [],
+            "points": 0,
+            "question_bboxes": [[0, 0, 500, 500]],
+            "answer_bboxes": [],
+            "page": index + 1,
+        }
+        for index in range(74)
+    ]
+    client = FakeVisionClient(
+        {
+            "assignments": [
+                {"segment_index": index, "canonical_key": f"一-{index + 1}"}
+                for index in range(72)
+            ]
+        },
+        {
+            "assignments": [
+                {"segment_index": 0, "canonical_key": "一-73"},
+                {"segment_index": 1, "canonical_key": "一-74"},
+            ]
+        },
+    )
+
+    consolidated, warnings = _consolidate_question_keys(
+        client, items, page_count=74
+    )
+
+    assert len(client.calls) == 2
+    assert len(consolidated) == 74
+    assert consolidated[-1]["question_key"] == "一-74"
+    assert warnings == []
+
+
+def test_implausible_distant_key_reuse_restores_page_level_identities():
+    items = [
+        {
+            "question_key": "1.3-例1.3.1",
+            "number": "例1.3.1",
+            "section_key": "1.3",
+            "section_title": "1.3 例题解析",
+            "question_text": "试分析二极管的工作状态。",
+            "subquestions": [],
+            "options": [],
+            "question_bboxes": [[0, 0, 500, 500]],
+            "page": 1,
+            "_raw_question_key": "1.3-例1.3.1",
+            "_raw_number": "例1.3.1",
+            "_raw_section_key": "1.3",
+            "_raw_section_title": "1.3 例题解析",
+        },
+        {
+            "question_key": "1.3-例1.3.1",
+            "number": "例1.3.1",
+            "section_key": "1.3",
+            "section_title": "1.3 例题解析",
+            "question_text": "试求放大电路的上限截止频率。",
+            "subquestions": [],
+            "options": [],
+            "question_bboxes": [[0, 0, 500, 500]],
+            "page": 104,
+            "_raw_question_key": "4.3-题4.3.3",
+            "_raw_number": "4.3.3",
+            "_raw_section_key": "4.3",
+            "_raw_section_title": "4.3 习题解答",
+        },
+    ]
+
+    warnings = _repair_implausible_question_key_reuse(items)
+
+    assert [item["question_key"] for item in items] == [
+        "1.3-例1.3.1",
+        "4.3-题4.3.3",
+    ]
+    assert items[1]["number"] == "4.3.3"
+    assert any("自动拆分" in warning for warning in warnings)
+
+
+def test_solution_steps_are_moved_out_of_displayed_subquestions():
+    items = [{
+        "question_key": "4.3-题4.3.3",
+        "question_text": "放大电路如图所示，试求中频增益和上限截止频率。",
+        "subquestions": [
+            {
+                "label": "1",
+                "text": "图示电路为共集—共射组合电路，首先计算静态工作点。",
+            },
+            {"label": "2", "text": "由图可得微变等效电路。"},
+        ],
+        "answer_text": "解：",
+        "answer_subquestions": [],
+        "question_bboxes": [[0, 0, 500, 300]],
+        "answer_bboxes": [[0, 300, 500, 900]],
+        "page": 104,
+    }]
+
+    warnings = _repair_question_answer_roles(items)
+
+    assert items[0]["subquestions"] == []
+    assert [part["label"] for part in items[0]["answer_subquestions"]] == ["1", "2"]
+    assert any("2 个解题步骤" in warning for warning in warnings)
 
 
 def test_whole_document_pass_filters_non_question_book_content():
