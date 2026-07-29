@@ -16,7 +16,9 @@ from backend.app.rag.pdf_extract_kit import DetectedRegion, PDFExtractKitAdapter
 from backend.app.rag.pipeline import KnowledgeBaseBuildCancelled
 from backend.app.rag.multimodal import (
     LayoutElement,
+    SCANNED_PAGE_PLACEHOLDER,
     _analyze_image,
+    _apply_toc_section_catalog,
     _formula_candidates_from_page_text,
     _formula_latex_from_pdf_geometry,
     _indexable_pdfkit_regions,
@@ -125,6 +127,68 @@ def test_scanned_page_ocr_recovers_text_hierarchy_concepts_and_cache(tmp_path):
     assert cached[0].section == "1.1.3 PN结"
 
 
+def test_scanned_page_ocr_verifies_new_heading_with_high_resolution_crop(tmp_path):
+    pdf_path = tmp_path / "heading-scan.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=500, height=700)
+    page.insert_image(page.rect, stream=_diagram_png())
+    pdf.save(pdf_path)
+    pdf.close()
+    docs = [PageDocument(
+        SCANNED_PAGE_PLACEHOLDER,
+        pdf_path.name,
+        1,
+        "第二章 基本放大电路",
+        "2.4.1 静态工作点稳定的必要性",
+    )]
+
+    class FakeVisionClient:
+        model = "qwen3-vl-flash"
+        calls = 0
+
+        def complete_json(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "text": [
+                        "第二章 基本放大电路",
+                        "2.4.2 型的静态工作点稳定电路",
+                        "典型的 Q 点稳定电路利用直流负反馈稳定静态工作点。",
+                    ],
+                    "chapter": "第二章 基本放大电路",
+                    "section": "2.4.2 型的静态工作点稳定电路",
+                    "section_bbox": [100, 380, 850, 450],
+                    "concepts": ["静态工作点", "直流负反馈"],
+                }
+            return {
+                "visible": True,
+                "section": "2.4.2 典型的静态工作点稳定电路",
+                "confidence": 0.98,
+            }
+
+    client = FakeVisionClient()
+    recovered = _ocr_scanned_pages(
+        pdf_path,
+        docs,
+        tmp_path,
+        client,
+        "heading-doc-hash",
+    )
+
+    assert client.calls == 2
+    assert recovered[0].section == "2.4.2 典型的静态工作点稳定电路"
+    assert recovered[0].extra["ocr_section_source"] == "heading-crop"
+    assert recovered[0].extra["ocr_section_confidence"] == pytest.approx(0.98)
+    cached = _ocr_scanned_pages(
+        pdf_path,
+        docs,
+        tmp_path,
+        None,
+        "heading-doc-hash",
+    )
+    assert cached[0].section == recovered[0].section
+
+
 def test_ocr_heading_context_rejects_contents_prose_and_answer_labels():
     chapter = "第二章 双极型晶体管及其放大电路"
     section = "2.3 晶体管放大电路"
@@ -168,6 +232,80 @@ def test_ocr_heading_context_accepts_real_chapter_and_appendix_openers():
         "第七章 脉冲信号的产生与处理电路",
         "7.8 555定时器",
     ) == ("附录 电子电路的计算机辅助分析与设计", "")
+
+
+def test_ocr_heading_context_rejects_ungrounded_and_backward_sections():
+    chapter = "第一章 常用半导体器件"
+
+    assert _ocr_heading_context(
+        {"section": "1.1.1 PN结"},
+        "本征半导体中存在自由电子和空穴。",
+        chapter,
+        "1.1.1 本征半导体",
+    ) == (chapter, "1.1.1 本征半导体")
+    assert _ocr_heading_context(
+        {"section": "1.2 半导体二极管"},
+        "1.2 半导体二极管\n本页继续讨论二极管等效电路。",
+        chapter,
+        "1.2.4 二极管的等效电路",
+    ) == (chapter, "1.2.4 二极管的等效电路")
+
+
+def test_verified_heading_crop_can_restore_a_missing_leading_character():
+    assert _ocr_heading_context(
+        {
+            "section": "2.4.2 型的静态工作点稳定电路",
+            "section_bbox": [100, 400, 800, 460],
+        },
+        "2.4.2 型的静态工作点稳定电路\n典型的 Q 点稳定电路如图所示。",
+        "第二章 基本放大电路",
+        "2.4.1 静态工作点稳定的必要性",
+        verified_section="2.4.2 典型的静态工作点稳定电路",
+    ) == ("第二章 基本放大电路", "2.4.2 典型的静态工作点稳定电路")
+
+
+def test_failed_heading_crop_verification_keeps_previous_section():
+    assert _ocr_heading_context(
+        {"section": "2.6.3 可得"},
+        "2.6.3 可得\nI_C = I_S e^(u/kT)",
+        "第二章 基本放大电路",
+        "2.6.2 电流源的应用",
+        heading_verification_attempted=True,
+    ) == ("第二章 基本放大电路", "2.6.2 电流源的应用")
+
+
+def test_toc_catalog_corrects_body_section_and_preserves_raw_provenance():
+    documents = [
+        PageDocument(
+            "目\n录\n2.4.1 静态工作点稳定的必要性\n2.4.2 典型的静态工作点稳定电路",
+            "lesson.pdf",
+            1,
+            "目录",
+            "",
+        ),
+        PageDocument(
+            "第二章 基本放大电路\n本章介绍晶体管放大电路的基本分析方法和工程应用。",
+            "lesson.pdf",
+            2,
+            "第二章 基本放大电路",
+            "",
+        ),
+        PageDocument(
+            "2.4.2 型的静态工作点稳定电路\n典型的 Q 点稳定电路如图所示。",
+            "lesson.pdf",
+            3,
+            "第二章 基本放大电路",
+            "2.4.2 型的静态工作点稳定电路",
+            extra={"ocr_section_source": "page-text"},
+        ),
+    ]
+
+    corrected = _apply_toc_section_catalog(documents)
+
+    assert corrected[2].section == "2.4.2 典型的静态工作点稳定电路"
+    assert corrected[2].text.startswith("2.4.2 典型的静态工作点稳定电路")
+    assert corrected[2].extra["ocr_section_raw"] == "2.4.2 型的静态工作点稳定电路"
+    assert corrected[2].extra["ocr_section_source"] == "toc"
 
 
 def test_full_page_scan_is_not_reindexed_as_a_figure():

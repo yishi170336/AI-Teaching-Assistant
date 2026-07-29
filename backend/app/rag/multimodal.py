@@ -8,6 +8,7 @@ import logging
 import math
 import mimetypes
 import re
+from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
@@ -42,10 +43,16 @@ PARTIAL_NOISE_MARKERS = (
 PAGE_CLEANING_POLICY_VERSION = "2.1-exercise-range-fallback"
 
 SCANNED_PAGE_PLACEHOLDER = "[本页主要包含电路图、公式或其他图形内容]"
-PAGE_OCR_SCHEMA_VERSION = "1.0-qwen-page-ocr"
+PAGE_OCR_SCHEMA_VERSION = "1.1-qwen-page-ocr-heading-verification"
 PAGE_OCR_PROMPT = """你是模拟电子技术教材的高保真 OCR 与结构识别器。请完整转写本页，严格保持阅读顺序、标题层级、图题、表题、公式、变量、上下标和单位；不得概括、改写或补写看不清的内容。省略页码和重复的页眉。
-text 必须是按阅读顺序排列的字符串数组，每个元素是一行或一个自然段；chapter 填本页可见的章标题，否则为空；section 填本页最后出现、层级最深的编号教学小节（例如“1.1.3 PN结”），否则为空；concepts 只列正文中明确出现的 2-18 个具体模拟电子技术知识点，不得列书名、章名、泛化词或举例材料。
-仅返回 JSON：{"text":["..."],"chapter":"","section":"","concepts":["..."]}。"""
+text 必须是按阅读顺序排列的字符串数组，每个元素是一行或一个自然段；chapter 填本页可见的章标题，否则为空；section 填本页最后出现、层级最深的编号教学小节（例如“1.1.3 PN结”），否则为空；section_bbox 填该 section 标题在页面中的 [x1,y1,x2,y2]，坐标按页面宽高归一化到 0-1000，标题不可见时返回空数组；concepts 只列正文中明确出现的 2-18 个具体模拟电子技术知识点，不得列书名、章名、泛化词或举例材料。
+不要把页眉、图号、表号、公式编号、例题编号或习题答案误认为 section。
+仅返回 JSON：{"text":["..."],"chapter":"","section":"","section_bbox":[],"concepts":["..."]}。"""
+
+SECTION_HEADING_OCR_PROMPT = """你是教材章节标题校对器。图片只包含一个候选章节标题及少量上下文。
+逐字抄录图片中真实可见、以多级数字编号开头的教学章节标题；不得根据常识补写，不得把图号、表号、公式编号、例题编号或页眉当作章节标题。
+若标题完整可见，返回 section、confidence；否则 visible=false 且 section 为空。
+仅返回 JSON：{"visible":true,"section":"2.4.2 典型的静态工作点稳定电路","confidence":0.0}。"""
 
 CHAPTER_MARKER_PATTERN = r"第[零〇一二三四五六七八九十百两0-9]+章"
 CHAPTER_SENTENCE_PREFIXES = (
@@ -384,18 +391,67 @@ def _normalize_section_heading(value: Any) -> str:
     return f"{number} {title}"
 
 
-def _ocr_heading_context(
+def _section_number(value: str) -> tuple[int, ...]:
+    normalized = _normalize_section_heading(value)
+    if not normalized:
+        return ()
+    return tuple(int(part) for part in normalized.split(" ", 1)[0].split("."))
+
+
+def _visible_section_headings(text: str) -> list[str]:
+    headings: list[str] = []
+    for raw_line in text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line or re.match(r"^(?:图|表|式|例|【例)", line):
+            continue
+        section = _normalize_section_heading(line)
+        if section:
+            headings.append(section)
+    return headings
+
+
+def _section_transition_allowed(
+    candidate: str,
+    previous_section: str,
+    *,
+    chapter_changed: bool,
+) -> bool:
+    """Reject page-header regressions while allowing real forward section changes."""
+
+    if not candidate or not previous_section or chapter_changed:
+        return bool(candidate)
+    candidate_number = _section_number(candidate)
+    previous_number = _section_number(previous_section)
+    if not candidate_number or not previous_number:
+        return True
+    if candidate_number == previous_number:
+        return candidate == previous_section
+    if (
+        len(candidate_number) <= len(previous_number)
+        and previous_number[: len(candidate_number)] == candidate_number
+    ):
+        return False
+    return candidate_number > previous_number
+
+
+def _ocr_heading_context_details(
     value: dict[str, Any],
     text: str,
     previous_chapter: str,
     previous_section: str,
-) -> tuple[str, str]:
+    *,
+    verified_section: str = "",
+    heading_verification_attempted: bool = False,
+) -> tuple[str, str, str]:
+    """Resolve chapter/section using only page-grounded or independently verified text."""
+
     lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
     special_chapter = _special_chapter_heading(lines, previous_chapter)
     if special_chapter:
         return (
             special_chapter,
             previous_section if special_chapter == previous_chapter else "",
+            "inherited" if special_chapter == previous_chapter else "special-section",
         )
 
     visible_chapter_lines = [
@@ -409,12 +465,12 @@ def _ocr_heading_context(
         _chapter_marker(chapter) for chapter in visible_chapters
     }) >= 2
     if is_contents_page:
-        return previous_chapter, previous_section
+        return previous_chapter, previous_section, "inherited"
     if (
         previous_chapter == "目录"
         and (not visible_chapter_lines or visible_chapter_lines[0][0] > 1)
     ):
-        return previous_chapter, previous_section
+        return previous_chapter, previous_section, "inherited"
 
     raw_chapter = _normalize_chapter_heading(value.get("chapter", ""))
     candidate = visible_chapters[0] if visible_chapters else raw_chapter
@@ -426,21 +482,56 @@ def _ocr_heading_context(
         chapter = raw_chapter
     else:
         chapter = previous_chapter
-    if chapter and chapter != previous_chapter:
+    chapter_changed = bool(chapter and chapter != previous_chapter)
+    if chapter_changed:
         previous_section = ""
 
-    visible_sections = [
-        section
-        for line in lines
-        if (section := _normalize_section_heading(line))
-    ]
+    visible_sections = _visible_section_headings(text)
     raw_section = _normalize_section_heading(value.get("section", ""))
-    if visible_sections:
-        section = visible_sections[-1]
-    elif raw_section:
-        section = raw_section
+    verified = _normalize_section_heading(verified_section)
+    page_candidate = visible_sections[-1] if visible_sections else ""
+    if verified:
+        verified_number = _section_number(verified)
+        candidate_number = _section_number(page_candidate or raw_section)
+        if candidate_number and candidate_number == verified_number:
+            page_candidate = verified
+            source = "heading-crop"
+        else:
+            source = "page-text" if page_candidate else "inherited"
+    elif heading_verification_attempted:
+        page_candidate = ""
+        source = "inherited"
     else:
-        section = previous_section
+        source = "page-text" if page_candidate else "inherited"
+
+    if page_candidate and not _section_transition_allowed(
+        page_candidate,
+        previous_section,
+        chapter_changed=chapter_changed,
+    ):
+        page_candidate = ""
+        source = "inherited"
+    section = page_candidate or previous_section
+    return chapter, section, source
+
+
+def _ocr_heading_context(
+    value: dict[str, Any],
+    text: str,
+    previous_chapter: str,
+    previous_section: str,
+    *,
+    verified_section: str = "",
+    heading_verification_attempted: bool = False,
+) -> tuple[str, str]:
+    chapter, section, _ = _ocr_heading_context_details(
+        value,
+        text,
+        previous_chapter,
+        previous_section,
+        verified_section=verified_section,
+        heading_verification_attempted=heading_verification_attempted,
+    )
     return chapter, section
 
 
@@ -495,6 +586,196 @@ def _reuse_near_complete_page_ocr_cache(
         len(cached_pages) / len(scanned_pages) >= 0.99
         and len(missing_pages) <= 3
     )
+
+
+def _normalized_heading_bbox(value: Any) -> list[float]:
+    if not isinstance(value, list) or len(value) != 4:
+        return []
+    try:
+        bbox = [float(item) for item in value]
+    except (TypeError, ValueError):
+        return []
+    left, top, right, bottom = bbox
+    if not (
+        0 <= left < right <= 1000
+        and 0 <= top < bottom <= 1000
+        and right - left >= 20
+        and bottom - top >= 8
+    ):
+        return []
+    return bbox
+
+
+def _verify_section_heading_crop(
+    page: fitz.Page,
+    value: dict[str, Any],
+    text: str,
+    previous_section: str,
+    client: QwenVisionClient,
+) -> tuple[str, float, bool]:
+    """Run a high-resolution second OCR pass on a newly detected heading."""
+
+    visible_sections = _visible_section_headings(text)
+    raw_section = _normalize_section_heading(value.get("section", ""))
+    candidate = visible_sections[-1] if visible_sections else raw_section
+    candidate_number = _section_number(candidate)
+    if (
+        not candidate_number
+        or candidate == previous_section
+        or not _normalized_heading_bbox(value.get("section_bbox"))
+    ):
+        return "", 0.0, False
+
+    left, top, right, bottom = _normalized_heading_bbox(value["section_bbox"])
+    page_width = max(1.0, float(page.rect.width))
+    page_height = max(1.0, float(page.rect.height))
+    horizontal_margin = max(12.0, (right - left) / 1000 * page_width * 0.08)
+    vertical_margin = max(8.0, (bottom - top) / 1000 * page_height * 0.8)
+    clip = fitz.Rect(
+        max(0.0, left / 1000 * page_width - horizontal_margin),
+        max(0.0, top / 1000 * page_height - vertical_margin),
+        min(page_width, right / 1000 * page_width + horizontal_margin),
+        min(page_height, bottom / 1000 * page_height + vertical_margin),
+    )
+    clip_width = max(1.0, float(clip.width))
+    clip_height = max(1.0, float(clip.height))
+    scale = min(
+        4.0,
+        max(2.2, 1800 / clip_width),
+        max(2.2, math.sqrt(2_500_000 / (clip_width * clip_height))),
+    )
+    pixmap = page.get_pixmap(
+        matrix=fitz.Matrix(scale, scale),
+        clip=clip,
+        alpha=False,
+    )
+    try:
+        verified = client.complete_json(
+            SECTION_HEADING_OCR_PROMPT,
+            image_bytes=pixmap.tobytes("png"),
+            image_mime="image/png",
+        )
+    except QwenMultimodalAPIError as exc:
+        logger.warning("Qwen heading crop OCR failed on page %s: %s", page.number + 1, exc)
+        return "", 0.0, False
+    if verified.get("visible") is False:
+        return "", 0.0, True
+    section = _normalize_section_heading(verified.get("section", ""))
+    if not section or _section_number(section) != candidate_number:
+        return "", 0.0, True
+    try:
+        confidence = max(0.0, min(1.0, float(verified.get("confidence", 0.0))))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < 0.65:
+        return "", confidence, True
+    return section, confidence, True
+
+
+def _normalize_toc_section_heading(value: str) -> str:
+    heading = re.sub(r"\s+", " ", str(value or "")).strip()
+    match = re.match(
+        r"^(?P<number>\d{1,2}(?:\s*[.．]\s*\d{1,2}){1,3})\s+"
+        r"(?P<title>.+?)\s*$",
+        heading,
+    )
+    if not match:
+        return ""
+    title = re.sub(r"\s*[.．·…]{2,}\s*(?:[（(]?\d+[）)]?)?\s*$", "", match.group("title"))
+    title = re.sub(r"\s+[（(]\s*\d+\s*[）)]\s*$", "", title).strip(" .．、:：-")
+    compact_title = re.sub(r"\s+", "", title)
+    if (
+        not 2 <= len(compact_title) <= 60
+        or not re.search(r"[\u4e00-\u9fff]", title)
+        or re.search(r"[=；;！？!?]", title)
+        or any(fragment in title for fragment in SECTION_SENTENCE_FRAGMENTS)
+    ):
+        return ""
+    number = re.sub(r"\s*[.．]\s*", ".", match.group("number"))
+    return f"{number} {title}"
+
+
+def _toc_section_catalog(
+    documents: Iterable[PageDocument],
+) -> dict[str, str]:
+    candidates: dict[str, Counter[str]] = {}
+    inside_contents = False
+    for document in sorted(documents, key=lambda item: item.page):
+        lines = [re.sub(r"\s+", " ", line).strip() for line in document.text.splitlines() if line.strip()]
+        compact_lead = re.sub(r"\s+", "", "".join(lines[:6]))
+        if "目录" in compact_lead:
+            inside_contents = True
+        if inside_contents and lines:
+            opening_chapter = _normalize_chapter_heading(lines[0])
+            if (
+                opening_chapter
+                and not re.search(r"[.．·…]{2,}|[（(]\s*\d+\s*[）)]\s*$", lines[0])
+                and any(len(line) >= 24 and not _normalize_toc_section_heading(line) for line in lines[1:5])
+            ):
+                inside_contents = False
+        if not inside_contents:
+            continue
+        for line in lines:
+            section = _normalize_toc_section_heading(line)
+            if not section:
+                continue
+            number = section.split(" ", 1)[0]
+            candidates.setdefault(number, Counter())[section] += 1
+
+    catalog: dict[str, str] = {}
+    for number, variants in candidates.items():
+        ranked = variants.most_common()
+        if len(ranked) == 1 or ranked[0][1] > ranked[1][1]:
+            catalog[number] = ranked[0][0]
+        elif len({variant for variant, _ in ranked}) == 1:
+            catalog[number] = ranked[0][0]
+    return catalog
+
+
+def _replace_page_section_heading(text: str, canonical: str) -> str:
+    canonical_number = _section_number(canonical)
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        visible = _normalize_section_heading(line)
+        if visible and _section_number(visible) == canonical_number:
+            lines[index] = canonical
+            break
+    return "\n".join(lines)
+
+
+def _apply_toc_section_catalog(
+    documents: list[PageDocument],
+) -> list[PageDocument]:
+    catalog = _toc_section_catalog(documents)
+    if not catalog:
+        return documents
+    corrected: list[PageDocument] = []
+    for document in documents:
+        section = _normalize_section_heading(document.section)
+        number = section.split(" ", 1)[0] if section else ""
+        canonical = catalog.get(number, "")
+        if (
+            not canonical
+            or canonical == section
+            or document.chapter.startswith(("部分习题", "参考文献", "附录"))
+        ):
+            corrected.append(document)
+            continue
+        extra = {
+            **(document.extra or {}),
+            "ocr_section_raw": section,
+            "ocr_section_source": "toc",
+            "ocr_section_confidence": 1.0,
+            "ocr_section_corrected": True,
+            "ocr_toc_catalog_size": len(catalog),
+        }
+        corrected.append(replace(
+            document,
+            text=_replace_page_section_heading(document.text, canonical),
+            section=canonical,
+            extra=extra,
+        ))
+    return corrected
 
 
 def _is_full_page_scan(
@@ -561,10 +842,21 @@ def _ocr_scanned_pages(
             cached = cache_entries.get(page_document.page)
             if cached:
                 cached_text = str(cached["text"]).strip()
-                chapter, section = _ocr_heading_context(
-                    cached, cached_text, previous_chapter, previous_section
+                chapter, section, section_source = _ocr_heading_context_details(
+                    cached,
+                    cached_text,
+                    previous_chapter,
+                    previous_section,
+                    verified_section=str(cached.get("section_verified", "")),
+                    heading_verification_attempted=bool(
+                        cached.get("heading_verification_attempted")
+                    ),
                 )
                 concepts = [str(item) for item in cached.get("concepts", []) if str(item).strip()]
+                try:
+                    section_confidence = float(cached.get("section_confidence", 0.0))
+                except (TypeError, ValueError):
+                    section_confidence = 0.0
                 previous_chapter, previous_section = chapter, section
                 recovered.append(replace(
                     page_document,
@@ -575,6 +867,13 @@ def _ocr_scanned_pages(
                         **(page_document.extra or {}),
                         "ocr_concepts": concepts,
                         "ocr_processor": f"qwen-vl:{cached.get('model', '')}",
+                        "ocr_section_raw": str(cached.get("section_raw", "")),
+                        "ocr_section_source": section_source,
+                        "ocr_section_confidence": section_confidence,
+                        "ocr_section_bbox": cached.get("section_bbox", []),
+                        "ocr_heading_verification_attempted": bool(
+                            cached.get("heading_verification_attempted")
+                        ),
                     },
                 ))
                 continue
@@ -605,10 +904,35 @@ def _ocr_scanned_pages(
                 logger.warning("Qwen page OCR returned too little text for %s page %s", path.name, page_document.page)
                 recovered.append(page_document)
                 continue
-            chapter, section = _ocr_heading_context(
-                value, text, previous_chapter, previous_section
+            (
+                verified_section,
+                verified_confidence,
+                heading_verification_attempted,
+            ) = _verify_section_heading_crop(
+                page,
+                value,
+                text,
+                previous_section,
+                client,
+            )
+            chapter, section, section_source = _ocr_heading_context_details(
+                value,
+                text,
+                previous_chapter,
+                previous_section,
+                verified_section=verified_section,
+                heading_verification_attempted=heading_verification_attempted,
             )
             concepts = _ocr_concepts(value.get("concepts"), text)
+            section_confidence = (
+                verified_confidence
+                if section_source == "heading-crop"
+                else 0.85
+                if section_source == "page-text"
+                else 0.7
+                if section
+                else 0.0
+            )
             previous_chapter, previous_section = chapter, section
             cache_entries[page_document.page] = {
                 "schema_version": PAGE_OCR_SCHEMA_VERSION,
@@ -619,6 +943,12 @@ def _ocr_scanned_pages(
                 "text": text,
                 "chapter": chapter,
                 "section": section,
+                "section_raw": _normalize_section_heading(value.get("section", "")),
+                "section_verified": verified_section,
+                "heading_verification_attempted": heading_verification_attempted,
+                "section_source": section_source,
+                "section_confidence": section_confidence,
+                "section_bbox": _normalized_heading_bbox(value.get("section_bbox")),
                 "concepts": concepts,
             }
             _write_page_ocr_cache(cache_path, cache_entries)
@@ -631,11 +961,16 @@ def _ocr_scanned_pages(
                     **(page_document.extra or {}),
                     "ocr_concepts": concepts,
                     "ocr_processor": f"qwen-vl:{client.model}",
+                    "ocr_section_raw": _normalize_section_heading(value.get("section", "")),
+                    "ocr_section_source": section_source,
+                    "ocr_section_confidence": section_confidence,
+                    "ocr_section_bbox": _normalized_heading_bbox(value.get("section_bbox")),
+                    "ocr_heading_verification_attempted": heading_verification_attempted,
                 },
             ))
     finally:
         document.close()
-    return recovered
+    return _apply_toc_section_catalog(recovered)
 
 
 def _looks_like_formula(text: str) -> bool:

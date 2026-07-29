@@ -533,11 +533,17 @@ function SourceCard({
   isCited: boolean
   fallbackKnowledgeBase: string
 }) {
+  const [excerptExpanded, setExcerptExpanded] = useState(false)
+  const [tagsExpanded, setTagsExpanded] = useState(false)
   const page = source.page_start
     ? source.page_start === source.page_end
       ? `第 ${source.page_start} 页`
       : `第 ${source.page_start}–${source.page_end} 页`
     : '结构化题库'
+  const sourceTitle = source.section || source.chapter || source.source
+  const allTags = source.knowledge_tags || []
+  const visibleTags = tagsExpanded ? allTags : allTags.slice(0, 4)
+  const hiddenTagCount = Math.max(0, allTags.length - visibleTags.length)
   const openSource = () => {
     const knowledgeBase = source.knowledge_base || fallbackKnowledgeBase
     if (!knowledgeBase) return
@@ -555,6 +561,7 @@ function SourceCard({
       aria-label={`查看完整资料 ${source.source}`}
       onClick={openSource}
       onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault()
           openSource()
@@ -573,11 +580,50 @@ function SourceCard({
           {source.historical ? '历史记录' : `${Math.round(source.score * 100)}%`}
         </span>
       </div>
-      <strong>{source.section || source.chapter || source.source}</strong>
-      <p>{source.source}</p>
-      {source.excerpt && <p className="source-excerpt">{source.excerpt}</p>}
-      {source.knowledge_tags?.length ? (
-        <div className="source-tags">{source.knowledge_tags.slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)}</div>
+      <strong title={sourceTitle}>{sourceTitle}</strong>
+      <p className="source-name" title={source.source}>{source.source}</p>
+      {source.excerpt && (
+        <>
+          <p
+            className={`source-excerpt ${excerptExpanded ? 'is-expanded' : ''}`}
+            title={excerptExpanded ? undefined : source.excerpt}
+          >
+            {source.excerpt}
+          </p>
+          {source.excerpt.length > 120 && (
+            <button
+              type="button"
+              className="source-content-toggle"
+              aria-expanded={excerptExpanded}
+              onClick={(event) => {
+                event.stopPropagation()
+                setExcerptExpanded((expanded) => !expanded)
+              }}
+              onKeyDown={(event) => event.stopPropagation()}
+            >
+              {excerptExpanded ? '收起摘要' : '展开摘要'}
+              <ChevronDown size={11} />
+            </button>
+          )}
+        </>
+      )}
+      {allTags.length ? (
+        <div className="source-tags">
+          {visibleTags.map((tag) => <span key={tag} title={tag}>{tag}</span>)}
+          {(hiddenTagCount > 0 || tagsExpanded) && (
+            <button
+              type="button"
+              aria-expanded={tagsExpanded}
+              onClick={(event) => {
+                event.stopPropagation()
+                setTagsExpanded((expanded) => !expanded)
+              }}
+              onKeyDown={(event) => event.stopPropagation()}
+            >
+              {tagsExpanded ? '收起' : `+${hiddenTagCount}`}
+            </button>
+          )}
+        </div>
       ) : null}
       {!source.historical && (
         <div className="source-score-grid" aria-label="检索评分组成">

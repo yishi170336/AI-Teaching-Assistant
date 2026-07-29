@@ -502,6 +502,180 @@ def validate_extracted_content(chunks: list[TextChunk]) -> dict[str, int]:
     }
 
 
+def _numbered_section_parts(value: str) -> tuple[tuple[int, ...], str]:
+    match = re.fullmatch(
+        r"\s*(\d{1,2}(?:[.．]\d{1,2}){1,3})\s+(.+?)\s*",
+        str(value or ""),
+    )
+    if not match:
+        return (), ""
+    number = tuple(int(part) for part in match.group(1).replace("．", ".").split("."))
+    return number, match.group(2).strip()
+
+
+def _section_is_visible_on_page(section: str, text: str) -> bool:
+    target = re.sub(r"\s+", "", section).replace("．", ".")
+    for raw_line in text.splitlines():
+        line = re.sub(r"\s+", "", raw_line).replace("．", ".")
+        if line.startswith(("图", "表", "式", "例", "【例")):
+            continue
+        if line.startswith(target):
+            return True
+    return False
+
+
+def validate_section_semantics(
+    documents: Iterable[PageDocument],
+) -> dict[str, Any]:
+    """Audit section provenance and sequence before titles enter chunks and graphs."""
+
+    by_source: dict[str, list[PageDocument]] = {}
+    for document in documents:
+        by_source.setdefault(document.source, []).append(document)
+
+    issues: list[dict[str, Any]] = []
+    variants: dict[tuple[str, str, tuple[int, ...]], set[str]] = {}
+    sectioned_pages = verified_pages = inherited_pages = 0
+    toc_corrected_pages = heading_crop_pages = transition_count = 0
+    critical_count = 0
+
+    for source, source_documents in by_source.items():
+        previous_chapter = ""
+        previous_number: tuple[int, ...] = ()
+        previous_section = ""
+        for document in sorted(source_documents, key=lambda item: item.page):
+            if document.chapter.startswith(("部分习题", "参考文献", "附录", "目录")):
+                previous_chapter = document.chapter
+                previous_number = ()
+                previous_section = ""
+                continue
+            number, title = _numbered_section_parts(document.section)
+            if not number:
+                previous_chapter = document.chapter or previous_chapter
+                continue
+            sectioned_pages += 1
+            extra = document.extra if isinstance(document.extra, dict) else {}
+            section_source = str(extra.get("ocr_section_source", "native"))
+            if section_source in {"page-text", "heading-crop", "toc"}:
+                verified_pages += 1
+            if section_source == "inherited":
+                inherited_pages += 1
+            elif section_source == "toc":
+                toc_corrected_pages += int(bool(extra.get("ocr_section_corrected")))
+            elif section_source == "heading-crop":
+                heading_crop_pages += 1
+
+            key = (source, document.chapter, number)
+            variants.setdefault(key, set()).add(document.section)
+
+            if (
+                section_source == "page-text"
+                and not _section_is_visible_on_page(document.section, document.text)
+            ):
+                critical_count += 1
+                issues.append({
+                    "severity": "error",
+                    "code": "ungrounded_page_heading",
+                    "source": source,
+                    "page": document.source_page or document.page,
+                    "section": document.section,
+                })
+
+            try:
+                confidence = float(extra.get("ocr_section_confidence", 1.0))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            if section_source == "heading-crop" and confidence < 0.65:
+                critical_count += 1
+                issues.append({
+                    "severity": "error",
+                    "code": "low_confidence_heading_crop",
+                    "source": source,
+                    "page": document.source_page or document.page,
+                    "section": document.section,
+                    "confidence": confidence,
+                })
+
+            if (
+                len(title) > 60
+                or re.search(r"[=；;！？!?]", title)
+                or re.match(r"^(?:可得|已知|求|试|答|解|[（(]\d)", title)
+            ):
+                issues.append({
+                    "severity": "warning",
+                    "code": "suspicious_section_title",
+                    "source": source,
+                    "page": document.source_page or document.page,
+                    "section": document.section,
+                })
+
+            chapter_changed = bool(
+                previous_chapter
+                and document.chapter
+                and document.chapter != previous_chapter
+            )
+            if document.section != previous_section:
+                transition_count += 1
+                if (
+                    previous_number
+                    and not chapter_changed
+                    and number < previous_number
+                    and not (
+                        len(number) <= len(previous_number)
+                        and previous_number[: len(number)] == number
+                    )
+                ):
+                    critical_count += 1
+                    issues.append({
+                        "severity": "error",
+                        "code": "backward_section_transition",
+                        "source": source,
+                        "page": document.source_page or document.page,
+                        "previous_section": previous_section,
+                        "section": document.section,
+                    })
+                previous_number = number
+                previous_section = document.section
+            previous_chapter = document.chapter or previous_chapter
+
+    inconsistent_numbers = 0
+    for (source, chapter, _), titles in variants.items():
+        if len(titles) <= 1:
+            continue
+        inconsistent_numbers += 1
+        critical_count += 1
+        issues.append({
+            "severity": "error",
+            "code": "inconsistent_section_titles",
+            "source": source,
+            "chapter": chapter,
+            "variants": sorted(titles),
+        })
+
+    failure_threshold = max(3, int(max(1, transition_count) * 0.05 + 0.999))
+    status = (
+        "failed"
+        if critical_count >= failure_threshold or inconsistent_numbers >= 2
+        else "warning"
+        if issues
+        else "passed"
+    )
+    return {
+        "status": status,
+        "audited_pages": sum(len(items) for items in by_source.values()),
+        "sectioned_pages": sectioned_pages,
+        "section_transitions": transition_count,
+        "verified_heading_pages": verified_pages,
+        "inherited_heading_pages": inherited_pages,
+        "heading_crop_pages": heading_crop_pages,
+        "toc_corrected_pages": toc_corrected_pages,
+        "inconsistent_section_numbers": inconsistent_numbers,
+        "critical_issues": critical_count,
+        "failure_threshold": failure_threshold,
+        "issues": issues[:100],
+    }
+
+
 def validate_graph_semantics(
     chunks: list[TextChunk], graph: dict[str, Any]
 ) -> dict[str, int]:
@@ -704,6 +878,18 @@ def build_knowledge_base(
             "document_cleaning",
             f"已完成 {path.name} 的解析与清洗",
         )
+    report(47, "section_validation", "正在校验章节标题、目录映射与继承顺序")
+    section_quality = validate_section_semantics(documents)
+    (output_dir / "section_quality_audit.json").write_text(
+        json.dumps(section_quality, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    if section_quality["status"] == "failed":
+        raise RuntimeError(
+            "章节语义质检失败：检测到 "
+            f"{section_quality['critical_issues']} 个高风险标题问题，"
+            "请检查 section_quality_audit.json；旧索引不会被替换。"
+        )
     structured_questions = {
         "schema_version": "2.0",
         "questions": [],
@@ -771,6 +957,7 @@ def build_knowledge_base(
     )
     report(82, "validation", "正在校验向量与图谱完整性")
     validation = validate_build_artifacts(chunks, embeddings, graph)
+    validation["section_semantics"] = section_quality
     import faiss
 
     index = faiss.IndexFlatIP(embeddings.shape[1])
@@ -830,7 +1017,11 @@ def build_knowledge_base(
         "chapter_limit": chapter_limit,
         "sources": [path.name for path in source_files],
         "validation": validation,
-        "extraction_quality": {**extraction_quality, **semantic_quality},
+        "extraction_quality": {
+            **extraction_quality,
+            **semantic_quality,
+            "section_semantics": section_quality,
+        },
     }
     metadata["pipeline_layers"] = {
         "document_cleaning": {
@@ -849,6 +1040,7 @@ def build_knowledge_base(
             "placeholder_text_chunks": extraction_quality["placeholder_text_chunks"],
             "layout_elements": len(elements),
             "preserves_page_bbox": True,
+            "section_semantics": section_quality,
         },
         "modality_processing": {
             "status": "ready",

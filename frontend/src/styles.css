@@ -211,11 +211,19 @@ button { color: inherit; }
 .source-type.question { color: #bd682f; }
 .source-cited-badge { padding: 2px 5px; color: #fff; background: #19786f; border-radius: 8px; font-size: 8px; font-weight: 800; }
 .source-score { color: #5c8d83; font-size: 9px; font-weight: 800; }
-.source-card > strong { display: block; overflow: hidden; color: #25494c; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.source-card > p { overflow: hidden; margin: 5px 0 8px; color: #899a98; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.source-card > strong { display: block; color: #25494c; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.source-card > p.source-name { margin: 5px 0 8px; color: #899a98; font-size: 9px; line-height: 1.45; overflow-wrap: anywhere; }
 .source-card > p.source-excerpt { display: -webkit-box; overflow: hidden; margin: 8px 0; color: #5f7775; font-size: 9px; line-height: 1.55; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.source-card > p.source-excerpt.is-expanded { display: block; overflow: visible; -webkit-line-clamp: unset; }
+.source-content-toggle { display: inline-flex; align-items: center; gap: 2px; padding: 1px 0; color: #4d847c; cursor: pointer; background: transparent; border: 0; font-size: 8px; }
+.source-content-toggle:hover { color: #126f67; }
+.source-content-toggle svg { transition: transform .16s ease; }
+.source-content-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
 .source-tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 7px 0; }
-.source-tags span { padding: 2px 5px; color: #42766f; background: #edf6f3; border-radius: 5px; font-size: 8px; }
+.source-tags span, .source-tags button { padding: 2px 5px; color: #42766f; background: #edf6f3; border: 0; border-radius: 5px; font-size: 8px; line-height: 1.5; }
+.source-tags span { overflow-wrap: anywhere; }
+.source-tags button { color: #176f67; cursor: pointer; font-weight: 750; }
+.source-tags button:hover { background: #dcefeb; }
 .source-score-grid { display: grid; gap: 4px; margin: 8px 0; }
 .source-score-grid > div { display: grid; grid-template-columns: 34px 1fr; align-items: center; gap: 5px; color: #849795; font-size: 8px; }
 .source-score-grid i { height: 3px; overflow: hidden; background: #edf1f0; border-radius: 99px; }

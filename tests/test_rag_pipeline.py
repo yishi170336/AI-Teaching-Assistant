@@ -13,6 +13,7 @@ from backend.app.rag.pipeline import (
     clean_page_text,
     extract_pdf,
     validate_extracted_content,
+    validate_section_semantics,
 )
 
 
@@ -71,6 +72,66 @@ def test_placeholder_heavy_scanned_pdf_fails_content_validation():
 
     with pytest.raises(RuntimeError, match="正文 OCR 未成功"):
         validate_extracted_content(chunk_documents(docs))
+
+
+def test_section_semantics_accepts_grounded_and_inherited_headings():
+    docs = [
+        PageDocument(
+            text="2.4.1 静态工作点稳定的必要性\n温度会影响静态工作点。",
+            source="扫描教材.pdf",
+            page=1,
+            chapter="第二章 基本放大电路",
+            section="2.4.1 静态工作点稳定的必要性",
+            extra={
+                "ocr_processor": "qwen-vl:test",
+                "ocr_section_source": "page-text",
+                "ocr_section_confidence": 0.85,
+            },
+        ),
+        PageDocument(
+            text="本页继续讨论温度变化的影响。",
+            source="扫描教材.pdf",
+            page=2,
+            chapter="第二章 基本放大电路",
+            section="2.4.1 静态工作点稳定的必要性",
+            extra={
+                "ocr_processor": "qwen-vl:test",
+                "ocr_section_source": "inherited",
+                "ocr_section_confidence": 0.7,
+            },
+        ),
+    ]
+
+    report = validate_section_semantics(docs)
+
+    assert report["status"] == "passed"
+    assert report["verified_heading_pages"] == 1
+    assert report["inherited_heading_pages"] == 1
+    assert report["critical_issues"] == 0
+
+
+def test_section_semantics_fails_repeated_ungrounded_transitions():
+    docs = [
+        PageDocument(
+            text=f"正文第 {page} 页，没有章节标题。",
+            source="扫描教材.pdf",
+            page=page,
+            chapter="第二章 基本放大电路",
+            section=f"2.{page}.1 错误标题",
+            extra={
+                "ocr_processor": "qwen-vl:test",
+                "ocr_section_source": "page-text",
+                "ocr_section_confidence": 0.85,
+            },
+        )
+        for page in range(1, 4)
+    ]
+
+    report = validate_section_semantics(docs)
+
+    assert report["status"] == "failed"
+    assert report["critical_issues"] >= 3
+    assert {item["code"] for item in report["issues"]} >= {"ungrounded_page_heading"}
 
 
 def test_pdf_subset_filename_preserves_original_source_pages(tmp_path):
