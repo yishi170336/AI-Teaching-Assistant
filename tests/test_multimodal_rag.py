@@ -274,6 +274,32 @@ def test_failed_heading_crop_verification_keeps_previous_section():
     ) == ("第二章 基本放大电路", "2.6.2 电流源的应用")
 
 
+def test_ocr_heading_context_handles_summary_boundary_and_rejects_unit_heading():
+    chapter = "第五章 反馈放大电路"
+    section = "5.5 计算机仿真例题"
+
+    page_299 = _ocr_heading_context(
+        {"section": "1.0 mA"},
+        "5.5 计算机仿真例题\n利用仿真分析负反馈放大电路。",
+        chapter,
+        section,
+    )
+    assert page_299 == (chapter, section)
+
+    page_300 = _ocr_heading_context(
+        {"section": "1.0 mA"},
+        "本 章 小 结\n负反馈可以改善放大电路的性能。",
+        *page_299,
+    )
+    assert page_300 == (chapter, "本章小结")
+
+    assert _ocr_heading_context(
+        {},
+        "反馈深度越大，闭环增益越稳定。",
+        *page_300,
+    ) == (chapter, "本章小结")
+
+
 def test_toc_catalog_corrects_body_section_and_preserves_raw_provenance():
     documents = [
         PageDocument(

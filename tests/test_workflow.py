@@ -11,8 +11,10 @@ from backend.app.agents.workflow import (
     _quiz_reference,
     _quiz_family_matches,
     _recent_generated_questions,
+    _source_context,
 )
 from backend.app.rag.models import RetrievalHit, TextChunk
+from backend.app.rag.section_titles import repair_legacy_chunk_sections
 
 
 def _retrieval_hit(index: int) -> RetrievalHit:
@@ -56,6 +58,88 @@ def test_backend_rebuilds_reference_section_from_valid_inline_citations():
     )
     assert [source["id"] for source in cited_sources] == ["chunk-4"]
     assert cited_sources[0]["citation_index"] == 4
+
+
+def test_legacy_unit_section_is_corrected_in_context_sources_and_reference_list():
+    hit = RetrievalHit(
+        chunk=TextChunk(
+            id="legacy-summary",
+            text="本 章 小 结\n负反馈能够改善放大电路的性能。",
+            source="电子电路基础.pdf",
+            chapter="第五章 反馈放大电路",
+            section="1.0 mA",
+            page_start=300,
+            page_end=300,
+            doc_type="textbook",
+            knowledge_tags=["负反馈"],
+        ),
+        score=0.8,
+        vector_score=0.7,
+        bm25_score=0.6,
+        rerank_score=0.8,
+    )
+
+    assert hit.display_section == "本章小结"
+    assert hit.source_dict()["section"] == "本章小结"
+    assert "；本章小结；第 300 页" in _source_context([hit])
+
+    response, sources = _finalize_answer_citations("结论。[资料1]", [hit])
+    assert "1.0 mA" not in response
+    assert "第五章 反馈放大电路 · 本章小结 · 第 300 页" in response
+    assert sources[0]["section"] == "本章小结"
+
+
+def test_legacy_unit_section_uses_visible_numbered_heading_when_present():
+    hit = RetrievalHit(
+        chunk=TextChunk(
+            id="legacy-section",
+            text="5.5 计算机仿真例题\n利用仿真分析反馈放大电路。",
+            source="电子电路基础.pdf",
+            chapter="第五章 反馈放大电路",
+            section="1.0 mA",
+            page_start=299,
+            page_end=299,
+            doc_type="textbook",
+            knowledge_tags=["负反馈"],
+        ),
+        score=0.8,
+        vector_score=0.7,
+        bm25_score=0.6,
+        rerank_score=0.8,
+    )
+
+    assert hit.display_section == "5.5 计算机仿真例题"
+    assert hit.source_dict()["section"] == "5.5 计算机仿真例题"
+
+
+def test_legacy_sections_are_repaired_across_sibling_chunks_on_index_load():
+    chunks = [
+        TextChunk(
+            id="summary-heading",
+            text="第五章 反馈放大电路\n本 章 小 结反馈在电子技术中得到广泛应用。",
+            source="电子电路基础.pdf",
+            chapter="第五章 反馈放大电路",
+            section="1.0 mA",
+            page_start=300,
+            page_end=300,
+            doc_type="textbook",
+            knowledge_tags=[],
+        ),
+        TextChunk(
+            id="summary-body",
+            text="多级放大电路中一般包含局部反馈和级间反馈。",
+            source="电子电路基础.pdf",
+            chapter="第五章 反馈放大电路",
+            section="1.0 mA",
+            page_start=300,
+            page_end=300,
+            doc_type="textbook",
+            knowledge_tags=[],
+        ),
+    ]
+
+    assert repair_legacy_chunk_sections(chunks) == 2
+    assert {chunk.section for chunk in chunks} == {"本章小结"}
 
 
 def test_backend_does_not_present_retrieval_candidates_as_citations():

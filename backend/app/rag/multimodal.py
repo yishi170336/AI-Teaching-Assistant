@@ -20,6 +20,14 @@ import httpx
 from backend.app.config import settings
 from backend.app.rag.pdf_extract_kit import DetectedRegion, PDFExtractKitAdapter
 from backend.app.rag.models import PageDocument, TextChunk
+from backend.app.rag.section_titles import (
+    normalize_numbered_section,
+    normalize_structural_section,
+    numbered_section_parts,
+    section_matches_chapter,
+    visible_numbered_sections,
+    visible_structural_section,
+)
 from backend.app.rag.ontology import (
     COMPONENT_CONCEPTS,
     component_display_name,
@@ -43,10 +51,10 @@ PARTIAL_NOISE_MARKERS = (
 PAGE_CLEANING_POLICY_VERSION = "2.1-exercise-range-fallback"
 
 SCANNED_PAGE_PLACEHOLDER = "[本页主要包含电路图、公式或其他图形内容]"
-PAGE_OCR_SCHEMA_VERSION = "1.1-qwen-page-ocr-heading-verification"
+PAGE_OCR_SCHEMA_VERSION = "1.2-qwen-page-ocr-structural-headings"
 PAGE_OCR_PROMPT = """你是模拟电子技术教材的高保真 OCR 与结构识别器。请完整转写本页，严格保持阅读顺序、标题层级、图题、表题、公式、变量、上下标和单位；不得概括、改写或补写看不清的内容。省略页码和重复的页眉。
-text 必须是按阅读顺序排列的字符串数组，每个元素是一行或一个自然段；chapter 填本页可见的章标题，否则为空；section 填本页最后出现、层级最深的编号教学小节（例如“1.1.3 PN结”），否则为空；section_bbox 填该 section 标题在页面中的 [x1,y1,x2,y2]，坐标按页面宽高归一化到 0-1000，标题不可见时返回空数组；concepts 只列正文中明确出现的 2-18 个具体模拟电子技术知识点，不得列书名、章名、泛化词或举例材料。
-不要把页眉、图号、表号、公式编号、例题编号或习题答案误认为 section。
+text 必须是按阅读顺序排列的字符串数组，每个元素是一行或一个自然段；chapter 填本页可见的章标题，否则为空；section 填本页最后出现、层级最深的编号教学小节（例如“1.1.3 PN结”），或完整可见的结构标题（仅限“本章小结”“习题”“复习题”“思考题”“自测题”“参考答案”等），否则为空；section_bbox 填该 section 标题在页面中的 [x1,y1,x2,y2]，坐标按页面宽高归一化到 0-1000，标题不可见时返回空数组；concepts 只列正文中明确出现的 2-18 个具体模拟电子技术知识点，不得列书名、章名、泛化词或举例材料。
+不要把页眉、图号、表号、公式编号、例题编号、题号、数值或单位（例如“1.0 mA”）误认为 section。
 仅返回 JSON：{"text":["..."],"chapter":"","section":"","section_bbox":[],"concepts":["..."]}。"""
 
 SECTION_HEADING_OCR_PROMPT = """你是教材章节标题校对器。图片只包含一个候选章节标题及少量上下文。
@@ -62,7 +70,7 @@ CHAPTER_SENTENCE_FRAGMENTS = (
     "如图", "所示", "我们已经", "可以看成", "介绍了", "给出了", "已经知道",
 )
 SECTION_SENTENCE_FRAGMENTS = (
-    "如图", "所示", "试求", "试画", "试分析", "已知", "计算", "求出", "判断",
+    "如图", "所示", "试求", "试画", "试分析", "已知", "求出", "判断",
 )
 CHAPTER_EXERCISE_CONCEPT_PATTERN = re.compile(
     r"[？?]|图题\s*\d|判断下列|回答下列|试证明|哪些能够|怎样用|电路.*所示"
@@ -377,37 +385,15 @@ def _special_chapter_heading(lines: list[str], previous_chapter: str) -> str:
 
 
 def _normalize_section_heading(value: Any) -> str:
-    heading = re.sub(r"\s+", " ", str(value or "")).strip()
-    match = re.fullmatch(
-        r"(\d{1,2}(?:\s*[.．]\s*\d{1,2}){1,3})\s+([^=。；，,!?！？]{2,30})",
-        heading,
-    )
-    if not match:
-        return ""
-    title = match.group(2).strip(" .．、:：-")
-    if any(fragment in title for fragment in SECTION_SENTENCE_FRAGMENTS):
-        return ""
-    number = re.sub(r"\s*[.．]\s*", ".", match.group(1))
-    return f"{number} {title}"
+    return normalize_numbered_section(value)
 
 
 def _section_number(value: str) -> tuple[int, ...]:
-    normalized = _normalize_section_heading(value)
-    if not normalized:
-        return ()
-    return tuple(int(part) for part in normalized.split(" ", 1)[0].split("."))
+    return numbered_section_parts(value)[0]
 
 
 def _visible_section_headings(text: str) -> list[str]:
-    headings: list[str] = []
-    for raw_line in text.splitlines():
-        line = re.sub(r"\s+", " ", raw_line).strip()
-        if not line or re.match(r"^(?:图|表|式|例|【例)", line):
-            continue
-        section = _normalize_section_heading(line)
-        if section:
-            headings.append(section)
-    return headings
+    return visible_numbered_sections(text)
 
 
 def _section_transition_allowed(
@@ -420,6 +406,12 @@ def _section_transition_allowed(
 
     if not candidate or not previous_section or chapter_changed:
         return bool(candidate)
+    candidate_structural = normalize_structural_section(candidate)
+    previous_structural = normalize_structural_section(previous_section)
+    if candidate_structural:
+        return candidate_structural != previous_structural
+    if previous_structural:
+        return False
     candidate_number = _section_number(candidate)
     previous_number = _section_number(previous_section)
     if not candidate_number or not previous_number:
@@ -486,10 +478,21 @@ def _ocr_heading_context_details(
     if chapter_changed:
         previous_section = ""
 
+    structural_section = visible_structural_section(text)
+    if structural_section:
+        return chapter, structural_section, "structural-heading"
+
     visible_sections = _visible_section_headings(text)
     raw_section = _normalize_section_heading(value.get("section", ""))
     verified = _normalize_section_heading(verified_section)
-    page_candidate = visible_sections[-1] if visible_sections else ""
+    page_candidate = next(
+        (
+            candidate
+            for candidate in reversed(visible_sections)
+            if section_matches_chapter(candidate, chapter)
+        ),
+        "",
+    )
     if verified:
         verified_number = _section_number(verified)
         candidate_number = _section_number(page_candidate or raw_section)

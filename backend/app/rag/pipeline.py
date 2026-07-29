@@ -19,6 +19,13 @@ from openpyxl import load_workbook
 from backend.app.config import settings
 from backend.app.rag.models import PageDocument, TextChunk
 from backend.app.rag.embedding_runtime import encode_texts
+from backend.app.rag.section_titles import (
+    chapter_number,
+    is_measurement_section,
+    normalize_structural_section,
+    numbered_section_parts,
+    visible_structural_section,
+)
 from backend.app.rag.ontology import (
     COURSE_CONCEPTS,
     extract_course_concepts,
@@ -503,14 +510,7 @@ def validate_extracted_content(chunks: list[TextChunk]) -> dict[str, int]:
 
 
 def _numbered_section_parts(value: str) -> tuple[tuple[int, ...], str]:
-    match = re.fullmatch(
-        r"\s*(\d{1,2}(?:[.．]\d{1,2}){1,3})\s+(.+?)\s*",
-        str(value or ""),
-    )
-    if not match:
-        return (), ""
-    number = tuple(int(part) for part in match.group(1).replace("．", ".").split("."))
-    return number, match.group(2).strip()
+    return numbered_section_parts(value)
 
 
 def _section_is_visible_on_page(section: str, text: str) -> bool:
@@ -535,9 +535,9 @@ def validate_section_semantics(
 
     issues: list[dict[str, Any]] = []
     variants: dict[tuple[str, str, tuple[int, ...]], set[str]] = {}
-    sectioned_pages = verified_pages = inherited_pages = 0
+    sectioned_pages = verified_pages = inherited_pages = structural_pages = 0
     toc_corrected_pages = heading_crop_pages = transition_count = 0
-    critical_count = 0
+    critical_count = hard_invariant_count = 0
 
     for source, source_documents in by_source.items():
         previous_chapter = ""
@@ -549,14 +549,59 @@ def validate_section_semantics(
                 previous_number = ()
                 previous_section = ""
                 continue
+            extra = document.extra if isinstance(document.extra, dict) else {}
+            section_source = str(extra.get("ocr_section_source", "native"))
+            page_number = document.source_page or document.page
+            visible_structural = visible_structural_section(document.text)
+            structural = normalize_structural_section(document.section)
+
+            if visible_structural and structural != visible_structural:
+                critical_count += 1
+                hard_invariant_count += 1
+                issues.append({
+                    "severity": "error",
+                    "code": "missing_structural_heading",
+                    "source": source,
+                    "page": page_number,
+                    "visible_section": visible_structural,
+                    "section": document.section,
+                })
+
+            if is_measurement_section(document.section):
+                critical_count += 1
+                hard_invariant_count += 1
+                issues.append({
+                    "severity": "error",
+                    "code": "measurement_unit_heading",
+                    "source": source,
+                    "page": page_number,
+                    "section": document.section,
+                })
+
+            if structural:
+                sectioned_pages += 1
+                structural_pages += 1
+                if section_source in {
+                    "page-text", "heading-crop", "toc", "structural-heading",
+                }:
+                    verified_pages += 1
+                if section_source == "inherited":
+                    inherited_pages += 1
+                if document.section != previous_section:
+                    transition_count += 1
+                    previous_section = document.section
+                    previous_number = ()
+                previous_chapter = document.chapter or previous_chapter
+                continue
+
             number, title = _numbered_section_parts(document.section)
             if not number:
                 previous_chapter = document.chapter or previous_chapter
                 continue
             sectioned_pages += 1
-            extra = document.extra if isinstance(document.extra, dict) else {}
-            section_source = str(extra.get("ocr_section_source", "native"))
-            if section_source in {"page-text", "heading-crop", "toc"}:
+            if section_source in {
+                "page-text", "heading-crop", "toc", "structural-heading",
+            }:
                 verified_pages += 1
             if section_source == "inherited":
                 inherited_pages += 1
@@ -568,6 +613,19 @@ def validate_section_semantics(
             key = (source, document.chapter, number)
             variants.setdefault(key, set()).add(document.section)
 
+            expected_chapter = chapter_number(document.chapter)
+            if expected_chapter is not None and number[0] != expected_chapter:
+                critical_count += 1
+                hard_invariant_count += 1
+                issues.append({
+                    "severity": "error",
+                    "code": "chapter_section_mismatch",
+                    "source": source,
+                    "page": page_number,
+                    "chapter": document.chapter,
+                    "section": document.section,
+                })
+
             if (
                 section_source == "page-text"
                 and not _section_is_visible_on_page(document.section, document.text)
@@ -577,7 +635,7 @@ def validate_section_semantics(
                     "severity": "error",
                     "code": "ungrounded_page_heading",
                     "source": source,
-                    "page": document.source_page or document.page,
+                    "page": page_number,
                     "section": document.section,
                 })
 
@@ -591,7 +649,7 @@ def validate_section_semantics(
                     "severity": "error",
                     "code": "low_confidence_heading_crop",
                     "source": source,
-                    "page": document.source_page or document.page,
+                    "page": page_number,
                     "section": document.section,
                     "confidence": confidence,
                 })
@@ -605,7 +663,7 @@ def validate_section_semantics(
                     "severity": "warning",
                     "code": "suspicious_section_title",
                     "source": source,
-                    "page": document.source_page or document.page,
+                    "page": page_number,
                     "section": document.section,
                 })
 
@@ -630,7 +688,7 @@ def validate_section_semantics(
                         "severity": "error",
                         "code": "backward_section_transition",
                         "source": source,
-                        "page": document.source_page or document.page,
+                        "page": page_number,
                         "previous_section": previous_section,
                         "section": document.section,
                     })
@@ -655,7 +713,11 @@ def validate_section_semantics(
     failure_threshold = max(3, int(max(1, transition_count) * 0.05 + 0.999))
     status = (
         "failed"
-        if critical_count >= failure_threshold or inconsistent_numbers >= 2
+        if (
+            hard_invariant_count > 0
+            or critical_count >= failure_threshold
+            or inconsistent_numbers >= 2
+        )
         else "warning"
         if issues
         else "passed"
@@ -664,6 +726,7 @@ def validate_section_semantics(
         "status": status,
         "audited_pages": sum(len(items) for items in by_source.values()),
         "sectioned_pages": sectioned_pages,
+        "structural_heading_pages": structural_pages,
         "section_transitions": transition_count,
         "verified_heading_pages": verified_pages,
         "inherited_heading_pages": inherited_pages,
@@ -671,6 +734,7 @@ def validate_section_semantics(
         "toc_corrected_pages": toc_corrected_pages,
         "inconsistent_section_numbers": inconsistent_numbers,
         "critical_issues": critical_count,
+        "hard_invariant_issues": hard_invariant_count,
         "failure_threshold": failure_threshold,
         "issues": issues[:100],
     }

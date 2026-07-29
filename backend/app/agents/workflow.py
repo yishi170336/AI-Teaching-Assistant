@@ -708,7 +708,7 @@ def _source_context(hits: list[RetrievalHit]) -> str:
             else f"第 {chunk.page_start}-{chunk.page_end} 页"
         ) if chunk.page_start else "题库"
         blocks.append(
-            f"[资料{index}] 来源={chunk.source}；{chunk.chapter}；{chunk.section}；{page}\n{chunk.text}"
+            f"[资料{index}] 来源={chunk.source}；{chunk.chapter}；{hit.display_section}；{page}\n{chunk.text}"
         )
     return "\n\n".join(blocks)
 
@@ -833,7 +833,7 @@ def _source_reference_line(index: int, hit: RetrievalHit) -> str:
         page = f"第 {chunk.page_start} 页"
     else:
         page = "题库"
-    locations = [chunk.source, chunk.chapter, chunk.section, page]
+    locations = [chunk.source, chunk.chapter, hit.display_section, page]
     compact_locations = list(dict.fromkeys(item for item in locations if item))
     return f"- [资料{index}] " + " · ".join(compact_locations)
 

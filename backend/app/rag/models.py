@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from backend.app.rag.section_titles import display_section
+
 
 @dataclass
 class PageDocument:
@@ -54,12 +56,20 @@ class RetrievalHit:
     cross_encoder_score: float = 0.0
     image_score: float = 0.0
 
+    @property
+    def display_section(self) -> str:
+        return display_section(
+            self.chunk.section,
+            self.chunk.chapter,
+            self.chunk.text,
+        )
+
     def source_dict(self) -> dict[str, Any]:
         return {
             "id": self.chunk.id,
             "source": self.chunk.source,
             "chapter": self.chunk.chapter,
-            "section": self.chunk.section,
+            "section": self.display_section,
             "page_start": self.chunk.page_start,
             "page_end": self.chunk.page_end,
             "score": round(self.score, 4),

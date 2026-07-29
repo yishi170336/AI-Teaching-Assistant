@@ -134,6 +134,68 @@ def test_section_semantics_fails_repeated_ungrounded_transitions():
     assert {item["code"] for item in report["issues"]} >= {"ungrounded_page_heading"}
 
 
+def test_section_semantics_hard_fails_unit_heading_and_missed_summary():
+    docs = [
+        PageDocument(
+            text="5.5 计算机仿真例题\n利用仿真分析反馈放大电路。",
+            source="扫描教材.pdf",
+            page=299,
+            chapter="第五章 反馈放大电路",
+            section="1.0 mA",
+            extra={"ocr_section_source": "inherited"},
+        ),
+        PageDocument(
+            text="本 章 小 结\n负反馈能够改善放大电路的性能。",
+            source="扫描教材.pdf",
+            page=300,
+            chapter="第五章 反馈放大电路",
+            section="1.0 mA",
+            extra={"ocr_section_source": "inherited"},
+        ),
+    ]
+
+    report = validate_section_semantics(docs)
+    codes = {item["code"] for item in report["issues"]}
+
+    assert report["status"] == "failed"
+    assert report["hard_invariant_issues"] >= 2
+    assert {"measurement_unit_heading", "missing_structural_heading"} <= codes
+
+
+def test_section_semantics_hard_fails_section_from_another_chapter():
+    report = validate_section_semantics([
+        PageDocument(
+            text="1.2 错误章节\n正文。",
+            source="扫描教材.pdf",
+            page=300,
+            chapter="第五章 反馈放大电路",
+            section="1.2 错误章节",
+            extra={"ocr_section_source": "page-text"},
+        ),
+    ])
+
+    assert report["status"] == "failed"
+    assert report["hard_invariant_issues"] == 1
+    assert report["issues"][0]["code"] == "chapter_section_mismatch"
+
+
+def test_section_semantics_accepts_visible_structural_heading():
+    report = validate_section_semantics([
+        PageDocument(
+            text="本 章 小 结\n负反馈能够改善放大电路的性能。",
+            source="扫描教材.pdf",
+            page=300,
+            chapter="第五章 反馈放大电路",
+            section="本章小结",
+            extra={"ocr_section_source": "structural-heading"},
+        ),
+    ])
+
+    assert report["status"] == "passed"
+    assert report["structural_heading_pages"] == 1
+    assert report["verified_heading_pages"] == 1
+
+
 def test_pdf_subset_filename_preserves_original_source_pages(tmp_path):
     path = tmp_path / "lesson_pages_101_103.pdf"
     pdf = fitz.open()

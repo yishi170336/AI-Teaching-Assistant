@@ -17,6 +17,7 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 
 from backend.app.rag.models import RetrievalHit, TextChunk
+from backend.app.rag.section_titles import repair_legacy_chunk_sections
 from backend.app.rag.embedding_runtime import encode_texts
 from backend.app.config import settings
 from backend.app.services.qwen_multimodal_client import QwenMultimodalEmbeddingClient
@@ -36,6 +37,9 @@ class HybridRetriever:
             for line in (index_dir / "chunks.jsonl").read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
+        # Compatibility repair for old indexes; this changes memory only and never
+        # rewrites chunks.jsonl or triggers a knowledge-base rebuild.
+        repair_legacy_chunk_sections(self.chunks)
         self.meta = json.loads((index_dir / "index_meta.json").read_text(encoding="utf-8"))
         if sys.platform == "darwin" and embedding_model_path.exists():
             # Loading FAISS before Torch can segfault the macOS process on the
