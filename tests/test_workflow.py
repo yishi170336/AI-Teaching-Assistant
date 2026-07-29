@@ -672,9 +672,8 @@ def test_learning_plan_structure_scales_with_scope_without_time_arrangements():
         "目标",
         "核心内容",
         "具体行动",
-        "练习与复盘",
+        "巩固练习",
         "完成标准",
-        "资料依据",
     ]
     assert broad["scope_level"] == "系统"
     assert clustered["scope_level"] == "中等"

@@ -145,7 +145,8 @@ def test_parse_learning_plan_builds_a_logical_story() -> None:
 
     assert plan.title == "晶体管放大电路学习规划"
     assert "完整知识链" in plan.goal
-    assert len(plan.stages) == 4
+    assert len(plan.stages) == 3
+    assert all("复盘" not in stage.title for stage in plan.stages)
     assert "直流通路" in plan.stages[0].actions[0]
     assert "完成 5 道前置自测题" in plan.stages[0].practices[0]
     assert "I_BQ" in plan.stages[1].goal
@@ -156,10 +157,11 @@ def test_parse_learning_plan_builds_a_logical_story() -> None:
     assert all("小时" not in stage.title for stage in plan.stages)
 
     generic = parse_learning_plan(
-        "# 学习规划\n\n目标：掌握反馈放大电路。\n\n## 阶段一：基础\n- 行动：完成概念复习",
+        "# 学习规划\n\n目标：掌握反馈放大电路。\n\n## 第一模块：基础概念\n- 行动：完成概念复习",
         "系统掌握反馈放大电路",
     )
     assert generic.title == "系统掌握反馈放大电路 · 学习规划"
+    assert generic.stages[0].title == "基础概念"
 
 
 def test_build_learning_plan_ppt_is_editable_and_in_bounds(tmp_path: Path) -> None:
@@ -167,7 +169,7 @@ def test_build_learning_plan_ppt_is_editable_and_in_bounds(tmp_path: Path) -> No
     plan, slide_count = build_learning_plan_ppt(SAMPLE_PLAN, output)
 
     assert output.stat().st_size > 30_000
-    assert slide_count >= 13
+    assert slide_count == 9
     presentation = Presentation(str(output))
     assert len(presentation.slides) == slide_count
     all_text = "\n".join(
@@ -177,19 +179,50 @@ def test_build_learning_plan_ppt_is_editable_and_in_bounds(tmp_path: Path) -> No
         if getattr(shape, "has_text_frame", False)
     )
     assert "晶体管放大电路学习规划" in all_text
-    assert "学习路线一图看懂" in all_text
+    assert "学习目录" in all_text
+    assert "学习目标与方法" in all_text
     assert "静态工作点分析" in all_text
     assert "学什么，怎么做" in all_text
-    assert "练什么，如何自测" in all_text
-    assert "对应资料" in all_text
-    assert "什么时候算真正学会" in all_text
+    assert "练什么，达到什么要求" in all_text
     assert "完成 5 道前置自测题" in all_text
     assert "完成 4 道综合计算题" in all_text
     assert "$" not in all_text
     assert "\\frac" not in all_text
     assert "…" not in all_text
-    for forbidden in ("1～2 小时", "7 天学习安排", "Day 1", "24 小时后", "3 分钟内"):
+    for forbidden in (
+        "1～2 小时",
+        "7 天学习安排",
+        "Day 1",
+        "24 小时后",
+        "3 分钟内",
+        "资料索引",
+        "对应资料",
+        "复盘验收",
+        "迁移应用",
+        "什么时候算真正学会",
+        "现在就开始",
+    ):
         assert forbidden not in all_text
+    contents_text = "\n".join(
+        shape.text
+        for shape in presentation.slides[1].shapes
+        if getattr(shape, "has_text_frame", False)
+    )
+    body_text = "\n".join(
+        shape.text
+        for slide in list(presentation.slides)[2:]
+        for shape in slide.shapes
+        if getattr(shape, "has_text_frame", False)
+    )
+    for item in ["学习目标与方法", *(stage.title for stage in plan.stages)]:
+        assert item in contents_text
+        assert item in body_text
+    final_slide_text = "\n".join(
+        shape.text
+        for shape in presentation.slides[-1].shapes
+        if getattr(shape, "has_text_frame", False)
+    )
+    assert plan.stages[-1].title in final_slide_text
     assert validate_learning_plan_ppt(output, plan) == []
 
     for slide in presentation.slides:
@@ -208,8 +241,9 @@ def test_realistic_plan_does_not_promote_meta_sections_or_table_headers(tmp_path
     plan = parse_learning_plan(REALISTIC_PLAN, topic)
 
     assert plan.title == "反馈机制、三种基本组态、旁路电容 · 学习规划"
-    assert len(plan.stages) == 4
+    assert len(plan.stages) == 3
     assert all("整体阶段划分原则" not in stage.title for stage in plan.stages)
+    assert all("复盘" not in stage.title and "迁移" not in stage.title for stage in plan.stages)
     assert len(plan.stages[0].actions) == 2
     assert len(plan.stages[0].practices) == 1
     assert len(plan.metrics) == 4
@@ -228,12 +262,17 @@ def test_realistic_plan_does_not_promote_meta_sections_or_table_headers(tmp_path
         if getattr(shape, "has_text_frame", False)
     )
 
-    assert slide_count >= 13
-    assert "对应资料" in all_text
+    assert slide_count == 9
+    assert "学习目录" in all_text
     assert "学什么，怎么做" in all_text
-    assert "练什么，如何自测" in all_text
+    assert "练什么，达到什么要求" in all_text
     assert "整体阶段划分原则" not in all_text
     assert "schedule_guidance" not in all_text
+    assert "资料索引" not in all_text
+    assert "对应资料" not in all_text
+    assert "复盘验收与迁移应用" not in all_text
+    assert "什么时候算真正学会" not in all_text
+    assert "现在就开始" not in all_text
     assert "课次" not in all_text
     assert "小时" not in all_text
     assert "3–6 周" not in all_text
@@ -301,21 +340,21 @@ def test_complete_student_guide_paginates_without_dropping_content(tmp_path: Pat
         if getattr(shape, "has_text_frame", False)
     )
 
-    assert slide_count > 8
+    assert slide_count >= 7
     expected_fragments = [
         *plan.principles,
-        *plan.metrics,
-        *plan.references,
         *plan.stages[0].concepts,
         *plan.stages[0].actions,
         *plan.stages[0].practices,
         *plan.stages[0].standards,
-        *plan.stages[0].sources,
     ]
     assert expected_fragments
     assert all(fragment in all_text for fragment in expected_fragments)
     assert "1.0 mA" not in all_text
-    assert "[资料3] 电子电路基础 · 第五章 · 第 300 页" in all_text
+    assert "资料索引" not in all_text
+    assert "检索依据" not in all_text
+    assert "[资料3]" not in all_text
+    assert "现在就开始" not in all_text
     assert "…" not in all_text
     assert validate_learning_plan_ppt(output, plan) == []
 
