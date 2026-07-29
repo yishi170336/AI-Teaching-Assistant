@@ -514,6 +514,30 @@ export type GeneratedPresentation = {
   slideCount: number
 }
 
+function apiErrorMessage(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== 'object') return fallback
+  const response = payload as Record<string, unknown>
+  const detail = response.detail ?? response.error
+  if (typeof detail === 'string' && detail.trim()) return detail.trim()
+  if (!Array.isArray(detail)) return fallback
+
+  const messages = detail.flatMap((item) => {
+    if (typeof item === 'string' && item.trim()) return [item.trim()]
+    if (!item || typeof item !== 'object') return []
+    const issue = item as Record<string, unknown>
+    if (typeof issue.msg !== 'string' || !issue.msg.trim()) return []
+    const message = issue.msg.replace(/^Value error,\s*/i, '').trim()
+    const location = Array.isArray(issue.loc)
+      ? issue.loc
+        .filter((part) => part !== 'body')
+        .map((part) => String(part))
+        .join('.')
+      : ''
+    return [location ? `${location}：${message}` : message]
+  })
+  return [...new Set(messages)].join('；') || fallback
+}
+
 export type SessionSummary = {
   session_id: string
   title: string
@@ -834,7 +858,7 @@ export async function createMistakeCandidate(
     }),
   })
   const result = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(result.detail || '错题候选创建失败')
+  if (!response.ok) throw new Error(apiErrorMessage(result, '错题候选创建失败'))
   return result.candidate
 }
 
@@ -860,7 +884,7 @@ export async function confirmMistakeCandidate(
     }),
   })
   const result = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(result.detail || '加入错题本失败')
+  if (!response.ok) throw new Error(apiErrorMessage(result, '加入错题本失败'))
   return result.mistake
 }
 
@@ -875,7 +899,7 @@ export async function dismissMistakeCandidate(
   )
   if (!response.ok) {
     const result = await response.json().catch(() => ({}))
-    throw new Error(result.detail || '错题候选处理失败')
+    throw new Error(apiErrorMessage(result, '错题候选处理失败'))
   }
 }
 

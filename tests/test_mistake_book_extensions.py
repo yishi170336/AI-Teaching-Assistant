@@ -515,7 +515,10 @@ def test_candidate_requires_explicit_confirmation_before_it_enters_mistake_book(
         "knowledge_base": "default",
         "source": "user_uploaded",
         "attachment_ids": ["a" * 32],
-        "source_ref": {"kind": "photo"},
+        "source_ref": {
+            "kind": "photo",
+            "question_id": "history-2026-07-29T07:43:12.795247+00:00-0",
+        },
         "recognition": {
             "transcription": "PN结为什么具有单向导电性？",
             "confidence": 0.96,
@@ -542,6 +545,7 @@ def test_candidate_requires_explicit_confirmation_before_it_enters_mistake_book(
     assert item["decision"]["confirmed_by_user"] is True
     assert item["decision"]["reason"] == "unknown"
     assert item["source_ref"]["kind"] == "photo"
+    assert item["source_ref"]["question_id"].endswith("+00:00-0")
     assert item["photo_evidence"]["recognition"]["confidence"] == 0.96
     assert item["attachments"][0]["kind"] == "image"
     assert client.post(

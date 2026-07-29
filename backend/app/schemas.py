@@ -206,7 +206,7 @@ class MistakeSourceRef(BaseModel):
     @classmethod
     def safe_source_reference(cls, value: str) -> str:
         value = value.strip()
-        if value and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value):
+        if value and not re.fullmatch(r"[A-Za-z0-9_.:+-]{1,128}", value):
             raise ValueError("来源标识不合法")
         return value
 

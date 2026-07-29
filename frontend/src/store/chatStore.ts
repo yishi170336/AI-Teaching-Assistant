@@ -327,8 +327,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const citedSources = item.cited_sources?.length
         ? item.cited_sources
         : citedSourcesFromContent(item.content, sources)
+      const safeCreatedAt = item.created_at.replace(/[^A-Za-z0-9_.:-]/g, '-')
       return {
-        id: `history-${item.created_at}-${index}`,
+        id: `history-${safeCreatedAt}-${index}`,
         role: item.role,
         content: item.content,
         agent: item.agent,
