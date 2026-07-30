@@ -4045,6 +4045,38 @@ def _prune_cross_question_answer_leakage(
     return warnings
 
 
+def _figure_ink_ratio(image: Image.Image) -> float:
+    """Measure non-background ink while ignoring a thin crop border."""
+    grayscale = ImageOps.grayscale(image)
+    width, height = grayscale.size
+    inset_x = max(2, round(width * 0.04))
+    inset_y = max(2, round(height * 0.04))
+    inner = grayscale.crop(
+        (
+            inset_x,
+            inset_y,
+            max(inset_x + 1, width - inset_x),
+            max(inset_y + 1, height - inset_y),
+        )
+    )
+    histogram = inner.histogram()
+    return sum(histogram[:226]) / max(1, inner.width * inner.height)
+
+
+def _select_question_figure_crop(
+    redacted_crop: Image.Image,
+    original_crop: Image.Image,
+) -> Image.Image:
+    """Restore the source crop when answer redaction erased the actual figure."""
+    redacted_ink = _figure_ink_ratio(redacted_crop)
+    original_ink = _figure_ink_ratio(original_crop)
+    if original_ink >= 0.015 and (
+        redacted_ink < 0.012 or redacted_ink < original_ink * 0.35
+    ):
+        return original_crop
+    return redacted_crop
+
+
 def _save_question_assets(
     *,
     assets_dir: Path,
@@ -4102,6 +4134,12 @@ def _save_question_assets(
                     right = min(width, figure_pixels[2] + 8)
                     bottom = min(height, figure_pixels[3] + 8)
                     figure_crop = source.crop((left, top, right, bottom))
+                    if kind == "figure":
+                        original_crop = image.crop((left, top, right, bottom))
+                        figure_crop = _select_question_figure_crop(
+                            figure_crop,
+                            original_crop,
+                        )
                     if figure_crop.width < 8 or figure_crop.height < 8:
                         continue
                     figure_name = (

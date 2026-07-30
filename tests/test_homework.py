@@ -37,6 +37,7 @@ from backend.app.services.homework import (
     _repair_implausible_question_key_reuse,
     _repair_question_answer_roles,
     _repair_small_signal_input_units,
+    _save_question_assets,
     _split_labeled_text,
     grade_submission,
     process_homework,
@@ -67,6 +68,49 @@ def sample_image_bytes() -> bytes:
     output = io.BytesIO()
     image.save(output, format="PNG")
     return output.getvalue()
+
+
+def test_question_figure_falls_back_to_source_when_answer_redaction_erases_it(
+    tmp_path,
+):
+    page_path = tmp_path / "page-001.png"
+    page_image = Image.new("RGB", (200, 200), "white")
+    draw = ImageDraw.Draw(page_image)
+    draw.rectangle((50, 50, 150, 150), outline="black", width=5)
+    draw.line((60, 100, 140, 100), fill="black", width=4)
+    page_image.save(page_path)
+    assets_dir = tmp_path / "assets"
+    assets_dir.mkdir()
+
+    _, figures, _ = _save_question_assets(
+        assets_dir=assets_dir,
+        question_id="figure-fallback-question",
+        sequence=1,
+        segments=[
+            {
+                "page": 1,
+                "question_text": "电路如图所示。",
+                "subquestions": [],
+                "figure_bboxes": [[200, 200, 800, 800]],
+                "figure_captions": ["图1"],
+                "answer_bboxes": [[0, 0, 1000, 1000]],
+                "answer_figure_bboxes": [],
+                "answer_figure_captions": [],
+                "figure_position": "after_question",
+            }
+        ],
+        pages={
+            1: {
+                "page": 1,
+                "path": page_path,
+                "native_answer_bboxes": [],
+            }
+        },
+    )
+
+    assert len(figures) == 1
+    with Image.open(assets_dir / figures[0]["file"]) as restored:
+        assert restored.convert("L").getextrema()[0] < 50
 
 
 def test_invalid_unicode_surrogates_are_replaced_before_persistence(tmp_path):
