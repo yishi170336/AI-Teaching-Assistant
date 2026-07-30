@@ -594,7 +594,7 @@ class HomeworkStore:
         result = {
             key: question.get(key)
             for key in (
-                "id", "section_key", "section_title", "number", "question_type",
+                "id", "section_key", "section_title", "source_kind", "number", "question_type",
                 "prompt", "subquestions", "options", "option_columns", "figure_position", "points",
                 "page_start", "page_end", "sequence", "origin_question_bank_id",
                 "origin_question_id", "knowledge_points", "knowledge_tags", "location",
@@ -1928,10 +1928,10 @@ def _page_prompt(
 3. “习题解答/参考答案”页面常把题干和“解：”放在一起：question_text 与 subquestions 只放题目，answer_text 与 answer_subquestions 只放解答。只有答案续页时沿用原 question_key，question_text 为空。
 
 题目拆分规则：
-4. question_key 必须在整份附件内唯一且稳定，例如“一-18”“二-2”“1.4-1.2.3”“例题-1.3.1”；number 必须忠实保留页面印刷的完整题号。跨页续题沿用原 question_key，新题即使版式相似也绝不能复用上一题 key。
+4. question_key 必须在整份附件内唯一且稳定，并包含题目来源类型，例如“一-exercise-18”“chapter-1-exercise-1.1.1”“chapter-1-example-1.1.1”；number 必须忠实保留页面印刷的完整题号。source_kind 只能是 example、exercise、question：明确的例题区域是 example，习题、练习、自测、训练或其答案/提示区域是 exercise，确实无法判断时用 question。标题只是弱提示：附件可能完全没有例题，也可能只有习题，标题还可能写成“自我检测”“思考与练习”“答案与提示”等任意名称或根本没有标题；不得因为没有出现“例题”“习题解答”字样而漏题、串题或臆造例题。例题与习题即使印刷题号完全相同也必须使用不同 key，绝不能互相覆盖或合并。跨页续题沿用原 question_key，新题即使版式相似也绝不能复用上一题 key。
 5. question_type 是附件的客观事实，不得改题型。大题标明“选择题”时，其下每题必须是 choice；横线中已印有 A/B/C/D 是答案标记，不代表填空题。
 6. choice 题必须完整返回页面上的 A/B/C/D 选项，放入 options，question_text 不包含选项。选项在下一页顶部续排时，即使本页没有重复题干，也要用原 question_key 返回一个 question_text 为空、但 options 完整的续接片段。
-7. 多小问题必须结构化：question_text 只放所有小问共享的题干；每个“(1)/(2)/(3)”分别放入 subquestions，label 只写数字，text 不重复括号和共同题干。不要把多个小问挤在 question_text 的同一段。答案也用 answer_text + answer_subquestions 对齐拆分。subquestions 只能来自“解：/答案”之前实际印刷的提问；“解：”之后的假设、推导、分步计算即使也标有 (1)/(2)/(3)，只能进入 answer_subquestions，绝不能进入 subquestions 或泄露给学生。
+7. 多小问题必须结构化：question_text 只放所有小问共享的题干；每个“(1)/(2)/(3)”分别放入 subquestions，label 只写数字，text 不重复括号和共同题干。不要把多个小问挤在 question_text 的同一段。答案也用 answer_text + answer_subquestions 对齐拆分。subquestions 只能来自“解：/答案”之前实际印刷的提问；“解：”之后的假设、推导、分步计算即使也标有 (1)/(2)/(3)，只能进入 answer_subquestions，绝不能进入 subquestions 或泄露给学生。同一组 subquestions 只能归属一个印刷题号；遇到页面上任何下一个完整印刷题号后，前后题的小问必须截断，不能复制或串接。识别新题的首要证据是完整题号和版面位置，而不是章节标题。
 8. question_text 只能转录当前页面肉眼可见的题干，不得从“最近已出现的题目”复制、改写或补全题干。若当前页只有上一题的题图、答案或评分过程，question_text 必须为空。
 9. 使用 Markdown + LaTeX。所有电路变量、下标、希腊字母、单位和算式都必须放在 $...$ 中，例如 $\\beta=150$、$V_{{T}}=26\\,\\mathrm{{mV}}$、$V_{{BE(on)}}=0.7\\,\\mathrm{{V}}$、$r'_{{bb}}=100\\,\\Omega$、$R_{{B1}}=60\\,\\mathrm{{k}}\\Omega$、$A_{{v1}}=v_o/v_i$。禁止输出裸露的 V_T、R_B1、r_bb'、26mV 或 4kΩ。
 10. 已填写答案的横线改回纯空白“______”，不得把答案字符写进题干。section_key 是大题、章节或习题组编号，section_title 是对应标题；没有明确分值时 points 返回 0。option_columns 按原页选项排布返回 1、2 或 4；figure_position 返回 before_question、after_question 或 after_options。
@@ -1950,7 +1950,7 @@ PDF-Extract-Kit 检测区域：
 {json.dumps(regions, ensure_ascii=False)}
 
 仅返回 JSON：
-{{"items":[{{"question_key":"1.4-1.2.1","section_key":"1.4","section_title":"1.4 习题解答","number":"1.2.1","question_type":"choice|calculation|short_answer|design|other","question_text":"所有小问共享的题干","subquestions":[{{"label":"1","text":"第一个小问"}},{{"label":"2","text":"第二个小问"}}],"options":[{{"label":"A","text":"选项内容"}}],"option_columns":2,"figure_position":"after_question","points":0,"question_bboxes":[[0,0,1000,1000]],"figure_bboxes":[[0,0,1000,1000]],"figure_captions":["图1.3"],"answer_bboxes":[[0,0,1000,1000]],"answer_figure_bboxes":[[0,0,1000,1000]],"answer_figure_captions":[""],"answer_text":"所有小问共享的答案说明","answer_subquestions":[{{"label":"1","text":"第一问答案"}},{{"label":"2","text":"第二问答案"}}],"rubric":"明确评分点"}}],"warnings":[]}}。"""
+{{"items":[{{"question_key":"chapter-1-exercise-1.2.1","section_key":"1.4","section_title":"1.4 习题解答","source_kind":"exercise","number":"1.2.1","question_type":"choice|calculation|short_answer|design|other","question_text":"所有小问共享的题干","subquestions":[{{"label":"1","text":"第一个小问"}},{{"label":"2","text":"第二个小问"}}],"options":[{{"label":"A","text":"选项内容"}}],"option_columns":2,"figure_position":"after_question","points":0,"question_bboxes":[[0,0,1000,1000]],"figure_bboxes":[[0,0,1000,1000]],"figure_captions":["图1.3"],"answer_bboxes":[[0,0,1000,1000]],"answer_figure_bboxes":[[0,0,1000,1000]],"answer_figure_captions":[""],"answer_text":"所有小问共享的答案说明","answer_subquestions":[{{"label":"1","text":"第一问答案"}},{{"label":"2","text":"第二问答案"}}],"rubric":"明确评分点"}}],"warnings":[]}}。"""
 
 
 def _page_review_prompt(
@@ -1966,10 +1966,11 @@ def _page_review_prompt(
 1. 完整保留印刷题号，包括“例”字和全部点分层级；“例1.3.1”不能变成“1.3.1”，“1.1.1”不能变成“1.1”。
 2. 逐字符核对变量、上下标、希腊字母和单位；特别检查 V、mV、A、mA、Ω、kΩ，禁止根据常识改写单位。
 3. 页面开头若是上一题答案/题图的续页，要另建一个沿用上一题 question_key 的 item，question_text 为空；随后出现的新题必须另建 item，不能把两个题的内容合并。
-4. 所有实际印刷的小问都要保留。题干小问只进 subquestions，解答小问只进 answer_subquestions；上一题答案不得进入下一题答案。
-5. 题目引用的已知图进入 figure_bboxes；“解：”之后才出现的结果图、等效图、波形答案进入 answer_figure_bboxes。图号文字不裁入图，caption 忠实填写完整图号。
-6. “图x.x 题y.y.y的图”归题 y.y.y 的题面；“图x.x 题y.y.y的解”归题 y.y.y 的答案。若只需图(a)而图(b)是解答，只把图(a)放入题面。
-7. 忽略知识讲解、页眉页脚、章节过渡和普通公式说明。不得从最近题目复制页面上不存在的文字。
+4. 所有实际印刷的小问都要保留。题干小问只进 subquestions，解答小问只进 answer_subquestions；上一题答案不得进入下一题答案。同一组小问不得同时出现在两个 question_key 中；question_bboxes 相同的题干区域也不得分配给多个题号。
+5. 复核 source_kind：明确的例题区域为 example，习题、练习、自测、训练及其答案/提示区域为 exercise，无法判断时为 question。同号例题与习题是两道不同的题，必须保留两个独立 question_key。不要假定附件一定有例题，也不要要求习题区标题必须叫“习题解答”；标题只作弱提示，完整印刷题号和版面边界才是切题依据。
+6. 题目引用的已知图进入 figure_bboxes；“解：”之后才出现的结果图、等效图、波形答案进入 answer_figure_bboxes。图号文字不裁入图，caption 忠实填写完整图号。
+7. “图x.x 题y.y.y的图”归题 y.y.y 的题面；“图x.x 题y.y.y的解”归题 y.y.y 的答案。若只需图(a)而图(b)是解答，只把图(a)放入题面。
+8. 忽略知识讲解、页眉页脚、章节过渡和普通公式说明。不得从最近题目复制页面上不存在的文字。
 
 最近题目（仅用于识别跨页归属）：
 {json.dumps(previous_items[-12:], ensure_ascii=False)}
@@ -1985,7 +1986,7 @@ PDF-Extract-Kit 检测区域：
 
 所有 bbox 使用当前整页图片的归一化坐标 [left,top,right,bottom]，范围 0-1000。
 仅返回与第一次相同结构的 JSON：
-{{"items":[{{"question_key":"例题-1.3.1","section_key":"1.3","section_title":"1.3 例题解析","number":"例1.3.1","question_type":"calculation","question_text":"共享题干","subquestions":[{{"label":"1","text":"第一问"}}],"options":[],"option_columns":1,"figure_position":"after_question","points":0,"question_bboxes":[[0,0,1000,1000]],"figure_bboxes":[[0,0,1000,1000]],"figure_captions":["图1.3.1（a）"],"answer_bboxes":[[0,0,1000,1000]],"answer_figure_bboxes":[],"answer_figure_captions":[],"answer_text":"答案说明","answer_subquestions":[{{"label":"1","text":"第一问答案"}}],"rubric":""}}],"warnings":[]}}。"""
+{{"items":[{{"question_key":"chapter-1-example-1.3.1","section_key":"1.3","section_title":"1.3 例题解析","source_kind":"example","number":"例1.3.1","question_type":"calculation","question_text":"共享题干","subquestions":[{{"label":"1","text":"第一问"}}],"options":[],"option_columns":1,"figure_position":"after_question","points":0,"question_bboxes":[[0,0,1000,1000]],"figure_bboxes":[[0,0,1000,1000]],"figure_captions":["图1.3.1（a）"],"answer_bboxes":[[0,0,1000,1000]],"answer_figure_bboxes":[],"answer_figure_captions":[],"answer_text":"答案说明","answer_subquestions":[{{"label":"1","text":"第一问答案"}}],"rubric":""}}],"warnings":[]}}。"""
 
 
 def _normalized_page_items(value: dict[str, Any], page_number: int) -> list[dict[str, Any]]:
@@ -2001,6 +2002,13 @@ def _normalized_page_items(value: dict[str, Any], page_number: int) -> list[dict
         if not key:
             continue
         question_text = _clean_text(raw.get("question_text", raw.get("prompt", "")))
+        embedded_answer = ""
+        answer_marker = re.search(r"(?:^|\n)\s*解[：:]\s*", question_text)
+        if answer_marker and _contains_question_request(
+            question_text[: answer_marker.start()]
+        ):
+            embedded_answer = question_text[answer_marker.end() :].strip()
+            question_text = question_text[: answer_marker.start()].rstrip()
         subquestions = _normalize_labeled_parts(raw.get("subquestions", []))
         parsed_question_text, parsed_subquestions = _split_labeled_text(question_text)
         if subquestions and parsed_subquestions:
@@ -2008,6 +2016,8 @@ def _normalized_page_items(value: dict[str, Any], page_number: int) -> list[dict
         elif not subquestions:
             question_text, subquestions = parsed_question_text, parsed_subquestions
         answer_text = _clean_text(raw.get("answer_text", raw.get("answer", "")))
+        if embedded_answer:
+            answer_text = _merge_prompt_parts([embedded_answer, answer_text])
         answer_subquestions = _normalize_labeled_parts(raw.get("answer_subquestions", []))
         parsed_answer_text, parsed_answer_subquestions = _split_labeled_text(answer_text)
         if answer_subquestions and parsed_answer_subquestions:
@@ -2030,6 +2040,11 @@ def _normalized_page_items(value: dict[str, Any], page_number: int) -> list[dict
             "question_key": key,
             "section_key": _clean_text(raw.get("section_key", ""), 40),
             "section_title": _clean_text(raw.get("section_title", ""), 240),
+            "source_kind": _question_source_kind(
+                raw.get("source_kind"),
+                number=number,
+                section_title=raw.get("section_title"),
+            ),
             "number": number or key,
             "question_type": _question_type(raw.get("question_type")),
             "question_text": question_text,
@@ -2052,6 +2067,119 @@ def _normalized_page_items(value: dict[str, Any], page_number: int) -> list[dict
             "page": page_number,
         })
     return result
+
+
+_LEADING_QUESTION_NUMBER = re.compile(
+    r"^\s*((?:例\s*)?\d+(?:\s*\.\s*\d+){2,})(?:\s|$)"
+)
+_LINE_QUESTION_NUMBER = re.compile(
+    r"(?m)^\s*((?:例\s*)?\d+(?:\s*\.\s*\d+){2,})(?:\s|$)"
+)
+_SUBQUESTION_STEM_CUE = re.compile(
+    r"(?:试求|分别求|回答下列|完成下列|计算下列|求解下列|如下|包括)\s*[：:]?\s*$"
+)
+
+
+def _page_item_alignment_issues(items: list[dict[str, Any]]) -> list[str]:
+    """Find structural evidence that one page copied content across question numbers."""
+    issues: list[str] = []
+    bbox_owners: dict[tuple[tuple[float, ...], ...], set[str]] = {}
+    prompt_owners: dict[str, set[str]] = {}
+    subquestion_owners: dict[tuple[str, ...], set[str]] = {}
+
+    for item in items:
+        key = _clean_text(item.get("question_key"), 80)
+        number = _clean_text(item.get("number"), 80)
+        prompt = _clean_text(item.get("question_text"), 12000)
+        subquestions = _normalize_labeled_parts(item.get("subquestions", []))
+        bbox_signature = tuple(
+            tuple(round(float(value), 1) for value in bbox)
+            for bbox in _bbox_list(item.get("question_bboxes", []))
+        )
+
+        leading = _LEADING_QUESTION_NUMBER.match(prompt)
+        if leading:
+            printed = re.sub(r"\s+", "", leading.group(1))
+            expected = re.sub(r"\s+", "", number)
+            if printed != expected:
+                issues.append(
+                    f"{number or key} 的题干以其他题号 {printed} 开头"
+                )
+        for match in _LINE_QUESTION_NUMBER.finditer(prompt):
+            printed = re.sub(r"\s+", "", match.group(1))
+            if re.sub(r"\s+", "", number) != printed:
+                issues.append(
+                    f"{number or key} 的题干中又出现独立题号 {printed}"
+                )
+
+        if subquestions and "？" in prompt and not _SUBQUESTION_STEM_CUE.search(prompt):
+            issues.append(
+                f"{number or key} 的题干已经形成完整提问，却又附带额外小问"
+            )
+
+        if bbox_signature:
+            bbox_owners.setdefault(bbox_signature, set()).add(key)
+        normalized_prompt = re.sub(r"\s+", "", prompt)
+        if len(normalized_prompt) >= 24:
+            prompt_owners.setdefault(normalized_prompt, set()).add(key)
+        subquestion_signature = tuple(
+            re.sub(r"\s+", "", part["text"]) for part in subquestions
+        )
+        if subquestion_signature and sum(map(len, subquestion_signature)) >= 24:
+            subquestion_owners.setdefault(subquestion_signature, set()).add(key)
+
+    for owners in bbox_owners.values():
+        if len(owners) > 1:
+            issues.append(
+                "同一题干区域被分配给多个题号：" + "、".join(sorted(owners))
+            )
+    for owners in prompt_owners.values():
+        if len(owners) > 1:
+            issues.append(
+                "同一题干被复制到多个题号：" + "、".join(sorted(owners))
+            )
+    for owners in subquestion_owners.values():
+        if len(owners) > 1:
+            issues.append(
+                "同一组小问被复制到多个题号：" + "、".join(sorted(owners))
+            )
+    return list(dict.fromkeys(issues))
+
+
+def _prune_cross_question_subquestion_copies(
+    items: list[dict[str, Any]],
+) -> list[str]:
+    """Remove a small question that is an exact copy of another question's stem."""
+    prompt_owners: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        prompt = re.sub(r"\s+", "", _clean_text(item.get("question_text"), 12000))
+        if len(prompt) >= 16:
+            prompt_owners.setdefault(prompt, []).append(item)
+
+    warnings: list[str] = []
+    for item in items:
+        key = _clean_text(item.get("question_key"), 80)
+        kept: list[dict[str, Any]] = []
+        removed = 0
+        for part in _normalize_labeled_parts(item.get("subquestions", [])):
+            normalized = re.sub(r"\s+", "", part["text"])
+            owners = [
+                owner
+                for owner in prompt_owners.get(normalized, [])
+                if _clean_text(owner.get("question_key"), 80) != key
+                and abs(int(owner.get("page", 0)) - int(item.get("page", 0))) <= 2
+            ]
+            if owners:
+                removed += 1
+                continue
+            kept.append(part)
+        if removed:
+            item["subquestions"] = kept
+            warnings.append(
+                f"题号 {_clean_text(item.get('number'), 80) or key} "
+                f"已移除 {removed} 个实际属于相邻独立题目的重复小问"
+            )
+    return warnings
 
 
 def _choice_recovery_prompt(page: dict[str, Any], candidates: list[dict[str, Any]]) -> str:
@@ -2130,6 +2258,12 @@ def _repair_numbered_key(item: dict[str, Any]) -> str:
 
 
 _DOTTED_QUESTION_NUMBER = re.compile(r"(?:例\s*)?\d+(?:\.\d+)+")
+_QUESTION_SOURCE_KINDS = {"example", "exercise", "question"}
+_EXAMPLE_SECTION_CUE = re.compile(r"例题|例题解析|例题解答")
+_EXERCISE_SECTION_CUE = re.compile(
+    r"习题|练习|作业|题解|解答|答案|参考提示|答案与提示|"
+    r"自测|测试|检测|训练|复习题|思考题|巩固|课后题"
+)
 _QUESTION_REQUEST_CUE = re.compile(
     r"试|请|求|计算|画出|绘出|证明|分析|说明|判断|确定|写出|列出|设计|"
     r"比较|选择|填写|完成|能否|是否|什么|多少|为何|为什么|如何|怎样|"
@@ -2145,7 +2279,42 @@ _RAW_QUESTION_FIELDS = (
     "_raw_number",
     "_raw_section_key",
     "_raw_section_title",
+    "_raw_source_kind",
 )
+
+
+def _question_source_kind(
+    value: Any,
+    *,
+    number: Any = "",
+    section_title: Any = "",
+) -> str:
+    normalized = _clean_text(value, 40).lower()
+    title = _clean_text(section_title, 240)
+    if _EXAMPLE_SECTION_CUE.search(title):
+        return "example"
+    if _EXERCISE_SECTION_CUE.search(title):
+        return "exercise"
+    if normalized in _QUESTION_SOURCE_KINDS:
+        return normalized
+    if _clean_text(number, 80).startswith("例"):
+        return "example"
+    return "question"
+
+
+def _canonical_question_key(item: dict[str, Any]) -> str:
+    number = _clean_text(item.get("number"), 80)
+    plain_number = re.sub(r"^例\s*", "", number)
+    source_kind = _question_source_kind(
+        item.get("source_kind"),
+        number=number,
+        section_title=item.get("section_title"),
+    )
+    item["source_kind"] = source_kind
+    if re.fullmatch(r"\d+(?:\.\d+)+", plain_number):
+        chapter = plain_number.split(".", 1)[0]
+        return f"chapter-{chapter}-{source_kind}-{plain_number}"
+    return _clean_text(item.get("question_key"), 80)
 
 
 def _printed_question_number(value: Any) -> str:
@@ -2175,6 +2344,14 @@ def _remember_raw_question_identity(items: Iterable[dict[str, Any]]) -> None:
         item.setdefault("_raw_section_key", _clean_text(item.get("section_key"), 40))
         item.setdefault(
             "_raw_section_title", _clean_text(item.get("section_title"), 240)
+        )
+        item.setdefault(
+            "_raw_source_kind",
+            _question_source_kind(
+                item.get("source_kind"),
+                number=item.get("number"),
+                section_title=item.get("section_title"),
+            ),
         )
 
 
@@ -2214,10 +2391,17 @@ def _raw_identity_key(item: dict[str, Any]) -> str:
     section_key = _clean_text(
         item.get("_raw_section_key", item.get("section_key")), 40
     )
-    if section_key and raw_number:
-        marker = "例" if raw_number.startswith("例") else "题"
+    if raw_number:
         plain_number = re.sub(r"^例", "", raw_number)
-        return f"{section_key}-{marker}{plain_number}"
+        source_kind = _question_source_kind(
+            item.get("_raw_source_kind", item.get("source_kind")),
+            number=raw_number,
+            section_title=item.get(
+                "_raw_section_title", item.get("section_title")
+            ),
+        )
+        chapter = plain_number.split(".", 1)[0]
+        return f"chapter-{chapter}-{source_kind}-{plain_number}"
     return raw_key
 
 
@@ -2229,6 +2413,7 @@ def _restore_raw_question_identity(
         ("_raw_number", "number"),
         ("_raw_section_key", "section_key"),
         ("_raw_section_title", "section_title"),
+        ("_raw_source_kind", "source_kind"),
     ):
         value = _clean_text(item.get(raw_name), 240)
         if value:
@@ -2612,6 +2797,13 @@ def _normalize_document_metadata(items: list[dict[str, Any]]) -> None:
     active_rank: tuple[int, ...] | None = None
     previous_question_item: dict[str, Any] | None = None
     for item in items:
+        raw_source_kind = _clean_text(item.get("source_kind"), 40).lower()
+        source_kind = _question_source_kind(
+            item.get("source_kind"),
+            number=item.get("number"),
+            section_title=item.get("section_title"),
+        )
+        item["source_kind"] = source_kind
         section_key = _clean_text(item.get("section_key"), 40)
         title = _clean_text(item.get("section_title"), 240)
         rank = dotted_rank(section_key)
@@ -2635,6 +2827,13 @@ def _normalize_document_metadata(items: list[dict[str, Any]]) -> None:
             item["section_key"] = active_section_key
         if active_section_title:
             item["section_title"] = active_section_title
+        if raw_source_kind not in _QUESTION_SOURCE_KINDS:
+            source_kind = _question_source_kind(
+                None,
+                number=item.get("number"),
+                section_title=item.get("section_title"),
+            )
+            item["source_kind"] = source_kind
 
         number = _clean_text(item.get("number"), 80)
         key_number = _canonical_key_number(item.get("question_key"))
@@ -2648,11 +2847,10 @@ def _normalize_document_metadata(items: list[dict[str, Any]]) -> None:
             ):
                 number = key_number
 
-        normalized_title = _clean_text(item.get("section_title"), 240)
-        if "例题" in normalized_title:
+        if source_kind == "example":
             if re.fullmatch(r"\d+(?:\.\d+)+", number):
                 number = f"例{number}"
-        elif re.search(r"习题|练习|作业|题解", normalized_title):
+        elif source_kind == "exercise":
             question_evidence = bool(
                 _clean_text(item.get("question_text"))
                 or item.get("subquestions")
@@ -2724,11 +2922,14 @@ def _normalize_document_metadata(items: list[dict[str, Any]]) -> None:
     # printed number and must not rely on a model-generated cross-document key.
     for item in items:
         number = _clean_text(item.get("number"), 80)
-        plain_number = re.sub(r"^例\s*", "", number)
-        section_key = _clean_text(item.get("section_key"), 40)
-        if section_key and re.fullmatch(r"\d+(?:\.\d+)+", plain_number):
-            marker = "例" if number.startswith("例") else "题"
-            item["question_key"] = f"{section_key}-{marker}{plain_number}"
+        item["source_kind"] = _question_source_kind(
+            item.get("source_kind"),
+            number=number,
+            section_title=item.get("section_title"),
+        )
+        canonical_key = _canonical_question_key(item)
+        if canonical_key:
+            item["question_key"] = canonical_key
 
 
 def _pixel_bbox(bbox: list[float], width: int, height: int) -> tuple[int, int, int, int]:
@@ -4055,6 +4256,7 @@ def process_homework(
             page_items = _normalized_page_items(result, int(page["page"]))
             if len(pages) > 1 and (page_items or previous_items):
                 try:
+                    initial_alignment_issues = _page_item_alignment_issues(page_items)
                     review_result = client.complete_json(
                         _page_review_prompt(page, regions, previous_items, page_items),
                         image_bytes=Path(page["path"]).read_bytes(),
@@ -4063,8 +4265,25 @@ def process_homework(
                     reviewed_items = _normalized_page_items(
                         review_result, int(page["page"])
                     )
-                    if reviewed_items and len(reviewed_items) >= len(page_items):
+                    reviewed_alignment_issues = _page_item_alignment_issues(
+                        reviewed_items
+                    )
+                    if (
+                        reviewed_items
+                        and len(reviewed_items) >= len(page_items)
+                        and len(reviewed_alignment_issues)
+                        <= len(initial_alignment_issues)
+                    ):
                         page_items = reviewed_items
+                    elif (
+                        reviewed_items
+                        and len(reviewed_alignment_issues)
+                        > len(initial_alignment_issues)
+                    ):
+                        warnings.append(
+                            f"第 {page['page']} 页二次复核产生了更多题干/小问错位，"
+                            "已保留结构更可靠的首次结果"
+                        )
                     raw_review_warnings = review_result.get("warnings", [])
                     if isinstance(raw_review_warnings, list):
                         warnings.extend(
@@ -4076,6 +4295,19 @@ def process_homework(
                     warnings.append(
                         f"第 {page['page']} 页二次复核失败，已保留首次结果：{_clean_text(exc, 240)}"
                     )
+            page_ownership_warnings = _prune_cross_question_subquestion_copies(
+                page_items
+            )
+            warnings.extend(
+                f"第 {page['page']} 页：{warning}"
+                for warning in page_ownership_warnings
+            )
+            page_alignment_issues = _page_item_alignment_issues(page_items)
+            if page_alignment_issues:
+                warnings.append(
+                    f"第 {page['page']} 页仍有题干/小问归属风险："
+                    + "；".join(page_alignment_issues[:4])
+                )
             recovery_candidates: dict[str, dict[str, Any]] = {}
             for item in all_items + page_items:
                 if (
@@ -4133,6 +4365,7 @@ def process_homework(
         if not all_items:
             raise RuntimeError("附件中没有识别到可直接布置的独立题目")
         _normalize_document_metadata(all_items)
+        warnings.extend(_prune_cross_question_subquestion_copies(all_items))
         warnings.extend(_repair_implausible_question_key_reuse(all_items))
         warnings.extend(_repair_question_answer_roles(all_items))
         all_items, answer_continuation_warnings = _recover_missing_answer_continuations(
@@ -4183,8 +4416,13 @@ def process_homework(
             key = item["question_key"]
             question = grouped.setdefault(key, {
                 "id": hashlib.sha256(f"{homework_id}|{key}".encode("utf-8")).hexdigest()[:32],
-                "section_key": key.rsplit("-", 1)[0] if "-" in key else item["section_key"],
+                "section_key": item["section_key"],
                 "section_title": item["section_title"],
+                "source_kind": _question_source_kind(
+                    item.get("source_kind"),
+                    number=item.get("number"),
+                    section_title=item.get("section_title"),
+                ),
                 "number": item["number"],
                 "question_type": item["question_type"],
                 "points": item["points"],
@@ -4251,6 +4489,7 @@ def process_homework(
                     if question["question_type"] == "choice"
                     else f"{question['section_key']}、题目"
                 ),
+                "source_kind": question["source_kind"],
                 "number": question["number"],
                 "question_type": question["question_type"],
                 "prompt": _merge_prompt_parts(question["prompt_parts"]),

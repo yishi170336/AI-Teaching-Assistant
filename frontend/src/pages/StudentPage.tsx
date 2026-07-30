@@ -2140,13 +2140,22 @@ function QuestionBankQuestionCard({
   onDelete: () => void
 }) {
   const [answerOpen, setAnswerOpen] = useState(false)
+  const sourceKindLabel = question.source_kind === 'example'
+    ? '例题'
+    : question.source_kind === 'exercise'
+      ? '习题'
+      : '题目'
+  const displayedNumber = question.number || question.sequence
+  const displayedTitle = question.source_kind === 'example' && String(displayedNumber).startsWith('例')
+    ? displayedNumber
+    : `第 ${displayedNumber} 题`
   return (
     <article className="student-bank-question">
       <header className="student-bank-question-head">
         <span className="student-bank-question-number">{question.number || question.sequence}</span>
         <div>
-          <small>{question.section_title || '题目'} · {questionTypeName(question.question_type)}</small>
-          <strong>第 {question.number || question.sequence} 题</strong>
+          <small>{sourceKindLabel} · {question.section_title || '题目'} · {questionTypeName(question.question_type)}</small>
+          <strong>{displayedTitle}</strong>
         </div>
         <Popconfirm
           title="从题库中删除这道题？"
@@ -2182,7 +2191,6 @@ function QuestionBankQuestionCard({
                 <img
                   src={figure.url}
                   alt={figure.caption || `第 ${question.number} 题题图`}
-                  loading="lazy"
                   decoding="async"
                 />
                 {figure.caption ? <figcaption>{figure.caption}</figcaption> : null}
@@ -2210,7 +2218,6 @@ function QuestionBankQuestionCard({
                         <img
                           src={figure.url}
                           alt={figure.caption || `第 ${question.number} 题答案图`}
-                          loading="lazy"
                           decoding="async"
                         />
                         {figure.caption ? <figcaption>{figure.caption}</figcaption> : null}

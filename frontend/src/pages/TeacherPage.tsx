@@ -134,7 +134,10 @@ function QuestionManagementList({
             <article key={question.id}>
               <div className="question-bank-manage-number">{question.number}</div>
               <div className="question-bank-manage-copy">
-                <span>{question.section_title || '题目'} · {questionTypeLabel(question.question_type)}</span>
+                <span>
+                  {question.source_kind === 'example' ? '例题' : question.source_kind === 'exercise' ? '习题' : '题目'}
+                  {' · '}{question.section_title || '题目'} · {questionTypeLabel(question.question_type)}
+                </span>
                 <MathMarkdown content={question.prompt || '未识别到题干'} />
                 <small>{question.figures?.length || 0} 张题图 · {question.answer_figures?.length || 0} 张答案图 · {question.answer || question.answer_subquestions?.length ? '含参考答案' : '未识别到答案'}</small>
               </div>

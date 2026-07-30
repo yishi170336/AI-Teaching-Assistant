@@ -363,6 +363,7 @@ export type HomeworkQuestion = {
   origin_question_id?: string
   section_key: string
   section_title: string
+  source_kind?: 'example' | 'exercise' | 'question'
   number: string
   question_type: string
   prompt: string

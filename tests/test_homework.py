@@ -9,6 +9,7 @@ from PIL import Image, ImageDraw
 from backend.app.services.homework import (
     HomeworkStore,
     _choice_recovery_prompt,
+    _canonical_question_key,
     _clean_text,
     _consolidate_question_keys,
     _deduplicate_overlapping_figures,
@@ -21,9 +22,13 @@ from backend.app.services.homework import (
     _normalize_document_metadata,
     _normalize_grading,
     _normalized_page_items,
+    _page_item_alignment_issues,
     _page_prompt,
     _page_review_prompt,
+    _prune_cross_question_subquestion_copies,
     _prune_cross_question_answer_leakage,
+    _question_source_kind,
+    _raw_identity_key,
     _prune_redundant_question_figure_variants,
     _recover_missing_answer_continuations,
     _recover_missing_answer_figures,
@@ -1036,7 +1041,7 @@ def test_document_metadata_preserves_examples_and_full_dotted_numbers():
     assert items[1]["section_title"] == "1.3 例题解析"
     assert items[-1]["section_title"] == "1.4 习题解答"
     assert items[0]["question_key"] != items[-1]["question_key"]
-    assert items[-1]["question_key"] == "1.4-题1.3.2"
+    assert items[-1]["question_key"] == "chapter-1-exercise-1.3.2"
 
 
 def test_answer_only_false_example_continues_previous_exercise():
@@ -1075,7 +1080,78 @@ def test_answer_only_false_example_continues_previous_exercise():
 
     assert items[1]["number"] == "1.2.5"
     assert items[1]["question_key"] == items[0]["question_key"]
-    assert items[2]["question_key"] == "1.4-题1.3.1"
+    assert items[2]["question_key"] == "chapter-1-exercise-1.3.1"
+
+
+def test_example_and_exercise_with_same_printed_number_have_distinct_identity():
+    example = {
+        "question_key": "legacy-1.1.1",
+        "section_key": "1.3",
+        "section_title": "1.3 例题解析",
+        "source_kind": "example",
+        "number": "1.1.1",
+    }
+    exercise = {
+        "question_key": "legacy-1.1.1",
+        "section_key": "1.4",
+        "section_title": "1.4 习题解答",
+        "source_kind": "exercise",
+        "number": "1.1.1",
+    }
+
+    assert _canonical_question_key(example) == "chapter-1-example-1.1.1"
+    assert _canonical_question_key(exercise) == "chapter-1-exercise-1.1.1"
+    assert example["source_kind"] == "example"
+    assert exercise["source_kind"] == "exercise"
+
+
+def test_question_source_kind_supports_exercise_only_books_with_custom_titles():
+    assert (
+        _question_source_kind(
+            None,
+            number="2.1.1",
+            section_title="第二章 自我检测及参考提示",
+        )
+        == "exercise"
+    )
+    assert (
+        _question_source_kind(
+            None,
+            number="2.1.2",
+            section_title="能力巩固训练",
+        )
+        == "exercise"
+    )
+    assert (
+        _question_source_kind(
+            None,
+            number="2.1.3",
+            section_title="第二章",
+        )
+        == "question"
+    )
+    assert (
+        _question_source_kind(
+            "example",
+            number="2.1.4",
+            section_title="第二章 自我检测及参考提示",
+        )
+        == "exercise"
+    )
+
+
+def test_raw_identity_uses_printed_number_when_section_heading_is_missing():
+    item = {
+        "_raw_question_key": "recent-question",
+        "_raw_number": "2.1.3",
+        "_raw_section_key": "",
+        "_raw_section_title": "",
+        "_raw_source_kind": "question",
+        "question_key": "recent-question",
+        "number": "2.1.3",
+    }
+
+    assert _raw_identity_key(item) == "chapter-2-question-2.1.3"
 
 
 def test_missing_cross_page_question_figure_is_recovered_from_next_page(tmp_path):
@@ -2391,6 +2467,9 @@ def test_page_prompt_filters_book_explanations_and_requires_structured_subquesti
     assert "1.1.1”不能缩成“1.1" in prompt
     assert "15\\,\\mathrm{mV}" in prompt
     assert "上一题的答案续文" in prompt
+    assert "同一组 subquestions 只能归属一个印刷题号" in prompt
+    assert "附件可能完全没有例题" in prompt
+    assert "标题只是弱提示" in prompt
     assert '"figure_captions":["图1.3"]' in prompt
     assert "题目卷" not in prompt
 
@@ -2407,7 +2486,200 @@ def test_page_review_prompt_checks_numbers_units_and_cross_page_ownership():
     assert "例1.3.1”不能变成“1.3.1" in prompt
     assert "V、mV、A、mA" in prompt
     assert "上一题答案不得进入下一题答案" in prompt
+    assert "同一组小问不得同时出现在两个 question_key" in prompt
+    assert "不要假定附件一定有例题" in prompt
+    assert "标题只作弱提示" in prompt
     assert '"number":"例1.3.1"' in prompt
+
+
+def test_page_alignment_flags_subquestions_copied_to_the_wrong_question():
+    items = _normalized_page_items(
+        {
+            "items": [
+                {
+                    "question_key": "1.3-例1.3.2",
+                    "number": "例1.3.2",
+                    "question_text": (
+                        "电路如图 1.3.3 所示。试问哪只灯最亮？"
+                        "哪只二极管承受的反向电压最大？"
+                    ),
+                    "subquestions": [
+                        {"label": "1", "text": "当输入电压为 12 V 时，电流为多少？"},
+                        {"label": "2", "text": "输入变为 12.5 V 时，输出电压为多少？"},
+                    ],
+                    "question_bboxes": [[90, 500, 950, 560]],
+                },
+                {
+                    "question_key": "1.4-题1.1.1",
+                    "number": "1.1.1",
+                    "question_text": "假设在硅材料的 P 型半导体中，试求载流子浓度。",
+                    "subquestions": [
+                        {"label": "1", "text": "掺入受主杂质后，计算空穴和电子浓度。"},
+                        {"label": "2", "text": "温度升高后，判断导电类型。"},
+                    ],
+                    "question_bboxes": [[86, 414, 940, 452]],
+                },
+                {
+                    "question_key": "1.4-题1.1.2",
+                    "number": "1.1.2",
+                    "question_text": "在 300 K 时硅的本征载流子浓度已知，试求：",
+                    "subquestions": [
+                        {"label": "1", "text": "掺入受主杂质后，计算空穴和电子浓度。"},
+                        {"label": "2", "text": "温度升高后，判断导电类型。"},
+                    ],
+                    "question_bboxes": [[86, 414, 940, 452]],
+                },
+            ]
+        },
+        3,
+    )
+
+    issues = _page_item_alignment_issues(items)
+
+    assert any("已经形成完整提问" in issue for issue in issues)
+    assert any("同一题干区域被分配给多个题号" in issue for issue in issues)
+    assert any("同一组小问被复制到多个题号" in issue for issue in issues)
+
+
+def test_page_alignment_accepts_distinct_questions_with_their_own_subquestions():
+    items = _normalized_page_items(
+        {
+            "items": [
+                {
+                    "question_key": "1.3-例1.3.3",
+                    "number": "例1.3.3",
+                    "question_text": "稳压电路如图所示，试求：",
+                    "subquestions": [
+                        {"label": "1", "text": "输入为 12 V 时，电流为多少？"},
+                        {"label": "2", "text": "输入为 12.5 V 时，输出电压为多少？"},
+                    ],
+                    "question_bboxes": [[90, 780, 950, 930]],
+                },
+                {
+                    "question_key": "1.4-题1.1.2",
+                    "number": "1.1.2",
+                    "question_text": "在 300 K 时硅的本征载流子浓度已知，试求：",
+                    "subquestions": [
+                        {"label": "1", "text": "掺入受主杂质后，计算空穴和电子浓度。"},
+                        {"label": "2", "text": "温度升高后，判断导电类型。"},
+                    ],
+                    "question_bboxes": [[86, 700, 940, 900]],
+                },
+            ]
+        },
+        3,
+    )
+
+    assert _page_item_alignment_issues(items) == []
+
+
+def test_page_alignment_flags_an_embedded_second_printed_question_number():
+    items = _normalized_page_items(
+        {
+            "items": [
+                {
+                    "question_key": "chapter-2-exercise-2.1.1",
+                    "number": "2.1.1",
+                    "question_text": (
+                        "怎样判断晶体管的三个电极？\n"
+                        "2.1.2 在某放大电路中，试判断晶体管类型。"
+                    ),
+                    "question_bboxes": [[80, 300, 940, 520]],
+                }
+            ]
+        },
+        22,
+    )
+
+    assert any(
+        "又出现独立题号 2.1.2" in issue
+        for issue in _page_item_alignment_issues(items)
+    )
+
+
+def test_page_alignment_detects_copied_content_without_question_bboxes():
+    items = _normalized_page_items(
+        {
+            "items": [
+                {
+                    "question_key": "chapter-2-question-2.1.1",
+                    "number": "2.1.1",
+                    "question_text": "在某放大电路中，分析晶体管的工作状态和输出电压。",
+                    "subquestions": [
+                        {"label": "1", "text": "根据测得的电位判断晶体管的三个电极。"},
+                        {"label": "2", "text": "说明该晶体管属于 NPN 型还是 PNP 型。"},
+                    ],
+                },
+                {
+                    "question_key": "chapter-2-question-2.1.2",
+                    "number": "2.1.2",
+                    "question_text": "在某放大电路中，分析晶体管的工作状态和输出电压。",
+                    "subquestions": [
+                        {"label": "1", "text": "根据测得的电位判断晶体管的三个电极。"},
+                        {"label": "2", "text": "说明该晶体管属于 NPN 型还是 PNP 型。"},
+                    ],
+                },
+            ]
+        },
+        22,
+    )
+
+    issues = _page_item_alignment_issues(items)
+
+    assert any("同一题干被复制到多个题号" in issue for issue in issues)
+    assert any("同一组小问被复制到多个题号" in issue for issue in issues)
+
+
+def test_cross_question_prompt_copy_is_removed_from_neighbor_subquestions():
+    items = _normalized_page_items(
+        {
+            "items": [
+                {
+                    "question_key": "chapter-2-exercise-2.1.1",
+                    "number": "2.1.1",
+                    "question_text": "怎样用万用表判断晶体管的三个电极及类型？",
+                    "subquestions": [
+                        {
+                            "label": "2",
+                            "text": "在某放大电路中，试判断三只晶体管的类型。",
+                        }
+                    ],
+                },
+                {
+                    "question_key": "chapter-2-exercise-2.1.2",
+                    "number": "2.1.2",
+                    "question_text": "在某放大电路中，试判断三只晶体管的类型。",
+                },
+            ]
+        },
+        22,
+    )
+
+    warnings = _prune_cross_question_subquestion_copies(items)
+
+    assert items[0]["subquestions"] == []
+    assert any("相邻独立题目" in warning for warning in warnings)
+
+
+def test_normalized_page_item_moves_embedded_solution_out_of_prompt():
+    items = _normalized_page_items(
+        {
+            "items": [
+                {
+                    "question_key": "chapter-3-example-3.3.5",
+                    "number": "例3.3.5",
+                    "question_text": (
+                        "分析图示电路，指出各管作用并画出交流通路。\n"
+                        "解：晶体管 T1 构成共源放大电路。"
+                    ),
+                }
+            ]
+        },
+        65,
+    )
+
+    assert items[0]["question_text"] == "分析图示电路，指出各管作用并画出交流通路。"
+    assert items[0]["answer_text"] == "晶体管 T1 构成共源放大电路。"
 
 
 def test_guidance_book_question_and_answer_parts_are_normalized_for_layout_and_grading():
