@@ -11,6 +11,7 @@ import {
   App as AntApp,
   Button,
   Empty,
+  Image as AntImage,
   Input,
   Modal,
   Pagination,
@@ -2130,6 +2131,40 @@ function QuestionKnowledgeAlignment({ question }: { question: HomeworkQuestion }
   )
 }
 
+function QuestionBankFigureGallery({
+  figures,
+  questionNumber,
+  answer = false,
+}: {
+  figures: NonNullable<HomeworkQuestion['answer_figures']>
+  questionNumber: HomeworkQuestion['number'] | HomeworkQuestion['sequence']
+  answer?: boolean
+}) {
+  return (
+    <AntImage.PreviewGroup>
+      <div className={`student-bank-figures${answer ? ' answer' : ''}`}>
+        {figures.map((figure) => (
+          <figure key={figure.file}>
+            <AntImage
+              src={figure.url}
+              alt={figure.caption || `第 ${questionNumber} 题${answer ? '答案图' : '题图'}`}
+              preview={{
+                mask: (
+                  <span className="student-bank-figure-preview-mask">
+                    <ZoomIn size={15} />
+                    点击放大
+                  </span>
+                ),
+              }}
+            />
+            {figure.caption ? <figcaption>{figure.caption}</figcaption> : null}
+          </figure>
+        ))}
+      </div>
+    </AntImage.PreviewGroup>
+  )
+}
+
 function QuestionBankQuestionCard({
   question,
   deleting,
@@ -2185,18 +2220,10 @@ function QuestionBankQuestionCard({
           </div>
         ) : null}
         {question.figures?.length ? (
-          <div className="student-bank-figures">
-            {question.figures.map((figure) => (
-              <figure key={figure.file}>
-                <img
-                  src={figure.url}
-                  alt={figure.caption || `第 ${question.number} 题题图`}
-                  decoding="async"
-                />
-                {figure.caption ? <figcaption>{figure.caption}</figcaption> : null}
-              </figure>
-            ))}
-          </div>
+          <QuestionBankFigureGallery
+            figures={question.figures}
+            questionNumber={displayedNumber}
+          />
         ) : null}
         <QuestionKnowledgeAlignment question={question} />
         {(question.answer || question.answer_subquestions?.length || question.answer_figures?.length) ? (
@@ -2212,18 +2239,11 @@ function QuestionBankQuestionCard({
                   <div key={part.label}><b>（{part.label}）</b><MathMarkdown content={part.text} /></div>
                 ))}
                 {question.answer_figures?.length ? (
-                  <div className="student-bank-figures answer">
-                    {question.answer_figures.map((figure) => (
-                      <figure key={figure.file}>
-                        <img
-                          src={figure.url}
-                          alt={figure.caption || `第 ${question.number} 题答案图`}
-                          decoding="async"
-                        />
-                        {figure.caption ? <figcaption>{figure.caption}</figcaption> : null}
-                      </figure>
-                    ))}
-                  </div>
+                  <QuestionBankFigureGallery
+                    figures={question.answer_figures}
+                    questionNumber={displayedNumber}
+                    answer
+                  />
                 ) : null}
               </>
             ) : null}
