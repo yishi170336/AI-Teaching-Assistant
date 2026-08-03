@@ -43,6 +43,29 @@ QUESTION_KNOWLEDGE_CANDIDATES = (
 )
 
 
+class QuestionBankProcessingCancelled(BaseException):
+    """Cooperative cancellation that must bypass broad extraction fallbacks."""
+
+
+class _CancellationAwareVisionClient:
+    def __init__(
+        self,
+        client: QwenVisionClient | Any,
+        ensure_not_cancelled: Callable[[], None],
+    ) -> None:
+        self._client = client
+        self._ensure_not_cancelled = ensure_not_cancelled
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+    def complete_json(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        self._ensure_not_cancelled()
+        result = self._client.complete_json(*args, **kwargs)
+        self._ensure_not_cancelled()
+        return result
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1108,6 +1131,66 @@ class HomeworkStore:
             item["updated_at"] = _now()
             self._write(state)
 
+    def update_question_bank_if_status(
+        self,
+        bank_id: str,
+        expected_status: str,
+        **updates: Any,
+    ) -> bool:
+        self.validate_homework_id(bank_id)
+        with self._lock:
+            state = self._read()
+            item = next(
+                (
+                    value
+                    for value in state["question_banks"]
+                    if value.get("id") == bank_id
+                ),
+                None,
+            )
+            if item is None or item.get("status") != expected_status:
+                return False
+            item.update(updates)
+            item["updated_at"] = _now()
+            self._write(state)
+        return True
+
+    def question_bank_exists(self, bank_id: str) -> bool:
+        self.validate_homework_id(bank_id)
+        with self._lock:
+            return any(
+                item.get("id") == bank_id
+                for item in self._read()["question_banks"]
+            )
+
+    def cancel_question_bank(self, bank_id: str) -> bool:
+        self.validate_homework_id(bank_id)
+        with self._lock:
+            state = self._read()
+            item = next(
+                (
+                    value
+                    for value in state["question_banks"]
+                    if value.get("id") == bank_id
+                ),
+                None,
+            )
+            if item is None:
+                raise FileNotFoundError("题库不存在")
+            if item.get("status") == "cancelled":
+                return True
+            if item.get("status") != "processing":
+                return False
+            item.update({
+                "status": "cancelled",
+                "processing_error": "",
+                "processing_message": "已取消建立题库",
+                "processing_owner_pid": None,
+                "updated_at": _now(),
+            })
+            self._write(state)
+        return True
+
     def backfill_question_bank_knowledge(
         self,
         knowledge_aligner: Callable[[str, list[str]], dict[str, Any]],
@@ -1583,7 +1666,21 @@ class HomeworkStore:
             path.unlink()
         return True
 
-    def delete_question_bank(self, bank_id: str) -> bool:
+    def delete_question_bank_files(self, bank_id: str) -> None:
+        bank_id = self.validate_homework_id(bank_id)
+        target = self._homework_dir(bank_id).resolve()
+        if target.parent != self.root:
+            raise RuntimeError("题库目录不安全")
+        with self._lock:
+            if target.exists():
+                shutil.rmtree(target)
+
+    def delete_question_bank(
+        self,
+        bank_id: str,
+        *,
+        remove_files: bool = True,
+    ) -> bool:
         bank_id = self.validate_homework_id(bank_id)
         with self._lock:
             state = self._read()
@@ -1594,9 +1691,8 @@ class HomeworkStore:
             if len(state["question_banks"]) == before:
                 return False
             self._write(state)
-        target = self._homework_dir(bank_id).resolve()
-        if target.parent == self.root and target.exists():
-            shutil.rmtree(target)
+        if remove_files:
+            self.delete_question_bank_files(bank_id)
         return True
 
     def delete_question_bank_question(self, bank_id: str, question_id: str) -> bool:
@@ -4550,6 +4646,7 @@ def process_homework(
     layout_adapter: PDFExtractKitAdapter | Any | None = None,
     knowledge_aligner: Callable[[str, list[str]], dict[str, Any]] | None = None,
     _record_kind: str = "homework",
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> None:
     owned_client = False
     processing_dir: Path | None = None
@@ -4559,10 +4656,28 @@ def process_homework(
     source_reader = (
         store.question_bank_source_file if is_question_bank else store.source_file
     )
-    updater = store.update_question_bank if is_question_bank else store.update_homework
+    raw_updater = store.update_question_bank if is_question_bank else store.update_homework
     document_label = "题库" if is_question_bank else "作业"
+
+    def ensure_not_cancelled() -> None:
+        if is_question_bank and cancel_requested is not None and cancel_requested():
+            raise QuestionBankProcessingCancelled()
+
+    def updater(document_id: str, **updates: Any) -> None:
+        if is_question_bank:
+            if not store.update_question_bank_if_status(
+                document_id,
+                "processing",
+                **updates,
+            ):
+                raise QuestionBankProcessingCancelled()
+            return
+        raw_updater(document_id, **updates)
+
     try:
+        ensure_not_cancelled()
         raw, source_path = source_reader(homework_id)
+        ensure_not_cancelled()
         updater(
             homework_id,
             status="processing",
@@ -4581,6 +4696,9 @@ def process_homework(
                 base_url=settings.qwen_base_url,
             )
             owned_client = True
+        if is_question_bank and cancel_requested is not None:
+            client = _CancellationAwareVisionClient(client, ensure_not_cancelled)
+        ensure_not_cancelled()
         updater(
             homework_id,
             extraction_model=(
@@ -4601,6 +4719,7 @@ def process_homework(
         if processing_dir.exists():
             shutil.rmtree(processing_dir)
         pages = _render_source(source_path, processing_dir)
+        ensure_not_cancelled()
         updater(
             homework_id,
             page_count=len(pages),
@@ -4612,6 +4731,7 @@ def process_homework(
         warnings: list[str] = []
         previous_items: list[dict[str, Any]] = []
         for page_index, page in enumerate(pages, 1):
+            ensure_not_cancelled()
             with Image.open(page["path"]) as image:
                 regions = _normalized_regions(adapter, image)
                 page["regions"] = regions
@@ -4721,9 +4841,11 @@ def process_homework(
                 processing_progress=min(82, 8 + round(page_index / len(pages) * 74)),
                 processing_message=f"正在识别第 {page_index}/{len(pages)} 页",
             )
+            ensure_not_cancelled()
         if not all_items:
             raise RuntimeError("视觉模型没有识别出题目，请检查附件清晰度或模型配置")
 
+        ensure_not_cancelled()
         all_items, consolidation_warnings = _consolidate_question_keys(
             client,
             all_items,
@@ -4736,6 +4858,7 @@ def process_homework(
         warnings.extend(consolidation_warnings)
         if not all_items:
             raise RuntimeError("附件中没有识别到可直接布置的独立题目")
+        ensure_not_cancelled()
         _normalize_document_metadata(all_items)
         warnings.extend(_prune_cross_question_subquestion_copies(all_items))
         warnings.extend(_repair_implausible_question_key_reuse(all_items))
@@ -4756,6 +4879,7 @@ def process_homework(
             client, all_items, page_map
         )
         warnings.extend(missing_answer_figure_warnings)
+        ensure_not_cancelled()
         all_items, final_figure_assignment_warnings = _repair_figure_assignments(
             all_items, page_map
         )
@@ -4843,6 +4967,7 @@ def process_homework(
         for sequence, question in enumerate(
             sorted(grouped.values(), key=lambda item: int(item["first_seen"])), 1
         ):
+            ensure_not_cancelled()
             segments = question["segments"]
             layouts, figures, answer_figures = _save_question_assets(
                 assets_dir=assets_dir,
@@ -4884,6 +5009,7 @@ def process_homework(
             })
         warnings.extend(_prune_cross_question_answer_leakage(questions))
         if is_question_bank:
+            ensure_not_cancelled()
             points_by_id, knowledge_warnings = _extract_question_knowledge_points(
                 client,
                 questions,
@@ -4895,6 +5021,7 @@ def process_homework(
                 knowledge_base=str(raw.get("knowledge_base") or "default"),
                 knowledge_aligner=knowledge_aligner,
             )
+        ensure_not_cancelled()
         max_score = round(sum(_question_scoring_max(item) for item in questions), 2)
         updater(
             homework_id,
@@ -4909,17 +5036,34 @@ def process_homework(
             extraction_schema_version=5,
             processing_owner_pid=None,
         )
+    except QuestionBankProcessingCancelled:
+        logger.info("Question-bank extraction cancelled for %s", homework_id)
+        try:
+            current = store.get_raw_question_bank(homework_id)
+            if current.get("status") == "processing":
+                raw_updater(
+                    homework_id,
+                    status="cancelled",
+                    processing_error="",
+                    processing_message="已取消建立题库",
+                    processing_owner_pid=None,
+                )
+        except FileNotFoundError:
+            pass
     except Exception as exc:
         logger.exception("%s extraction failed for %s", document_label, homework_id)
         try:
-            updater(
-                homework_id,
-                status="error",
-                processing_error=_clean_text(exc, 1000),
-                processing_progress=0,
-                processing_message="识别失败",
-                processing_owner_pid=None,
-            )
+            if not is_question_bank or (
+                store.get_raw_question_bank(homework_id).get("status") == "processing"
+            ):
+                raw_updater(
+                    homework_id,
+                    status="error",
+                    processing_error=_clean_text(exc, 1000),
+                    processing_progress=0,
+                    processing_message="识别失败",
+                    processing_owner_pid=None,
+                )
         except Exception:
             logger.exception("Unable to persist homework extraction failure")
     finally:
@@ -4943,6 +5087,7 @@ def process_question_bank(
     client: QwenVisionClient | Any | None = None,
     layout_adapter: PDFExtractKitAdapter | Any | None = None,
     knowledge_aligner: Callable[[str, list[str]], dict[str, Any]] | None = None,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> None:
     process_homework(
         store,
@@ -4951,6 +5096,7 @@ def process_question_bank(
         layout_adapter=layout_adapter,
         knowledge_aligner=knowledge_aligner,
         _record_kind="question_bank",
+        cancel_requested=cancel_requested,
     )
 
 

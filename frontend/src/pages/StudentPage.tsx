@@ -88,6 +88,7 @@ import {
   addMistakeAnnotation,
   addScheduleItem,
   AttachmentInfo,
+  cancelQuestionBank,
   cancelKnowledgeBaseBuild,
   ChapterKnowledgeSummary,
   ConversationFocus,
@@ -2549,6 +2550,7 @@ const studentQuestionBankStatus = {
   processing: { label: '提取中', color: 'processing', icon: <LoaderCircle className="spin" size={13} /> },
   ready: { label: '可使用', color: 'success', icon: <CheckCircle2 size={13} /> },
   error: { label: '提取失败', color: 'error', icon: <AlertTriangle size={13} /> },
+  cancelled: { label: '已取消', color: 'default', icon: <CircleStop size={13} /> },
 } as const
 
 function questionBankTime(value: string) {
@@ -3046,7 +3048,7 @@ function QuestionBankView({
     }
   }
 
-  const runBankAction = async (bankId: string, action: 'retry' | 'delete') => {
+  const runBankAction = async (bankId: string, action: 'retry' | 'cancel' | 'delete') => {
     setActionId(bankId)
     try {
       if (action === 'retry') {
@@ -3054,6 +3056,10 @@ function QuestionBankView({
         toast.success('已重新开始识别题库')
         setQuestionPage(1)
         await loadBankPage(bankId, 1)
+      } else if (action === 'cancel') {
+        await cancelQuestionBank(bankId, studentId)
+        toast.success('已取消建立题库，附件仍保留，可稍后重新识别')
+        await loadBankPage(bankId, questionPage, false)
       } else {
         await deleteQuestionBank(bankId, studentId)
         closeBank()
@@ -3128,6 +3134,11 @@ function QuestionBankView({
                     <span><strong>{bank.question_count}</strong> 道题</span>
                     <span><strong>{bank.page_count || '—'}</strong> 页</span>
                   </div>
+                  {bank.status === 'processing' ? (
+                    <div className="question-bank-card-actions" onClick={(event) => event.stopPropagation()}>
+                      <Button size="small" danger icon={<CircleStop size={14} />} loading={actionId === bank.id} onClick={() => void runBankAction(bank.id, 'cancel')}>取消建立</Button>
+                    </div>
+                  ) : null}
                   <footer><span>{questionBankTime(bank.updated_at)} 更新</span><ChevronRight size={16} /></footer>
                 </article>
               )
@@ -3197,7 +3208,10 @@ function QuestionBankView({
               </div>
               <div>
                 {selectedBank.source_url ? <Button href={selectedBank.source_url} target="_blank" icon={<Eye size={15} />}>原始附件</Button> : null}
-                {selectedBank.status === 'error' ? (
+                {selectedBank.status === 'processing' ? (
+                  <Button danger icon={<CircleStop size={15} />} loading={actionId === selectedBank.id} onClick={() => void runBankAction(selectedBank.id, 'cancel')}>取消建立</Button>
+                ) : null}
+                {selectedBank.status === 'error' || selectedBank.status === 'cancelled' ? (
                   <Button type="primary" icon={<RefreshCw size={15} />} loading={actionId === selectedBank.id} onClick={() => void runBankAction(selectedBank.id, 'retry')}>重新识别</Button>
                 ) : null}
                 <Popconfirm

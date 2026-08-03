@@ -1,5 +1,6 @@
 import io
 import json
+import threading
 import os
 
 import fitz
@@ -350,6 +351,70 @@ def test_question_bank_is_durable_and_selected_questions_become_independent_home
     assert "answer" not in student["questions"][0]
     assert student["questions"][0]["origin_question_bank_id"] == bank_id
     assert student["questions"][0]["origin_question_id"] == question_id
+
+
+def test_question_bank_processing_stops_after_cancellation_signal(tmp_path):
+    store = HomeworkStore(tmp_path / "homework")
+    bank = store.create_question_bank(
+        title="待取消题库",
+        filename="questions.png",
+        content_type="image/png",
+        data=sample_image_bytes(),
+    )
+    cancel_event = threading.Event()
+
+    class CancellingVisionClient(FakeVisionClient):
+        def complete_json(self, prompt, *, image_bytes=None, image_mime="image/png"):
+            result = super().complete_json(
+                prompt,
+                image_bytes=image_bytes,
+                image_mime=image_mime,
+            )
+            cancel_event.set()
+            return result
+
+    extraction = CancellingVisionClient({"items": [], "warnings": []})
+    process_question_bank(
+        store,
+        bank["id"],
+        client=extraction,
+        layout_adapter=FakeLayoutAdapter(),
+        cancel_requested=cancel_event.is_set,
+    )
+
+    cancelled = store.get_raw_question_bank(bank["id"])
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["processing_message"] == "已取消建立题库"
+    assert cancelled["processing_error"] == ""
+    assert len(extraction.calls) == 1
+    assert not (store.root / bank["id"] / "processing").exists()
+
+
+def test_cancelled_question_bank_can_be_deferred_then_cleaned(tmp_path):
+    store = HomeworkStore(tmp_path / "homework")
+    bank = store.create_question_bank(
+        title="稍后清理题库",
+        filename="questions.png",
+        content_type="image/png",
+        data=sample_image_bytes(),
+    )
+    bank_dir = store.root / bank["id"]
+
+    assert store.cancel_question_bank(bank["id"]) is True
+    assert store.get_question_bank(bank["id"])["status"] == "cancelled"
+    assert store.update_question_bank_if_status(
+        bank["id"],
+        "processing",
+        status="ready",
+    ) is False
+    assert store.get_question_bank(bank["id"])["status"] == "cancelled"
+    assert store.cancel_question_bank(bank["id"]) is True
+    assert store.delete_question_bank(bank["id"], remove_files=False) is True
+    assert bank_dir.exists()
+    assert not store.question_bank_exists(bank["id"])
+
+    store.delete_question_bank_files(bank["id"])
+    assert not bank_dir.exists()
 
 
 def test_private_question_banks_are_scoped_and_expose_answer_readiness(tmp_path):

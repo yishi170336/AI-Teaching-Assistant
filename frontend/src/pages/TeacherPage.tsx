@@ -27,8 +27,10 @@ import {
   Sparkles,
   Trash2,
   UploadCloud,
+  XCircle,
 } from 'lucide-react'
 import {
+  cancelQuestionBank,
   createHomework,
   createHomeworkFromQuestionBank,
   createQuestionBank,
@@ -89,6 +91,7 @@ const questionBankStatus = {
   processing: { label: '提取中', color: 'processing', icon: <LoaderCircle className="spin" size={13} /> },
   ready: { label: '可选题', color: 'success', icon: <CheckCircle2 size={13} /> },
   error: { label: '提取失败', color: 'error', icon: <AlertTriangle size={13} /> },
+  cancelled: { label: '已取消', color: 'default', icon: <XCircle size={13} /> },
 } as const
 
 const bankQuestionKey = (bankId: string, questionId: string) => `${bankId}:${questionId}`
@@ -851,12 +854,15 @@ export default function TeacherPage() {
     }
   }
 
-  const runBankAction = async (bankId: string, action: 'retry' | 'delete') => {
+  const runBankAction = async (bankId: string, action: 'retry' | 'cancel' | 'delete') => {
     setBankActionId(bankId)
     try {
       if (action === 'retry') {
         await reprocessQuestionBank(bankId)
         message.success('已重新开始识别题库')
+      } else if (action === 'cancel') {
+        await cancelQuestionBank(bankId)
+        message.success('已取消建立题库，附件仍保留，可稍后重新识别')
       } else {
         await deleteQuestionBank(bankId)
         setBankDetailId(null)
@@ -1012,10 +1018,20 @@ export default function TeacherPage() {
                       <span><strong>{bank.page_count || '—'}</strong> 页</span>
                     </div>
                     <div className="question-bank-card-actions" onClick={(event) => event.stopPropagation()}>
-                      <Button size="small" loading={bankActionId === bank.id} onClick={() => void maintainBankTags(bank.id)}>重新维护标签</Button>
-                      <Button size="small" type={bank.recommendation_enabled ? 'primary' : 'default'} loading={bankActionId === bank.id} onClick={() => void toggleRecommendationBank(bank)}>
-                        {bank.recommendation_enabled ? '关闭推荐' : '启用推荐'}
-                      </Button>
+                      {bank.status === 'processing' ? (
+                        <Button size="small" danger icon={<XCircle size={14} />} loading={bankActionId === bank.id} onClick={() => void runBankAction(bank.id, 'cancel')}>取消建立</Button>
+                      ) : null}
+                      {bank.status === 'error' || bank.status === 'cancelled' ? (
+                        <Button size="small" icon={<RefreshCw size={14} />} loading={bankActionId === bank.id} onClick={() => void runBankAction(bank.id, 'retry')}>重新识别</Button>
+                      ) : null}
+                      {bank.status === 'ready' ? (
+                        <>
+                          <Button size="small" loading={bankActionId === bank.id} onClick={() => void maintainBankTags(bank.id)}>重新维护标签</Button>
+                          <Button size="small" type={bank.recommendation_enabled ? 'primary' : 'default'} loading={bankActionId === bank.id} onClick={() => void toggleRecommendationBank(bank)}>
+                            {bank.recommendation_enabled ? '关闭推荐' : '启用推荐'}
+                          </Button>
+                        </>
+                      ) : null}
                     </div>
                     <footer><span>{formatTime(bank.updated_at)} 更新</span><ChevronRight size={16} /></footer>
                   </article>
@@ -1227,7 +1243,10 @@ export default function TeacherPage() {
                 {bankDetail.status === 'ready' && bankDetail.questions.length > 0 && (
                   <Button type="primary" icon={<BookOpenCheck size={15} />} onClick={() => { setBankDetailId(null); setCreateMode('bank'); setUploadOpen(true) }}>选择题目布置</Button>
                 )}
-                {bankDetail.status === 'error' && (
+                {bankDetail.status === 'processing' && (
+                  <Button danger icon={<XCircle size={15} />} loading={bankActionId === bankDetail.id} onClick={() => void runBankAction(bankDetail.id, 'cancel')}>取消建立</Button>
+                )}
+                {(bankDetail.status === 'error' || bankDetail.status === 'cancelled') && (
                   <Button type="primary" icon={<RefreshCw size={15} />} loading={bankActionId === bankDetail.id} onClick={() => void runBankAction(bankDetail.id, 'retry')}>重新识别</Button>
                 )}
                 <Popconfirm title="删除整本题库？" description="题库文件和题目将删除；已布置的作业不会受影响。" okText="删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={() => void runBankAction(bankDetail.id, 'delete')}>

@@ -333,7 +333,7 @@ export type ScheduleItem = {
 export type ScheduleItemDraft = Pick<ScheduleItem, 'title' | 'date' | 'time' | 'category' | 'note'>
 
 export type HomeworkStatus = 'processing' | 'draft' | 'published' | 'error'
-export type QuestionBankStatus = 'processing' | 'ready' | 'error'
+export type QuestionBankStatus = 'processing' | 'ready' | 'error' | 'cancelled'
 export type HomeworkSubmissionStatus = 'submitted' | 'grading' | 'graded' | 'review_required' | 'error'
 
 export type HomeworkAsset = {
@@ -1267,6 +1267,15 @@ export async function reprocessQuestionBank(bankId: string, studentId = ''): Pro
     method: 'POST',
   })
   await homeworkResponse(response, '重新识别题库失败')
+}
+
+export async function cancelQuestionBank(bankId: string, studentId = ''): Promise<QuestionBank> {
+  const query = studentId ? `?student_id=${encodeURIComponent(studentId)}` : ''
+  const response = await fetch(`/api/question-banks/${encodeURIComponent(bankId)}/cancel${query}`, {
+    method: 'POST',
+  })
+  const result = await homeworkResponse<{ question_bank: QuestionBank }>(response, '取消建立题库失败')
+  return result.question_bank
 }
 
 export async function retagQuestionBank(bankId: string): Promise<void> {

@@ -7,6 +7,7 @@ import json
 import logging
 import mimetypes
 import re
+import threading
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -123,6 +124,73 @@ student_schedule = StudentSchedule()
 homework_store = HomeworkStore()
 question_recommendations = QuestionRecommendationService(homework_store)
 engine = CircuitTutorEngine(ollama, knowledge_bases, question_recommendations)
+
+
+class QuestionBankTaskRegistry:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._tasks: dict[str, threading.Event] = {}
+
+    def prepare(self, bank_id: str) -> threading.Event:
+        with self._lock:
+            if bank_id in self._tasks:
+                raise RuntimeError("题库识别任务仍在运行，请稍后再试")
+            cancel_event = threading.Event()
+            self._tasks[bank_id] = cancel_event
+            return cancel_event
+
+    def cancel(self, bank_id: str) -> bool:
+        with self._lock:
+            cancel_event = self._tasks.get(bank_id)
+            if cancel_event is None:
+                return False
+            cancel_event.set()
+            return True
+
+    def finish(self, bank_id: str, cancel_event: threading.Event) -> None:
+        with self._lock:
+            if self._tasks.get(bank_id) is cancel_event:
+                self._tasks.pop(bank_id, None)
+
+    def is_active(self, bank_id: str) -> bool:
+        with self._lock:
+            return bank_id in self._tasks
+
+    def cancel_all(self) -> None:
+        with self._lock:
+            for cancel_event in self._tasks.values():
+                cancel_event.set()
+
+
+question_bank_tasks = QuestionBankTaskRegistry()
+
+
+def _run_question_bank_processing(
+    bank_id: str,
+    cancel_event: threading.Event,
+) -> None:
+    def cancel_requested() -> bool:
+        if cancel_event.is_set():
+            return True
+        try:
+            return homework_store.get_raw_question_bank(bank_id).get("status") != "processing"
+        except FileNotFoundError:
+            return True
+
+    try:
+        process_question_bank(
+            homework_store,
+            bank_id,
+            knowledge_aligner=mistake_knowledge.align,
+            cancel_requested=cancel_requested,
+        )
+    finally:
+        question_bank_tasks.finish(bank_id, cancel_event)
+        try:
+            if not homework_store.question_bank_exists(bank_id):
+                homework_store.delete_question_bank_files(bank_id)
+        except Exception:
+            logger.exception("Unable to clean deleted question-bank files for %s", bank_id)
 
 
 def _focus_identifier(seed: str) -> str:
@@ -305,6 +373,7 @@ async def lifespan(_: FastAPI):
     knowledge_bases.load_existing()
     await memory.connect()
     yield
+    question_bank_tasks.cancel_all()
     await ollama.close()
     await memory.close()
     knowledge_bases.close_all()
@@ -2012,10 +2081,9 @@ async def create_question_bank(
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     background_tasks.add_task(
-        process_question_bank,
-        homework_store,
+        _run_question_bank_processing,
         str(bank["id"]),
-        knowledge_aligner=mistake_knowledge.align,
+        question_bank_tasks.prepare(str(bank["id"])),
     )
     return {
         "ok": True,
@@ -2324,22 +2392,55 @@ async def reprocess_question_bank(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if bank.get("status") == "processing":
         raise HTTPException(status_code=409, detail="题库正在识别中")
-    await asyncio.to_thread(
-        homework_store.update_question_bank,
-        bank_id,
-        status="processing",
-        processing_error="",
-        processing_warnings=[],
-        processing_progress=0,
-        processing_message="等待重新识别题库",
-    )
+    try:
+        cancel_event = question_bank_tasks.prepare(bank_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    try:
+        await asyncio.to_thread(
+            homework_store.update_question_bank,
+            bank_id,
+            status="processing",
+            processing_error="",
+            processing_warnings=[],
+            processing_progress=0,
+            processing_message="等待重新识别题库",
+        )
+    except Exception:
+        question_bank_tasks.finish(bank_id, cancel_event)
+        raise
     background_tasks.add_task(
-        process_question_bank,
-        homework_store,
+        _run_question_bank_processing,
         bank_id,
-        knowledge_aligner=mistake_knowledge.align,
+        cancel_event,
     )
     return {"ok": True, "message": "已重新开始识别题库"}
+
+
+@app.post("/api/question-banks/{bank_id}/cancel")
+async def cancel_question_bank(
+    bank_id: str,
+    student_id: str = "",
+) -> dict[str, Any]:
+    try:
+        homework_store.get_question_bank(bank_id, student_id=student_id)
+        cancelled = await asyncio.to_thread(
+            homework_store.cancel_question_bank,
+            bank_id,
+        )
+        question_bank_tasks.cancel(bank_id)
+        bank = homework_store.get_question_bank(bank_id, student_id=student_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not cancelled:
+        raise HTTPException(status_code=409, detail="题库当前没有正在运行的建立任务")
+    return {
+        "ok": True,
+        "question_bank": bank,
+        "message": "已取消建立题库，可稍后重新识别或删除附件",
+    }
 
 
 @app.delete("/api/question-banks/{bank_id}/questions/{question_id}")
@@ -2368,7 +2469,14 @@ async def delete_question_bank_question(
 async def delete_question_bank(bank_id: str, student_id: str = "") -> dict[str, Any]:
     try:
         homework_store.get_question_bank(bank_id, student_id=student_id)
-        deleted = await asyncio.to_thread(homework_store.delete_question_bank, bank_id)
+        task_active = question_bank_tasks.cancel(bank_id)
+        deleted = await asyncio.to_thread(
+            homework_store.delete_question_bank,
+            bank_id,
+            remove_files=not task_active,
+        )
+        if task_active and not question_bank_tasks.is_active(bank_id):
+            await asyncio.to_thread(homework_store.delete_question_bank_files, bank_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not deleted:
