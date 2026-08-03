@@ -110,7 +110,8 @@ class QwenImageClient:
             },
             "parameters": {
                 "negative_prompt": (
-                    "低分辨率，文字模糊，错别字，乱码，文字重叠，内容被裁切，"
+                    "低分辨率，文字模糊，错别字，乱码，伪文字，公式错误，文字重叠，"
+                    "内容被裁切，重复模块，错误编号，多余卡片，空白卡片，擅自添加教学目标，"
                     "拥挤杂乱，过度留白，低对比度，3D写实人物，水印，品牌标志，二维码"
                 ),
                 "prompt_extend": False,
@@ -649,26 +650,42 @@ def build_page_prompt(
     chinese_ordinals = "一二三四五六七八九十"
     page_index = int(page["index"])
     ordinal = chinese_ordinals[page_index - 1] if 1 <= page_index <= 10 else str(page_index)
-    modules = "\n".join(
+    visible_modules = "\n".join(
         (
-            f"模块{index}（{section['accent']}强调色）：标题“{section['heading']}”；"
-            f"正文“{section['body']}”；配图“{section['visual']}”。"
+            f"模块{index}：标题“{section['heading']}”；正文“{section['body']}”。"
         )
         for index, section in enumerate(page["sections"], start=1)
     )
+    visual_modules = "\n".join(
+        (
+            f"模块{index}配图：{section['visual']}；{section['accent']}标题条。"
+        )
+        for index, section in enumerate(page["sections"], start=1)
+    )
+    module_count = len(page["sections"])
     return f"""
-生成一张中文课程知识讲解信息图，横向 16:9，专业教学幻灯片，适合高清屏幕阅读。
+【01 最终成品】
+横向 16:9 中文理工科知识信息图，单页教学幻灯片；紧凑、清晰、图文并茂，不是网页截图。
 
-必须准确呈现以下文字，不得改写、增删、重复或制造其他文字：
-左上角页码“{page_index}/{page_count}”
-主标题“{lesson_title}（{ordinal}）：{page['title']}”
-副标题“{page['subtitle']}”
-{modules}
-页底总结“{page['key_takeaway']}”
+【02 可见信息与层级】
+以下是画面中唯一允许出现的文案白名单，其他简报说明不得入图。须逐字准确，不得改写、增删、重复或造字。
 
-视觉设计：参考高质量中文理工科教学信息图。纯白到极浅蓝灰背景，深海军蓝主标题，亮钴蓝分区标题；圆角细蓝边卡片组成严谨的 12 栏网格。上方标题区约占 14%，中部内容区约占 72%，底部深蓝圆角总结条约占 10%。排版紧凑但不拥挤，内容模块按信息关系灵活使用 2 到 3 列，不要平均分成呆板方格。关键术语或数值用红、绿、橙少量强调。使用清晰的无衬线中文字体，数学符号用规范衬线体。
+一级信息：左上角页码“{page_index}/{page_count}”；顶部居中主标题“{lesson_title}（{ordinal}）：{page['title']}”。
+二级信息：主标题正下方副标题“{page['subtitle']}”。
+三级信息：中部必须恰好放置 {module_count} 张内容卡片，每张卡片只出现一次且编号连续：
+{visible_modules}
+四级信息：底部通栏总结“{page['key_takeaway']}”。
 
-每个模块都要图文并茂：把指定配图绘制为简洁准确的二维矢量示意图、曲线、流程、对比表、结构图或图标，并让图示紧邻对应文字。图示约占画面 35%，文字约占 65%。保持足够字号和行距，任何正文不得小于视觉上的 18px。背景可有极淡的学科线稿纹理，但不能干扰阅读。不使用照片，不出现人物，不出现品牌、水印、二维码、页脚版权信息。整套风格统一、现代、可信、适合课堂讲解。
+位置：标题区顶部 14%，卡片区中部 72%，深蓝总结条底部 10%。不得增加“教学目标”“总结”“10%”等标签或额外卡片。
 
-整组学习主线为“{lesson_subtitle}”。本页教学目标是“{page['learning_goal']}”。请用构图和图示强化这个目标。
+【03 语言和文字优先级】
+只用简体中文，准确性高于装饰。优先保证主标题、页码、编号、公式和总结，再保证卡片文字。中文用清晰无衬线体；公式保留符号、上下标与括号。正文不小于视觉 18px。图内仅写明示变量、坐标和数值，不生成伪文字。
+
+【04 视觉方向与必须保留的细节】
+白到浅蓝灰背景，海军蓝主标题、钴蓝分区标题、细蓝边圆角卡片、12 栏网格。{module_count} 个模块排成 2 至 3 列并对齐；少量红、绿、橙强调。
+
+每张卡片须有标题、正文及相邻二维矢量图；图约 35%，文字约 65%。绘图说明不得整句入图：
+{visual_modules}
+
+背景仅可有淡线稿。不要照片、人物、3D、品牌、水印、二维码或版权信息；不得裁字、压字。
 """.strip()

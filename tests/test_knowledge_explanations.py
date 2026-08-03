@@ -157,6 +157,8 @@ def test_qwen_image_client_uses_native_payload_and_does_not_leak_key_to_oss() ->
             assert payload["parameters"]["prompt_extend"] is False
             assert payload["parameters"]["watermark"] is False
             assert payload["parameters"]["size"] == "2688*1536"
+            assert "重复模块" in payload["parameters"]["negative_prompt"]
+            assert "擅自添加教学目标" in payload["parameters"]["negative_prompt"]
             return httpx.Response(
                 200,
                 json={
@@ -221,8 +223,15 @@ def test_page_prompt_preserves_exact_copy_and_compact_visual_rules() -> None:
     assert "2/6" in prompt
     assert "C = B log₂(1 + S/N)" in prompt
     assert "12 栏网格" in prompt
-    assert "图文并茂" in prompt
+    assert "【01 最终成品】" in prompt
+    assert "【02 可见信息与层级】" in prompt
+    assert "【03 语言和文字优先级】" in prompt
+    assert "【04 视觉方向与必须保留的细节】" in prompt
+    assert "必须恰好放置 1 张内容卡片" in prompt
+    assert "唯一允许出现的文案白名单" in prompt
     assert "不得改写、增删、重复" in prompt
+    assert "能解释公式中每个量" not in prompt
+    assert "从通信约束到信道容量" not in prompt
 
 
 def test_explanation_request_rejects_non_qwen_image_model() -> None:
