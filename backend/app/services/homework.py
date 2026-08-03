@@ -578,10 +578,65 @@ class HomeworkStore:
         asset: dict[str, Any],
         *,
         asset_scope: str = "homeworks",
+        student_id: str = "",
     ) -> dict[str, Any]:
         value = dict(asset)
         value["url"] = f"/api/{asset_scope}/{homework_id}/assets/{asset['file']}"
+        if student_id and asset_scope == "question-banks":
+            value["url"] += f"?student_id={student_id}"
         return value
+
+    @staticmethod
+    def _can_access_question_bank(bank: dict[str, Any], student_id: str) -> bool:
+        owner = _clean_text(bank.get("owner_student_id"), 96)
+        return not owner or bool(student_id and owner == student_id)
+
+    @staticmethod
+    def _question_answer_readiness(
+        question: dict[str, Any],
+        warnings: list[str],
+    ) -> dict[str, Any]:
+        reasons: list[str] = []
+        prompt = _clean_text(question.get("prompt"), 24000)
+        subquestions = _normalize_labeled_parts(question.get("subquestions"))
+        options = _normalize_options(question.get("options"))
+        figures = [
+            item for item in question.get("figures", [])
+            if isinstance(item, dict) and item.get("file")
+        ]
+        if not prompt and not subquestions:
+            reasons.append("缺少题干")
+        if _question_type(question.get("question_type")) == "choice" and len(options) < 2:
+            reasons.append("选择题选项不足")
+        combined = _compose_labeled_text(prompt, subquestions)
+        if re.search(
+            r"如图|见图|下图|图示|图\s*[A-Za-z0-9一二三四五六七八九十.()（）-]+",
+            combined,
+        ) and not figures:
+            reasons.append("题干引用了题图，但题图未提取")
+        number = _clean_text(question.get("number"), 80)
+        page_start = question.get("page_start")
+        page_end = question.get("page_end")
+        for warning in warnings:
+            warning_text = _clean_text(warning, 240)
+            if not warning_text:
+                continue
+            linked = bool(number and re.search(rf"(?:第\s*)?{re.escape(number)}\s*题", warning_text))
+            if not linked and page_start:
+                for page in range(int(page_start), int(page_end or page_start) + 1):
+                    if f"第 {page} 页" in warning_text or f"第{page}页" in warning_text:
+                        linked = True
+                        break
+            if linked and any(
+                keyword in warning_text
+                for keyword in ("风险", "缺少", "失败", "错位", "未提取", "不完整", "归属")
+            ):
+                reasons.append(f"抽取警告：{warning_text}")
+        reasons = list(dict.fromkeys(reasons))
+        return {
+            "status": "needs_confirmation" if reasons else "ready",
+            "reasons": reasons,
+        }
 
     def _public_question(
         self,
@@ -590,6 +645,8 @@ class HomeworkStore:
         *,
         include_answers: bool,
         asset_scope: str = "homeworks",
+        student_id: str = "",
+        processing_warnings: list[str] | None = None,
     ) -> dict[str, Any]:
         result = {
             key: question.get(key)
@@ -598,7 +655,7 @@ class HomeworkStore:
                 "prompt", "subquestions", "options", "option_columns", "figure_position", "points",
                 "page_start", "page_end", "sequence", "origin_question_bank_id",
                 "origin_question_id", "knowledge_points", "knowledge_tags", "location",
-                "prerequisites",
+                "prerequisites", "retrieval_profile",
             )
         }
         for provenance_key in ("origin_question_bank_id", "origin_question_id"):
@@ -611,12 +668,12 @@ class HomeworkStore:
         result["option_columns"] = _option_columns(result.get("option_columns"))
         result["figure_position"] = _figure_position(result.get("figure_position"))
         result["layout_images"] = [
-            self._asset_url(homework_id, item, asset_scope=asset_scope)
+            self._asset_url(homework_id, item, asset_scope=asset_scope, student_id=student_id)
             for item in question.get("layout_images", [])
             if isinstance(item, dict) and item.get("file")
         ]
         result["figures"] = [
-            self._asset_url(homework_id, item, asset_scope=asset_scope)
+            self._asset_url(homework_id, item, asset_scope=asset_scope, student_id=student_id)
             for item in question.get("figures", [])
             if isinstance(item, dict) and item.get("file")
         ]
@@ -633,11 +690,16 @@ class HomeworkStore:
                 question.get("answer_subquestions")
             )
             result["answer_figures"] = [
-                self._asset_url(homework_id, item, asset_scope=asset_scope)
+                self._asset_url(homework_id, item, asset_scope=asset_scope, student_id=student_id)
                 for item in question.get("answer_figures", [])
                 if isinstance(item, dict) and item.get("file")
             ]
             result["rubric"] = str(question.get("rubric", ""))
+        if asset_scope == "question-banks":
+            result["answer_readiness"] = self._question_answer_readiness(
+                question,
+                processing_warnings or [],
+            )
         return result
 
     def _public_submission(self, submission: dict[str, Any]) -> dict[str, Any]:
@@ -711,6 +773,7 @@ class HomeworkStore:
         include_questions: bool = True,
         question_offset: int = 0,
         question_limit: int | None = None,
+        student_id: str = "",
     ) -> dict[str, Any]:
         bank_id = str(bank["id"])
         result = {
@@ -720,9 +783,20 @@ class HomeworkStore:
                 "extraction_model", "processing_error", "processing_warnings",
                 "processing_progress", "processing_message", "page_count", "max_score",
                 "knowledge_base",
+                "owner_student_id", "source_origin", "recommendation_enabled",
+                "tagging_status", "tagging_progress", "tagging_message",
+                "tagging_error", "tagging_warnings", "tagging_version",
             )
         }
         result["knowledge_base"] = str(result.get("knowledge_base") or "default")
+        if not isinstance(result.get("recommendation_enabled"), bool):
+            result["recommendation_enabled"] = (
+                str(bank.get("title", "")).strip() == "电子电路基础学习指导书"
+                and len(bank.get("questions", [])) >= 300
+            )
+        result["tagging_status"] = str(result.get("tagging_status") or "idle")
+        result["tagging_progress"] = int(result.get("tagging_progress") or 0)
+        result["tagging_warnings"] = list(result.get("tagging_warnings") or [])
         questions = [
             question
             for question in bank.get("questions", [])
@@ -752,6 +826,8 @@ class HomeworkStore:
                     question,
                     include_answers=True,
                     asset_scope="question-banks",
+                    student_id=student_id,
+                    processing_warnings=list(bank.get("processing_warnings", [])),
                 )
                 for question in page
             ]
@@ -760,6 +836,8 @@ class HomeworkStore:
             result["has_more"] = question_offset + len(page) < len(questions)
         if bank.get("source_file"):
             result["source_url"] = f"/api/question-banks/{bank_id}/source"
+            if student_id:
+                result["source_url"] += f"?student_id={student_id}"
         return result
 
     def create_homework(
@@ -819,6 +897,8 @@ class HomeworkStore:
         content_type: str | None,
         data: bytes,
         knowledge_base: str = "default",
+        owner_student_id: str = "",
+        source_origin: str = "question_bank",
     ) -> dict[str, Any]:
         safe_name = Path(filename).name or "question-bank.pdf"
         suffix = Path(safe_name).suffix.lower()
@@ -845,6 +925,15 @@ class HomeworkStore:
             "processing_progress": 0,
             "processing_message": "等待开始识别题库",
             "knowledge_base": _clean_text(knowledge_base, 48) or "default",
+            "owner_student_id": _clean_text(owner_student_id, 96),
+            "source_origin": _clean_text(source_origin, 48) or "question_bank",
+            "recommendation_enabled": False,
+            "tagging_status": "idle",
+            "tagging_progress": 0,
+            "tagging_message": "",
+            "tagging_error": "",
+            "tagging_warnings": [],
+            "tagging_version": "",
             "page_count": 0,
             "max_score": 0,
             "questions": [],
@@ -853,12 +942,13 @@ class HomeworkStore:
             state = self._read()
             state["question_banks"].append(item)
             self._write(state)
-        return self.get_question_bank(bank_id)
+        return self.get_question_bank(bank_id, student_id=owner_student_id)
 
     def list_question_banks(
         self,
         *,
         include_questions: bool = True,
+        student_id: str = "",
     ) -> list[dict[str, Any]]:
         with self._lock:
             items = self._read()["question_banks"]
@@ -866,10 +956,44 @@ class HomeworkStore:
             self._public_question_bank(
                 item,
                 include_questions=include_questions,
+                student_id=student_id,
             )
             for item in items
+            if self._can_access_question_bank(item, student_id)
         ]
         return sorted(result, key=lambda item: str(item.get("created_at", "")), reverse=True)
+
+    def list_recommendation_banks(self, *, student_id: str) -> list[dict[str, Any]]:
+        """Return raw, accessible banks that are explicitly or compatibly enabled."""
+        self.validate_student_id(student_id)
+        with self._lock:
+            banks = self._read()["question_banks"]
+        return [
+            json.loads(json.dumps(bank, ensure_ascii=False))
+            for bank in banks
+            if self._can_access_question_bank(bank, student_id)
+            and bank.get("status") == "ready"
+            and (
+                bank.get("recommendation_enabled") is True
+                or (
+                    "recommendation_enabled" not in bank
+                    and str(bank.get("title", "")).strip() == "电子电路基础学习指导书"
+                    and len(bank.get("questions", [])) >= 300
+                )
+            )
+        ]
+
+    def public_question_for_recommendation(
+        self,
+        bank_id: str,
+        question_id: str,
+        *,
+        student_id: str,
+    ) -> dict[str, Any]:
+        context = self.get_question_answer_context(
+            bank_id, question_id, student_id=student_id
+        )
+        return context["question"]
 
     def get_question_bank(
         self,
@@ -877,6 +1001,7 @@ class HomeworkStore:
         *,
         question_offset: int = 0,
         question_limit: int | None = None,
+        student_id: str = "",
     ) -> dict[str, Any]:
         self.validate_homework_id(bank_id)
         if question_offset < 0:
@@ -894,11 +1019,69 @@ class HomeworkStore:
             )
         if item is None:
             raise FileNotFoundError("题库不存在")
+        if not self._can_access_question_bank(item, student_id):
+            raise FileNotFoundError("题库不存在或无权访问")
         return self._public_question_bank(
             item,
             question_offset=question_offset,
             question_limit=question_limit,
+            student_id=student_id,
         )
+
+    def get_question_answer_context(
+        self,
+        bank_id: str,
+        question_id: str,
+        *,
+        student_id: str,
+    ) -> dict[str, Any]:
+        raw = self.get_raw_question_bank(bank_id)
+        if not self._can_access_question_bank(raw, student_id):
+            raise FileNotFoundError("题库不存在或无权访问")
+        question = next(
+            (
+                item for item in raw.get("questions", [])
+                if isinstance(item, dict) and item.get("id") == question_id
+            ),
+            None,
+        )
+        if question is None:
+            raise FileNotFoundError("题目不存在")
+        public = self._public_question(
+            bank_id,
+            question,
+            include_answers=False,
+            asset_scope="question-banks",
+            student_id=student_id,
+            processing_warnings=list(raw.get("processing_warnings", [])),
+        )
+        reference = {
+            "answer": str(question.get("answer", "")),
+            "answer_subquestions": _normalize_labeled_parts(question.get("answer_subquestions")),
+            "rubric": str(question.get("rubric", "")),
+            "answer_figures": [
+                {
+                    **dict(item),
+                    "path": str(self.question_bank_asset_file(bank_id, str(item["file"]))),
+                }
+                for item in question.get("answer_figures", [])
+                if isinstance(item, dict) and item.get("file")
+            ],
+        }
+        return {
+            "question_ref": {
+                "kind": "question_bank",
+                "question_bank_id": bank_id,
+                "question_id": question_id,
+            },
+            "bank": {
+                "id": bank_id,
+                "title": str(raw.get("title", "")),
+                "knowledge_base": str(raw.get("knowledge_base") or "default"),
+            },
+            "question": public,
+            "reference": reference,
+        }
 
     def get_raw_question_bank(self, bank_id: str) -> dict[str, Any]:
         self.validate_homework_id(bank_id)
@@ -1017,6 +1200,7 @@ class HomeworkStore:
             "section_key", "section_title", "number", "question_type", "prompt",
             "subquestions", "options", "option_columns", "figure_position", "points",
             "answer", "answer_subquestions", "rubric", "figures", "answer_figures",
+            "retrieval_profile",
         }
         unknown = set(updates) - allowed_fields
         if unknown:
@@ -1066,6 +1250,61 @@ class HomeworkStore:
                 )
             if "rubric" in updates:
                 question["rubric"] = _clean_text(updates["rubric"], 12000)
+            if "retrieval_profile" in updates:
+                raw_profile = updates["retrieval_profile"]
+                if not isinstance(raw_profile, dict):
+                    raise ValueError("检索标签必须是结构化对象")
+                profile = {
+                    "knowledge_points": list(dict.fromkeys(
+                        _clean_text(item, 80)
+                        for item in raw_profile.get("knowledge_points", [])
+                        if _clean_text(item, 80)
+                    ))[:16],
+                    "question_type": _clean_text(raw_profile.get("question_type"), 40),
+                    "difficulty": _clean_text(raw_profile.get("difficulty"), 20),
+                    "skills": list(dict.fromkeys(
+                        _clean_text(item, 80)
+                        for item in raw_profile.get("skills", [])
+                        if _clean_text(item, 80)
+                    ))[:12],
+                    "components": list(dict.fromkeys(
+                        _clean_text(item, 80)
+                        for item in raw_profile.get("components", [])
+                        if _clean_text(item, 80)
+                    ))[:12],
+                    "methods": list(dict.fromkeys(
+                        _clean_text(item, 80)
+                        for item in raw_profile.get("methods", [])
+                        if _clean_text(item, 80)
+                    ))[:12],
+                    "circuit_functions": list(dict.fromkeys(
+                        _clean_text(item, 80)
+                        for item in raw_profile.get("circuit_functions", [])
+                        if _clean_text(item, 80)
+                    ))[:12],
+                    "tasks": list(dict.fromkeys(
+                        _clean_text(item, 80)
+                        for item in raw_profile.get("tasks", [])
+                        if _clean_text(item, 80)
+                    ))[:12],
+                    "chapter": _clean_text(raw_profile.get("chapter"), 160),
+                    "section": _clean_text(raw_profile.get("section"), 160),
+                    "source": "manual",
+                    "version": _clean_text(raw_profile.get("version"), 40) or "2026.07",
+                    "confidence": min(1.0, max(0.0, _as_float(raw_profile.get("confidence", 1)))),
+                    "status": "manual",
+                    "manual_fields": list(dict.fromkeys(
+                        _clean_text(item, 40)
+                        for item in raw_profile.get("manual_fields", [])
+                        if _clean_text(item, 40)
+                    )) or [
+                        "knowledge_points", "question_type", "difficulty", "skills",
+                        "components", "methods", "circuit_functions", "tasks", "chapter", "section",
+                    ],
+                }
+                if profile["difficulty"] not in {"basic", "intermediate", "advanced"}:
+                    raise ValueError("难度标签不合法")
+                question["retrieval_profile"] = profile
             for field in ("figures", "answer_figures"):
                 if field not in updates:
                     continue
@@ -1099,6 +1338,101 @@ class HomeworkStore:
             document["updated_at"] = _now()
             self._write(state)
             return json.loads(json.dumps(question, ensure_ascii=False))
+
+    def update_question_bank_recommendation(
+        self,
+        bank_id: str,
+        *,
+        recommendation_enabled: bool,
+    ) -> dict[str, Any]:
+        bank_id = self.validate_homework_id(bank_id)
+        with self._lock:
+            state = self._read()
+            bank = next(
+                (item for item in state["question_banks"] if item.get("id") == bank_id),
+                None,
+            )
+            if bank is None:
+                raise FileNotFoundError("题库不存在")
+            bank["recommendation_enabled"] = bool(recommendation_enabled)
+            bank["updated_at"] = _now()
+            self._write(state)
+        return self.get_question_bank(bank_id, student_id="")
+
+    def rebuild_question_bank_retrieval_profiles(
+        self,
+        bank_id: str,
+        *,
+        progress: Callable[[int, str], None] | None = None,
+    ) -> dict[str, Any]:
+        """Persist deterministic profiles; manual fields remain authoritative."""
+        from backend.app.services.question_recommendations import (
+            PROFILE_VERSION,
+            build_retrieval_profile,
+        )
+
+        bank_id = self.validate_homework_id(bank_id)
+        with self._lock:
+            state = self._read()
+            bank = next(
+                (item for item in state["question_banks"] if item.get("id") == bank_id),
+                None,
+            )
+            if bank is None:
+                raise FileNotFoundError("题库不存在")
+            bank.update({
+                "tagging_status": "processing",
+                "tagging_progress": 0,
+                "tagging_message": "正在整理检索标签",
+                "tagging_error": "",
+                "tagging_warnings": [],
+            })
+            self._write(state)
+        try:
+            with self._lock:
+                state = self._read()
+                bank = next(item for item in state["question_banks"] if item.get("id") == bank_id)
+                questions = [item for item in bank.get("questions", []) if isinstance(item, dict)]
+                total = max(1, len(questions))
+                review_count = 0
+                for index, question in enumerate(questions, start=1):
+                    profile = build_retrieval_profile(question)
+                    if profile.get("status") == "needs_review":
+                        review_count += 1
+                    question["retrieval_profile"] = profile
+                    if index % 20 == 0 or index == len(questions):
+                        bank["tagging_progress"] = round(index * 100 / total)
+                        bank["tagging_message"] = f"已整理 {index}/{len(questions)} 道题"
+                        if progress:
+                            progress(bank["tagging_progress"], bank["tagging_message"])
+                bank.update({
+                    "tagging_status": "ready",
+                    "tagging_progress": 100,
+                    "tagging_message": "检索标签维护完成",
+                    "tagging_version": PROFILE_VERSION,
+                    "tagging_warnings": (
+                        [f"{review_count} 道题需要教师复核"] if review_count else []
+                    ),
+                    "updated_at": _now(),
+                })
+                self._write(state)
+            return self.get_question_bank(bank_id, student_id="")
+        except Exception as exc:
+            with self._lock:
+                state = self._read()
+                bank = next(
+                    (item for item in state["question_banks"] if item.get("id") == bank_id),
+                    None,
+                )
+                if bank is not None:
+                    bank.update({
+                        "tagging_status": "error",
+                        "tagging_error": str(exc),
+                        "tagging_message": "标签维护失败，可重试",
+                        "updated_at": _now(),
+                    })
+                    self._write(state)
+            raise
 
     def save_question_asset(
         self,
@@ -4618,6 +4952,136 @@ def process_question_bank(
         knowledge_aligner=knowledge_aligner,
         _record_kind="question_bank",
     )
+
+
+def retag_question_bank(
+    store: HomeworkStore,
+    bank_id: str,
+    *,
+    client: QwenVisionClient | Any | None = None,
+) -> None:
+    """Run the durable fallback first, then enrich unlocked fields with Qwen batches."""
+    store.rebuild_question_bank_retrieval_profiles(bank_id)
+    if client is None and not settings.qwen_api_key:
+        with store._lock:
+            state = store._read()
+            bank = next(
+                (item for item in state["question_banks"] if item.get("id") == bank_id),
+                None,
+            )
+            if bank is not None:
+                bank["tagging_warnings"] = list(dict.fromkeys([
+                    *bank.get("tagging_warnings", []),
+                    "未配置 Qwen API，已使用本地规则生成第一版标签",
+                ]))
+                store._write(state)
+        return
+    owned_client = False
+    if client is None:
+        client = QwenVisionClient(
+            api_key=settings.qwen_api_key,
+            model=settings.qwen_homework_extraction_model,
+            base_url=settings.qwen_base_url,
+        )
+        owned_client = True
+    from backend.app.services.question_recommendations import PROFILE_VERSION
+
+    try:
+        with store._lock:
+            state = store._read()
+            bank = next(item for item in state["question_banks"] if item.get("id") == bank_id)
+            questions = json.loads(json.dumps(bank.get("questions", []), ensure_ascii=False))
+            bank["tagging_status"] = "processing"
+            bank["tagging_message"] = "Qwen 正在按课程词表重标"
+            bank["tagging_progress"] = 0
+            store._write(state)
+        warnings: list[str] = []
+        profiles: dict[str, dict[str, Any]] = {}
+        total = max(1, len(questions))
+        for start in range(0, len(questions), 12):
+            batch = questions[start:start + 12]
+            prompt = (
+                "你是电子电路课程题库标签维护器。原书章节字段优先于语义猜测；"
+                "统一同义词（共发射极=共射放大电路，运放=集成运算放大器），"
+                "过滤“计算题、求解”等无检索价值标签。不得使用参考答案。"
+                "只返回 JSON：{\"profiles\":[{\"question_id\":\"...\","
+                "\"knowledge_points\":[],\"difficulty\":\"basic|intermediate|advanced\","
+                "\"skills\":[],\"components\":[],\"methods\":[],\"circuit_functions\":[],\"tasks\":[],\"chapter\":\"\","
+                "\"section\":\"\",\"confidence\":0.0,\"status\":\"auto|needs_review\"}]}。\n"
+                + json.dumps([
+                    {
+                        "question_id": item.get("id"),
+                        "number": item.get("number"),
+                        "source_section": item.get("section_title"),
+                        "question_type": item.get("question_type"),
+                        "prompt": _clean_text(item.get("prompt"), 5000),
+                        "subquestions": item.get("subquestions", []),
+                        "knowledge_points": item.get("knowledge_points", []),
+                    }
+                    for item in batch
+                ], ensure_ascii=False)
+            )
+            try:
+                response = client.complete_json(prompt)
+                for profile in response.get("profiles", []):
+                    if isinstance(profile, dict) and profile.get("question_id"):
+                        profiles[str(profile["question_id"])] = profile
+            except Exception:
+                logger.warning("Qwen retag batch failed", exc_info=True)
+                warnings.append(
+                    f"第 {start + 1}-{start + len(batch)} 题 Qwen 重标失败，保留规则标签"
+                )
+            with store._lock:
+                state = store._read()
+                bank = next(item for item in state["question_banks"] if item.get("id") == bank_id)
+                bank["tagging_progress"] = round((start + len(batch)) * 100 / total)
+                bank["tagging_message"] = f"Qwen 已重标 {start + len(batch)}/{len(questions)} 道题"
+                store._write(state)
+        with store._lock:
+            state = store._read()
+            bank = next(item for item in state["question_banks"] if item.get("id") == bank_id)
+            for question in bank.get("questions", []):
+                model_profile = profiles.get(str(question.get("id")))
+                current = question.get("retrieval_profile")
+                if not model_profile or not isinstance(current, dict):
+                    continue
+                manual_fields = set(current.get("manual_fields", []))
+                for field in (
+                    "knowledge_points", "difficulty", "skills", "components",
+                    "methods", "circuit_functions", "tasks", "chapter", "section", "confidence", "status",
+                ):
+                    if field not in manual_fields and field in model_profile:
+                        current[field] = model_profile[field]
+                current["source"] = "auto"
+                current["version"] = PROFILE_VERSION
+            bank.update({
+                "tagging_status": "ready",
+                "tagging_progress": 100,
+                "tagging_message": "Qwen 标签维护完成",
+                "tagging_version": PROFILE_VERSION,
+                "tagging_warnings": warnings,
+                "updated_at": _now(),
+            })
+            store._write(state)
+    except Exception as exc:
+        with store._lock:
+            state = store._read()
+            bank = next(
+                (item for item in state["question_banks"] if item.get("id") == bank_id),
+                None,
+            )
+            if bank is not None:
+                bank.update({
+                    "tagging_status": "error",
+                    "tagging_error": str(exc),
+                    "tagging_message": "Qwen 标签维护失败，可重试",
+                    "updated_at": _now(),
+                })
+                store._write(state)
+        raise
+    finally:
+        if owned_client:
+            client.close()
 
 
 def _answer_contact_sheet(

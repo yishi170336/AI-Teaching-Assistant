@@ -20,6 +20,7 @@ import {
   Segmented,
   Select,
   Slider,
+  Spin,
   Tag,
   Tooltip,
   Upload,
@@ -89,7 +90,9 @@ import {
   AttachmentInfo,
   cancelKnowledgeBaseBuild,
   ChapterKnowledgeSummary,
+  ConversationFocus,
   confirmMistakeCandidate,
+  createQuestionReferenceMistakeCandidate,
   createQuestionBank,
   createMistakeCandidate,
   createMistakeCategory,
@@ -108,6 +111,7 @@ import {
   fetchModels,
   fetchQuestionBank,
   fetchQuestionBanks,
+  getRecommendedQuestionAnswer,
   fetchSession,
   fetchSessions,
   HomeworkQuestion,
@@ -123,6 +127,8 @@ import {
   PracticeExercise,
   PracticeGrading,
   QuestionBank,
+  QuestionReference,
+  QuestionRecommendation,
   MistakeAnalysis,
   MistakeCandidateDraft,
   MistakeCategory,
@@ -787,7 +793,13 @@ type ComposerMode = ChatMode | 'image_answer'
 
 const photoSuffixPattern = /\.(png|jpe?g|webp|bmp)$/i
 
-function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
+function ChatComposer({
+  onSend,
+  onPdfUpload,
+}: {
+  onSend: (value: string) => void
+  onPdfUpload: (file: File) => void
+}) {
   const { message: toast } = AntApp.useApp()
   const [value, setValue] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -796,6 +808,12 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
   const scene = useChatStore((state) => state.scene)
   const setScene = useChatStore((state) => state.setScene)
   const activePractice = useChatStore((state) => state.activePractice)
+  const activeFocus = useChatStore((state) => state.activeFocus)
+  const setActiveFocus = useChatStore((state) => state.setActiveFocus)
+  const messages = useChatStore((state) => state.messages)
+  const parentFocus = activeFocus?.parent_focus_id
+    ? [...messages].reverse().find((item) => item.focus?.id === activeFocus.parent_focus_id)?.focus
+    : undefined
   const streaming = useChatStore((state) => state.streaming)
   const stop = useChatStore((state) => state.stop)
   const pendingAttachments = useChatStore((state) => state.pendingAttachments)
@@ -816,9 +834,26 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
     onSend(value)
     setValue('')
   }
+  const changeComposerMode = (nextMode: ComposerMode) => {
+    if (nextMode === 'image_answer') {
+      setMode('answer')
+      setScene('image_answer')
+    } else {
+      setScene('chat')
+      setMode(nextMode)
+    }
+  }
 
   const selectFiles = (files: File[]) => {
     if (!files.length) return
+    if (scene === 'image_answer') {
+      const pdfs = files.filter((file) => /\.pdf$/i.test(file.name))
+      if (pdfs.length) {
+        if (files.length > 1) toast.info('整份 PDF 每次处理一个；其余文件本次未加入')
+        onPdfUpload(pdfs[0])
+        return
+      }
+    }
     const accepted = scene === 'image_answer' || scene === 'quiz_grade'
       ? files.filter((file) => (!file.type || file.type.startsWith('image/')) && photoSuffixPattern.test(file.name))
       : files
@@ -831,27 +866,64 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
       <div className="composer-card">
         <div className="composer-topline">
           <Segmented<ComposerMode>
+            className="composer-mode-desktop"
             size="small"
             value={composerMode}
-            onChange={(nextMode) => {
-              if (nextMode === 'image_answer') {
-                setMode('answer')
-                setScene('image_answer')
-              } else {
-                setScene('chat')
-                setMode(nextMode)
-              }
-            }}
+            onChange={changeComposerMode}
             options={[
               { label: '智能路由', value: 'auto' },
               { label: 'AI 答疑', value: 'answer' },
               { label: '拍照答题', value: 'image_answer' },
               { label: '同类出题', value: 'quiz' },
+              { label: 'AI 出题', value: 'recommend' },
               { label: '学习规划', value: 'plan' },
             ]}
           />
+          <div className="composer-mode-mobile">
+            <Segmented<ComposerMode>
+              size="small"
+              value={(['answer', 'image_answer', 'recommend'] as ComposerMode[]).includes(composerMode) ? composerMode : 'answer'}
+              onChange={changeComposerMode}
+              options={[
+                { label: '答疑', value: 'answer' },
+                { label: '拍照', value: 'image_answer' },
+                { label: '题库荐题', value: 'recommend' },
+              ]}
+            />
+            <Select
+              size="small"
+              value={(['auto', 'quiz', 'plan'] as ComposerMode[]).includes(composerMode) ? composerMode : undefined}
+              placeholder="更多"
+              onChange={(nextMode) => changeComposerMode(nextMode as ComposerMode)}
+              options={[
+                { label: '智能路由', value: 'auto' },
+                { label: '同类出题', value: 'quiz' },
+                { label: '学习规划', value: 'plan' },
+              ]}
+            />
+          </div>
           <span className="composer-tip">Shift + Enter 换行</span>
         </div>
+        {activeFocus && (
+          <div className="conversation-focus-bar">
+            <span className="conversation-focus-icon"><BrainCircuit size={15} /></span>
+            <div className="conversation-focus-copy">
+              <small>当前对话焦点 · 切换功能仍会保留</small>
+              <strong>{activeFocus.label}</strong>
+              {activeFocus.summary ? <span>{activeFocus.summary}</span> : null}
+            </div>
+            <div className="conversation-focus-actions">
+              {parentFocus ? (
+                <Button type="text" size="small" onClick={() => setActiveFocus(parentFocus)}>
+                  返回上一题
+                </Button>
+              ) : null}
+              <Button type="text" size="small" onClick={() => setActiveFocus(undefined)}>
+                换个主题
+              </Button>
+            </div>
+          </div>
+        )}
         {pendingAttachments.length > 0 && (
           <div className="pending-attachments" aria-label="待发送附件">
             {pendingAttachments.map((item) => (
@@ -887,7 +959,7 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
             className={scene === 'quiz_grade' ? 'photo-upload-dragger practice-upload-dragger' : 'photo-upload-dragger'}
             multiple
             showUploadList={false}
-            accept=".png,.jpg,.jpeg,.webp,.bmp"
+            accept={scene === 'image_answer' ? '.png,.jpg,.jpeg,.webp,.bmp,.pdf' : '.png,.jpg,.jpeg,.webp,.bmp'}
             disabled={streaming || pendingAttachments.length >= 5}
             beforeUpload={(file) => {
               selectFiles([file])
@@ -896,10 +968,13 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
           >
             <div className="photo-upload-content">
               <UploadCloud size={22} />
-              <strong>{scene === 'quiz_grade' ? '上传你的手写作答' : '拖拽或点击上传题目图片'}</strong>
-              <span>{scene === 'quiz_grade' ? '按作答顺序上传，支持多页；也可以只在下方输入答案' : '按题目顺序上传，最多 5 张；支持 PNG / JPEG / WebP / BMP'}</span>
+              <strong>{scene === 'quiz_grade' ? '上传你的手写作答' : '上传题目图片或整份 PDF'}</strong>
+              <span>{scene === 'quiz_grade' ? '按作答顺序上传，支持多页；也可以只在下方输入答案' : '图片最多 5 张；PDF 每次 1 份，后台拆题后逐题答疑'}</span>
             </div>
           </Upload.Dragger>
+        )}
+        {scene === 'image_answer' && !hasReadyImage && (
+          <div className="photo-submit-hint">请先拍照、选择题目图片，或上传整份 PDF。</div>
         )}
         <div className="composer-input-row">
           {scene === 'chat' && <input
@@ -940,7 +1015,7 @@ function ChatComposer({ onSend }: { onSend: (value: string) => void }) {
               }
             }}
             autoSize={{ minRows: 1, maxRows: 5 }}
-            placeholder={scene === 'quiz_grade' ? '输入你的答案或补充说明，例如“图片中第 2 步我取向右为正”…' : scene === 'image_answer' ? '可选：补充题目要求、指定解法或你看清的文字…' : mode === 'quiz' ? '粘贴原题，上传原题图片，或描述想练习的知识点…' : mode === 'plan' ? '描述学习目标、薄弱点和可用时间…' : '输入电路问题，支持 LaTeX 公式…'}
+            placeholder={scene === 'quiz_grade' ? '输入你的答案或补充说明，例如“图片中第 2 步我取向右为正”…' : scene === 'image_answer' ? '可选：补充题目要求、指定解法或你看清的文字…' : mode === 'recommend' ? activeFocus ? '说明想从题库找怎样的相似题；Agent 会以当前题为参照阅读候选题干…' : '描述想练的知识点、题型和难度，例如“基础二极管限幅计算题”…' : mode === 'quiz' ? activeFocus ? '说明希望保留或改变哪些条件，Agent 会基于当前题生成变式…' : '粘贴原题，上传原题图片，或描述想练习的知识点…' : mode === 'plan' ? '描述学习目标、薄弱点和可用时间…' : activeFocus ? '继续追问当前题，或说明要解释、批改、生成变式还是检索相似题…' : '输入电路问题，支持 LaTeX 公式…'}
             variant="borderless"
             aria-label="输入电路问题"
           />
@@ -1018,7 +1093,11 @@ function PracticeCard({
           <div className="practice-circuit-reference-head">
             <span><BrainCircuit size={15} /></span>
             <div>
-              <strong>原题电路图 · 拓扑参考</strong>
+              <strong>
+                {practice.circuit_diagram.source === 'question_bank'
+                  ? '题库原题图 · 拓扑参考'
+                  : '上传原题图 · 拓扑参考'}
+              </strong>
               <small>{practice.circuit_diagram.notice}</small>
             </div>
           </div>
@@ -1095,6 +1174,14 @@ function mistakeDraftForAssistant(messages: ChatMessage[], index: number): Mista
   if (!previousUser?.content) return null
   let question = previousUser.content
   let answer = message.content
+  let title = ''
+  const boundQuestion = message.questionRef?.kind === 'question_bank'
+    ? message.questionRef
+    : undefined
+  if (!message.practice && message.questionSummary?.prompt) {
+    question = message.questionSummary.prompt
+    title = `${message.questionSummary.bank_title} 第 ${message.questionSummary.number || '—'} 题`
+  }
   if (message.practice) {
     question = message.practice.question
     answer = [
@@ -1121,8 +1208,12 @@ function mistakeDraftForAssistant(messages: ChatMessage[], index: number): Mista
     answer,
     agent,
     attachments,
-    source: isGenerated ? 'ai_generated' : 'user_uploaded',
-    sourceRef: {
+    source: boundQuestion ? 'question_bank' : isGenerated ? 'ai_generated' : 'user_uploaded',
+    sourceRef: boundQuestion ? {
+      kind: 'question_bank',
+      question_bank_id: boundQuestion.question_bank_id,
+      question_id: boundQuestion.question_id,
+    } : {
       kind: isGenerated ? 'ai_practice' : isPhoto ? 'photo' : 'chat',
       practice_id: isGenerated ? message.id : '',
       question_id: previousUser.id,
@@ -1144,7 +1235,7 @@ function mistakeDraftForAssistant(messages: ChatMessage[], index: number): Mista
     suggestedReason: message.grading && message.grading.score < message.grading.max_score
       ? 'wrong'
       : isGenerated ? 'bookmark' : 'unknown',
-    title: question.slice(0, 80),
+    title: title || question.slice(0, 80),
   }
 }
 
@@ -1353,16 +1444,251 @@ function MistakeConfirmModal({
   )
 }
 
+function RecommendationCard({
+  recommendation,
+  disabled,
+  onSimilar,
+  onBookmark,
+  onAnother,
+  onStart,
+  onHint,
+}: {
+  recommendation: QuestionRecommendation
+  disabled: boolean
+  onSimilar: (reference: QuestionReference) => void
+  onBookmark: (reference: QuestionReference) => void
+  onAnother: (query?: string) => void
+  onStart: (recommendation: QuestionRecommendation) => void
+  onHint: (reference: QuestionReference, level: 'direction' | 'formula') => void
+}) {
+  const studentId = useChatStore((state) => state.studentId)
+  const [answer, setAnswer] = useState<Awaited<ReturnType<typeof getRecommendedQuestionAnswer>>>()
+  const [loadingAnswer, setLoadingAnswer] = useState(false)
+  const [answerError, setAnswerError] = useState('')
+  const [removedConditions, setRemovedConditions] = useState<Set<string>>(() => new Set())
+  const question = recommendation.question
+  const difficultyLabels = { basic: '基础', intermediate: '进阶', advanced: '挑战' }
+
+  const revealAnswer = async () => {
+    if (answer || loadingAnswer) return
+    setLoadingAnswer(true)
+    setAnswerError('')
+    try {
+      setAnswer(await getRecommendedQuestionAnswer(recommendation.question_ref, studentId))
+    } catch (error) {
+      setAnswerError(error instanceof Error ? error.message : '参考答案读取失败')
+    } finally {
+      setLoadingAnswer(false)
+    }
+  }
+  const typeLabels: Record<string, string> = {
+    calculation: '计算题', choice: '选择题', true_false: '判断题',
+    design: '设计题', short_answer: '简答题', other: '综合题',
+  }
+  const requirementEntries = [
+    ...((recommendation.requirements.knowledge_points as string[] | undefined) || []).map((value) => [`topic:${value}`, value] as const),
+    ...(recommendation.requirements.question_type ? [[`type:${recommendation.requirements.question_type}`, typeLabels[String(recommendation.requirements.question_type)] || String(recommendation.requirements.question_type)] as const] : []),
+    ...(recommendation.requirements.difficulty ? [[`difficulty:${recommendation.requirements.difficulty}`, difficultyLabels[recommendation.requirements.difficulty as keyof typeof difficultyLabels]] as const] : []),
+    ...((recommendation.requirements.skills as string[] | undefined) || []).map((value) => [`skill:${value}`, value] as const),
+    ...((recommendation.requirements.components as string[] | undefined) || []).map((value) => [`component:${value}`, value] as const),
+    ...((recommendation.requirements.tasks as string[] | undefined) || []).map((value) => [`task:${value}`, value] as const),
+    ...((recommendation.requirements.methods as string[] | undefined) || []).map((value) => [`method:${value}`, value] as const),
+    ...((recommendation.requirements.circuit_functions as string[] | undefined) || []).map((value) => [`function:${value}`, value] as const),
+    ...(recommendation.requirements.chapter ? [[`chapter:${recommendation.requirements.chapter}`, String(recommendation.requirements.chapter)] as const] : []),
+    ...(recommendation.requirements.requires_figure === true ? [['figure:yes', '包含题图'] as const] : []),
+    ...(recommendation.requirements.requires_figure === false ? [['figure:no', '纯文字题'] as const] : []),
+  ].filter(([key]) => !removedConditions.has(key))
+  const nextQuery = requirementEntries.map(([, label]) => label).join(' ')
+
+  return (
+    <section className="recommendation-card" onClick={(event) => event.stopPropagation()}>
+      <div className="recommendation-question">
+        <div className="recommendation-kicker">
+          <Tag color="blue">原书题目</Tag>
+          <span>{recommendation.source.book_title}</span>
+          <span>第 {recommendation.source.number || question.sequence} 题</span>
+        </div>
+        <MathMarkdown content={question.prompt} />
+        {question.subquestions?.map((item) => (
+          <div className="recommendation-subquestion" key={item.label}>
+            <strong>({item.label})</strong><MathMarkdown content={item.text} />
+          </div>
+        ))}
+        {question.options?.length ? (
+          <div className="recommendation-options">
+            {question.options.map((item) => (
+              <div key={item.label}><strong>{item.label}.</strong> <MathMarkdown content={item.text} /></div>
+            ))}
+          </div>
+        ) : null}
+        {question.figures?.length ? (
+          <div className="recommendation-figures">
+            {question.figures.map((figure) => (
+              <div className="recommendation-figure" key={figure.file}>
+                <AntImage src={figure.url} alt={figure.caption || '题图'} />
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <div className="recommendation-tags">
+          {recommendation.profile.knowledge_points.map((item) => <Tag key={item}>{item}</Tag>)}
+          <Tag>{difficultyLabels[recommendation.profile.difficulty]}</Tag>
+          <Tag>{typeLabels[recommendation.profile.question_type] || recommendation.profile.question_type}</Tag>
+        </div>
+        <div className="recommendation-answer">
+          {!answer ? (
+            <>
+              <Button loading={loadingAnswer} onClick={() => void revealAnswer()}>
+                展开参考答案
+              </Button>
+              {answerError && (
+                <div className="recommendation-answer-error">
+                  <AlertTriangle size={14} /><span>{answerError}</span>
+                  <Button size="small" onClick={() => void revealAnswer()}>重试</Button>
+                </div>
+              )}
+            </>
+          ) : (
+            <details open>
+              <summary>参考答案（建议完成后核对）</summary>
+              <MathMarkdown content={answer.answer || '原书未提供文字答案'} />
+              {answer.answer_subquestions?.map((item) => (
+                <div key={item.label}><strong>({item.label})</strong> <MathMarkdown content={item.text} /></div>
+              ))}
+              {answer.answer_figures?.map((figure) => (
+                <AntImage key={figure.file} src={figure.url} alt={figure.caption || '答案图'} />
+              ))}
+            </details>
+          )}
+        </div>
+      </div>
+      <aside className="recommendation-reason">
+        <div className="recommendation-reason-heading">
+          <div className={`recommendation-match ${recommendation.match_status}`}>
+            {recommendation.match_status === 'exact' ? '完全匹配' : recommendation.match_status === 'relaxed' ? '已放宽部分条件' : recommendation.match_status === 'partial' ? '部分匹配' : '最接近候选'}
+          </div>
+          <span>{recommendation.selection_method === 'agent_rerank' ? 'Agent 阅读题干后选择' : '检索排序推荐'}</span>
+          {recommendation.reference_available ? <span>参考答案可核验</span> : null}
+        </div>
+        {recommendation.agent_analysis?.intent_summary && (
+          <div className="recommendation-intent">
+            <small>Agent 理解的训练目标</small>
+            <p>{recommendation.agent_analysis.intent_summary}</p>
+          </div>
+        )}
+        <strong className="recommendation-reason-copy">{recommendation.reason}</strong>
+        <ul className="recommendation-evidence">
+          {recommendation.evidence.map((item) => <li key={item}>{item}</li>)}
+        </ul>
+        <div className="recommendation-meta-grid">
+          <div><small>章节</small><p>{recommendation.source.chapter || '待复核'}</p></div>
+          <div><small>训练技能</small><p>{recommendation.profile.skills.join('、') || '综合训练'}</p></div>
+          {recommendation.agent_analysis?.reasoning_focus && (
+            <div className="recommendation-reasoning-focus">
+              <small>关键推理</small><p>{recommendation.agent_analysis.reasoning_focus}</p>
+            </div>
+          )}
+        </div>
+        <div className="recommendation-condition-bar">
+          <small>再来一道将沿用</small>
+          <div>
+            {requirementEntries.map(([key, label]) => (
+              <Tag
+                key={key}
+                closable
+                onClose={(event) => {
+                  event.preventDefault()
+                  setRemovedConditions((current) => new Set(current).add(key))
+                }}
+              >{label}</Tag>
+            ))}
+          </div>
+        </div>
+        <div className="recommendation-actions">
+          <Button disabled={disabled} type="primary" onClick={() => onStart(recommendation)}>开始作答</Button>
+          <Button disabled={disabled} onClick={() => onHint(recommendation.question_ref, 'direction')}>给点提示</Button>
+          <Button disabled={disabled} onClick={() => onHint(recommendation.question_ref, 'formula')}>关键公式</Button>
+          <Button disabled={disabled} icon={<RotateCcw size={14} />} onClick={() => onAnother(nextQuery || '不限条件')}>再来一道</Button>
+          <Button disabled={disabled} icon={<WandSparkles size={14} />} onClick={() => onSimilar(recommendation.question_ref)}>同类出题</Button>
+          <Button disabled={disabled} icon={<BookmarkPlus size={14} />} onClick={() => onBookmark(recommendation.question_ref)}>收藏错题</Button>
+        </div>
+      </aside>
+    </section>
+  )
+}
+
+function ReferenceMistakeConfirmModal({
+  candidate,
+  categories,
+  saving,
+  onCancel,
+  onConfirm,
+}: {
+  candidate?: { id: string; summary: string; question: string; knowledge_points: string[] }
+  categories: MistakeCategory[]
+  saving: boolean
+  onCancel: () => void
+  onConfirm: (decision: { reason: MistakeReason; categoryId: string; title: string }) => void
+}) {
+  const [reason, setReason] = useState<MistakeReason>('bookmark')
+  const [categoryId, setCategoryId] = useState('uncategorized')
+  const [title, setTitle] = useState('')
+  useEffect(() => {
+    setReason('bookmark')
+    setCategoryId('uncategorized')
+    setTitle(candidate?.summary || '')
+  }, [candidate?.id])
+  return (
+    <Modal
+      open={Boolean(candidate)}
+      title="确认加入错题本"
+      onCancel={onCancel}
+      closable={!saving}
+      footer={[
+        <Button key="cancel" disabled={saving} onClick={onCancel}>暂不加入</Button>,
+        <Button key="ok" type="primary" loading={saving} onClick={() => onConfirm({ reason, categoryId, title })}>确认加入</Button>,
+      ]}
+    >
+      <p>{candidate?.question.slice(0, 260)}</p>
+      <div className="mistake-confirm-fields">
+        <label><span>错题名称</span><Input value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+        <label>
+          <span>加入原因</span>
+          <Select value={reason} onChange={setReason} options={(Object.keys(mistakeReasonLabels) as MistakeReason[]).map((value) => ({ value, label: mistakeReasonLabels[value] }))} />
+        </label>
+        <label>
+          <span>错题分类</span>
+          <Select value={categoryId} onChange={setCategoryId} options={[
+            { value: 'uncategorized', label: '未分类' },
+            ...categories.map((item) => ({ value: item.id, label: item.name })),
+          ]} />
+        </label>
+      </div>
+      <div>{candidate?.knowledge_points.map((item) => <Tag key={item}>{item}</Tag>)}</div>
+    </Modal>
+  )
+}
+
 function Conversation({
   onAddMistake,
   onConfirmPhoto,
   onStartPractice,
   onGenerateSimilar,
+  onRecommendationSimilar,
+  onRecommendationBookmark,
+  onRecommendationAnother,
+  onRecommendationStart,
+  onRecommendationHint,
 }: {
   onAddMistake: (draft: MistakeCandidateDraft) => void
   onConfirmPhoto: (content: string) => void
   onStartPractice: (practice: PracticeExercise) => void
   onGenerateSimilar: () => void
+  onRecommendationSimilar: (reference: QuestionReference) => void
+  onRecommendationBookmark: (reference: QuestionReference) => void
+  onRecommendationAnother: (query?: string) => void
+  onRecommendationStart: (recommendation: QuestionRecommendation) => void
+  onRecommendationHint: (reference: QuestionReference, level: 'direction' | 'formula') => void
 }) {
   const { message: toast } = AntApp.useApp()
   const messages = useChatStore((state) => state.messages)
@@ -1372,9 +1698,92 @@ function Conversation({
   const stageAgent = useChatStore((state) => state.stageAgent)
   const activeMessageId = useChatStore((state) => state.activeMessageId)
   const activateMessage = useChatStore((state) => state.activateMessage)
+  const send = useChatStore((state) => state.send)
+  const setMode = useChatStore((state) => state.setMode)
+  const setScene = useChatStore((state) => state.setScene)
   const endRef = useRef<HTMLDivElement>(null)
   const [generatingPptId, setGeneratingPptId] = useState('')
   const [generatedPptIds, setGeneratedPptIds] = useState<Set<string>>(() => new Set())
+  const [annotationSelection, setAnnotationSelection] = useState<{
+    messageId: string
+    text: string
+    x: number
+    y: number
+  } | null>(null)
+  const [annotationOpen, setAnnotationOpen] = useState(false)
+  const [annotationQuestion, setAnnotationQuestion] = useState('这里没看懂，请结合原题解释。')
+
+  const captureAnnotationSelection = () => {
+    if (streaming) return
+    const selection = window.getSelection()
+    if (!selection || selection.isCollapsed || !selection.rangeCount) {
+      setAnnotationSelection(null)
+      return
+    }
+    const text = selection.toString().replace(/\s+/g, ' ').trim()
+    if (text.length < 2) {
+      setAnnotationSelection(null)
+      return
+    }
+    if (text.length > 1600) {
+      toast.info('一次最多批注 1600 个字符，请缩小选择范围')
+      setAnnotationSelection(null)
+      return
+    }
+    const elementForNode = (node: Node | null) => (
+      node instanceof HTMLElement ? node : node?.parentElement || null
+    )
+    const startRoot = elementForNode(selection.anchorNode)?.closest<HTMLElement>('[data-annotation-message-id]')
+    const endRoot = elementForNode(selection.focusNode)?.closest<HTMLElement>('[data-annotation-message-id]')
+    if (!startRoot || startRoot !== endRoot) {
+      setAnnotationSelection(null)
+      return
+    }
+    const messageId = startRoot.dataset.annotationMessageId || ''
+    const sourceMessage = messages.find((item) => item.id === messageId)
+    if (!messageId || sourceMessage?.role !== 'assistant' || sourceMessage.failed) {
+      setAnnotationSelection(null)
+      return
+    }
+    const rect = selection.getRangeAt(0).getBoundingClientRect()
+    setAnnotationSelection({
+      messageId,
+      text,
+      x: Math.min(window.innerWidth - 132, Math.max(12, rect.right + 8)),
+      y: Math.min(window.innerHeight - 48, Math.max(12, rect.bottom + 8)),
+    })
+  }
+
+  const submitAnnotationFollowup = () => {
+    if (!annotationSelection || !annotationQuestion.trim() || streaming) return
+    const sourceMessage = messages.find((item) => item.id === annotationSelection.messageId)
+    if (!sourceMessage) return
+    activateMessage(sourceMessage.id, true)
+    setMode('answer')
+    setScene('chat')
+    const quoted = annotationSelection.text
+      .split('\n')
+      .map((line) => `> ${line}`)
+      .join('\n')
+    const payload = [
+      '【学习批注追问】',
+      `标记来源：${sourceMessage.agent || 'AI 助教'}`,
+      `来源消息：${sourceMessage.id}`,
+      '',
+      '标记内容：',
+      quoted,
+      '',
+      `我的问题：${annotationQuestion.trim()}`,
+    ].join('\n')
+    void send(payload, {
+      focusId: sourceMessage.focus?.id,
+      questionRef: sourceMessage.questionRef || sourceMessage.focus?.question_ref,
+    })
+    window.getSelection()?.removeAllRanges()
+    setAnnotationOpen(false)
+    setAnnotationSelection(null)
+    setAnnotationQuestion('这里没看懂，请结合原题解释。')
+  }
 
   const downloadLearningPlanPpt = async (message: ChatMessage, index: number) => {
     setGeneratingPptId(message.id)
@@ -1434,6 +1843,14 @@ function Conversation({
     }
   }, [messages.length, activateMessage])
 
+  useEffect(() => {
+    const container = endRef.current?.closest('.chat-scroll') as HTMLElement | null
+    if (!container || annotationOpen) return
+    const dismissSelectionAction = () => setAnnotationSelection(null)
+    container.addEventListener('scroll', dismissSelectionAction, { passive: true })
+    return () => container.removeEventListener('scroll', dismissSelectionAction)
+  }, [annotationOpen])
+
   return (
     <div className="conversation">
       {messages.map((message, index) => (
@@ -1441,7 +1858,7 @@ function Conversation({
           key={message.id}
           className={`message-row ${message.role} ${message.id === activeMessageId ? 'active-evidence-message' : ''}`}
           data-message-id={message.id}
-          onClick={() => message.role === 'assistant' && activateMessage(message.id)}
+          onClick={() => message.role === 'assistant' && activateMessage(message.id, true)}
         >
           {message.role === 'assistant' && (
             <span className="assistant-avatar"><LogoMark /></span>
@@ -1472,9 +1889,28 @@ function Conversation({
                 )}
               </div>
             ) : null}
+            {message.questionSummary ? (
+              <div className="message-question-source">
+                <BookMarked size={16} />
+                <div>
+                  <small>来源题目 · {message.questionSummary.bank_title}</small>
+                  <strong>第 {message.questionSummary.number || '—'} 题</strong>
+                  <span>{message.questionSummary.prompt}</span>
+                </div>
+              </div>
+            ) : null}
             {message.content ? (
               message.role === 'assistant'
-                ? <MathMarkdown content={normalizeQuizTitle(message.content)} />
+                ? (
+                  <div
+                    className="assistant-answer-content"
+                    data-annotation-message-id={message.id}
+                    onMouseUp={() => window.setTimeout(captureAnnotationSelection, 0)}
+                    onTouchEnd={() => window.setTimeout(captureAnnotationSelection, 0)}
+                  >
+                    <MathMarkdown content={normalizeQuizTitle(message.content)} />
+                  </div>
+                )
                 : <p>{message.content}</p>
             ) : (
               <div className="thinking-placeholder">
@@ -1493,20 +1929,21 @@ function Conversation({
                 onConfirm={onConfirmPhoto}
               />
             )}
-            {message.role === 'assistant' && message.review?.triggered && !message.needsConfirmation && (
-              <div className={`answer-review-note ${message.review.passed ? 'passed' : message.review.repaired ? 'repaired' : 'warning'}`}>
-                <ShieldCheck size={14} />
-                <span>
-                  {message.review.passed
-                    ? '答案复核通过'
-                    : message.review.repaired
-                      ? '答案已根据复核结果修正一次'
-                      : '答案已复核，请留意校验说明'}
-                  {message.review.sympy_checked ? ' · 已完成 SymPy 数值复算' : ''}
-                  {message.review.issues?.length ? ` · ${message.review.issues.slice(0, 2).join('；')}` : ''}
-                </span>
-              </div>
-            )}
+            {message.role === 'assistant'
+              && message.recommendation
+              && !message.failed
+              && !(streaming && index === messages.length - 1)
+              && (
+                <RecommendationCard
+                  recommendation={message.recommendation}
+                  disabled={streaming}
+                  onSimilar={onRecommendationSimilar}
+                  onBookmark={onRecommendationBookmark}
+                  onAnother={onRecommendationAnother}
+                  onStart={onRecommendationStart}
+                  onHint={onRecommendationHint}
+                />
+              )}
             {message.role === 'assistant'
               && message.practice
               && !message.failed
@@ -1578,6 +2015,68 @@ function Conversation({
       {streaming && messages.at(-1)?.content && stage && (
         <div className="stage-pill"><span className="thinking-dots"><i /><i /><i /></span>{stageAgent} · {stage}</div>
       )}
+      {annotationSelection && !annotationOpen && (
+        <button
+          type="button"
+          className="learning-annotation-trigger"
+          style={{ left: annotationSelection.x, top: annotationSelection.y }}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={(event) => {
+            event.stopPropagation()
+            setAnnotationOpen(true)
+          }}
+        >
+          <MessageSquareText size={14} />
+          向 AI 追问
+        </button>
+      )}
+      <Modal
+        className="learning-annotation-modal"
+        title="针对标记内容追问"
+        open={annotationOpen}
+        okText="发送追问"
+        cancelText="取消"
+        centered
+        destroyOnClose={false}
+        okButtonProps={{ disabled: streaming || !annotationQuestion.trim() }}
+        onOk={submitAnnotationFollowup}
+        onCancel={() => {
+          window.getSelection()?.removeAllRanges()
+          setAnnotationOpen(false)
+          setAnnotationSelection(null)
+        }}
+      >
+        <p className="learning-annotation-hint">AI 会结合原题、题图和这段回答，只解释你标记的部分。</p>
+        <blockquote className="learning-annotation-quote">
+          {annotationSelection?.text}
+        </blockquote>
+        <div className="learning-annotation-quick-actions" aria-label="常用追问">
+          {['解释这句话', '这一步怎么来的', '为什么这样判断', '只给我一个提示'].map((question) => (
+            <button
+              type="button"
+              key={question}
+              onClick={() => setAnnotationQuestion(question)}
+            >
+              {question}
+            </button>
+          ))}
+        </div>
+        <TextArea
+          value={annotationQuestion}
+          onChange={(event) => setAnnotationQuestion(event.target.value)}
+          onPressEnter={(event) => {
+            if (!event.shiftKey) {
+              event.preventDefault()
+              submitAnnotationFollowup()
+            }
+          }}
+          placeholder="例如：这里为什么能使用虚短？"
+          autoFocus
+          autoSize={{ minRows: 3, maxRows: 6 }}
+          maxLength={500}
+          showCount
+        />
+      </Modal>
       <div ref={endRef} />
     </div>
   )
@@ -2076,6 +2575,10 @@ function questionTypeName(value: string) {
   return labels[value] || '题目'
 }
 
+const questionTypeOptionsForStudent = [
+  'choice', 'fill_blank', 'true_false', 'short_answer', 'calculation', 'design', 'other',
+].map((value) => ({ value, label: questionTypeName(value) }))
+
 function QuestionKnowledgeAlignment({ question }: { question: HomeworkQuestion }) {
   const tags = question.knowledge_tags?.length
     ? question.knowledge_tags
@@ -2169,10 +2672,12 @@ function QuestionBankQuestionCard({
   question,
   deleting,
   onDelete,
+  onAsk,
 }: {
   question: HomeworkQuestion
   deleting: boolean
   onDelete: () => void
+  onAsk: () => void
 }) {
   const [answerOpen, setAnswerOpen] = useState(false)
   const sourceKindLabel = question.source_kind === 'example'
@@ -2192,6 +2697,10 @@ function QuestionBankQuestionCard({
           <small>{sourceKindLabel} · {question.section_title || '题目'} · {questionTypeName(question.question_type)}</small>
           <strong>{displayedTitle}</strong>
         </div>
+        <Tag color={question.answer_readiness?.status === 'needs_confirmation' ? 'warning' : 'success'}>
+          {question.answer_readiness?.status === 'needs_confirmation' ? '需确认' : '可直接答疑'}
+        </Tag>
+        <Button type="primary" icon={<MessageSquareText size={14} />} onClick={onAsk}>AI 答疑</Button>
         <Popconfirm
           title="从题库中删除这道题？"
           description="删除后无法恢复，已经生成的作业不受影响。"
@@ -2204,6 +2713,11 @@ function QuestionBankQuestionCard({
         </Popconfirm>
       </header>
       <div className="student-bank-question-body">
+        {question.answer_readiness?.reasons?.length ? (
+          <div className="student-bank-card-error">
+            {question.answer_readiness.reasons.join('；')}
+          </div>
+        ) : null}
         <MathMarkdown content={question.prompt || '未识别到题干'} />
         {question.subquestions?.length ? (
           <div className="student-bank-subquestions">
@@ -2256,7 +2770,140 @@ function QuestionBankQuestionCard({
 
 const QUESTION_BANK_PAGE_SIZE = 20
 
-function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
+function PhotoPdfQuestionPickerModal({
+  bankId,
+  studentId,
+  onClose,
+  onAsk,
+}: {
+  bankId: string
+  studentId: string
+  onClose: () => void
+  onAsk: (bank: QuestionBank, question: HomeworkQuestion) => void
+}) {
+  const [bank, setBank] = useState<QuestionBank>()
+  const [questions, setQuestions] = useState<HomeworkQuestion[]>([])
+  const [loading, setLoading] = useState(false)
+  const [query, setQuery] = useState('')
+  const [questionType, setQuestionType] = useState('')
+  const [readiness, setReadiness] = useState('')
+  const [page, setPage] = useState(1)
+  const pageSize = 10
+
+  useEffect(() => {
+    if (!bankId) {
+      setBank(undefined)
+      setQuestions([])
+      return
+    }
+    let cancelled = false
+    const load = async () => {
+      setLoading(true)
+      try {
+        const first = await fetchQuestionBank(bankId, 0, 100, studentId)
+        if (cancelled) return
+        setBank(first)
+        if (first.status === 'ready' && first.question_count > first.questions.length) {
+          const offsets = Array.from(
+            { length: Math.ceil(first.question_count / 100) - 1 },
+            (_, index) => (index + 1) * 100,
+          )
+          const pages = await Promise.all(
+            offsets.map((offset) => fetchQuestionBank(bankId, offset, 100, studentId)),
+          )
+          if (!cancelled) setQuestions([...(first.questions || []), ...pages.flatMap((item) => item.questions || [])])
+        } else {
+          setQuestions(first.questions || [])
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    void load()
+    const timer = window.setInterval(() => {
+      if (bank?.status !== 'ready') void load()
+    }, 1800)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [bankId, studentId, bank?.status])
+
+  const filtered = questions.filter((question) => {
+    const text = `${question.number} ${question.section_title} ${question.prompt}`.toLowerCase()
+    return (!query.trim() || text.includes(query.trim().toLowerCase()))
+      && (!questionType || question.question_type === questionType)
+      && (!readiness || question.answer_readiness?.status === readiness)
+  })
+  const visible = filtered.slice((page - 1) * pageSize, page * pageSize)
+
+  return (
+    <Modal
+      open={Boolean(bankId)}
+      title="PDF 已保存，选择一道题开始答疑"
+      onCancel={onClose}
+      width={980}
+      footer={<Button onClick={onClose}>稍后处理</Button>}
+      className="photo-pdf-picker-modal"
+      destroyOnHidden
+    >
+      {!bank || bank.status === 'processing' ? (
+        <div className="photo-pdf-processing">
+          <LoaderCircle className="spin" size={25} />
+          <strong>{bank?.processing_message || '正在创建题库并准备拆题'}</strong>
+          <Progress percent={bank?.processing_progress || 1} status="active" />
+          <span>可以关闭弹窗稍后处理，PDF 会继续在后台拆题。</span>
+        </div>
+      ) : bank.status === 'error' ? (
+        <div className="student-bank-card-error">{bank.processing_error || 'PDF 拆题失败，请到题库页面重试。'}</div>
+      ) : (
+        <>
+          <div className="photo-pdf-filter-bar">
+            <Input allowClear value={query} onChange={(event) => { setQuery(event.target.value); setPage(1) }} placeholder="搜索题号、章节或题干" prefix={<Search size={14} />} />
+            <Select allowClear value={questionType || undefined} onChange={(value) => { setQuestionType(value || ''); setPage(1) }} placeholder="题型" options={questionTypeOptionsForStudent} />
+            <Select allowClear value={readiness || undefined} onChange={(value) => { setReadiness(value || ''); setPage(1) }} placeholder="识别状态" options={[
+              { value: 'ready', label: '可直接答疑' },
+              { value: 'needs_confirmation', label: '需要确认' },
+            ]} />
+          </div>
+          {bank.processing_warnings?.length ? (
+            <div className="student-bank-card-error">{bank.processing_warnings.slice(0, 3).join('；')}</div>
+          ) : null}
+          <div className="photo-pdf-question-list">
+            {visible.map((question) => (
+              <article key={question.id}>
+                <div>
+                  <Tag>{question.number || question.sequence}</Tag>
+                  <Tag>{questionTypeName(question.question_type)}</Tag>
+                  <Tag color={question.answer_readiness?.status === 'needs_confirmation' ? 'warning' : 'success'}>
+                    {question.answer_readiness?.status === 'needs_confirmation' ? '需确认' : '可直接答疑'}
+                  </Tag>
+                </div>
+                <strong>{question.section_title || '未定位章节'}</strong>
+                <p>{question.prompt || '未识别到题干'}</p>
+                <Button type="primary" onClick={() => onAsk(bank, question)}>AI 答疑</Button>
+              </article>
+            ))}
+          </div>
+          <Pagination current={page} pageSize={pageSize} total={filtered.length} showSizeChanger={false} onChange={setPage} />
+          {loading && <div className="photo-pdf-loading"><Spin size="small" /> 正在刷新题目列表</div>}
+        </>
+      )}
+    </Modal>
+  )
+}
+
+function QuestionBankView({
+  knowledgeBase,
+  studentId,
+  initialBankId = '',
+  onAskQuestion,
+}: {
+  knowledgeBase: string
+  studentId: string
+  initialBankId?: string
+  onAskQuestion: (bank: QuestionBank, question: HomeworkQuestion) => void
+}) {
   const { message: toast } = AntApp.useApp()
   const [banks, setBanks] = useState<QuestionBank[]>([])
   const [loading, setLoading] = useState(true)
@@ -2271,6 +2918,7 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
   const [actionId, setActionId] = useState('')
   const [deletingQuestionId, setDeletingQuestionId] = useState('')
   const detailRequestId = useRef(0)
+  const openedInitialBankId = useRef('')
   const selectedBankSummary = banks.find((bank) => bank.id === selectedBankId) || null
   const selectedBank = selectedBankDetail?.id === selectedBankId
     ? { ...(selectedBankSummary || selectedBankDetail), ...selectedBankDetail }
@@ -2279,7 +2927,7 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
   const loadBanks = useCallback(async (withSpinner = false) => {
     if (withSpinner) setLoading(true)
     try {
-      const nextBanks = await fetchQuestionBanks({ includeQuestions: false })
+      const nextBanks = await fetchQuestionBanks({ includeQuestions: false, studentId })
       setBanks(nextBanks)
       return nextBanks
     } catch (error) {
@@ -2288,7 +2936,7 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
     } finally {
       if (withSpinner) setLoading(false)
     }
-  }, [toast])
+  }, [studentId, toast])
 
   const loadBankPage = useCallback(async (
     bankId: string,
@@ -2302,6 +2950,7 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
         bankId,
         (page - 1) * QUESTION_BANK_PAGE_SIZE,
         QUESTION_BANK_PAGE_SIZE,
+        studentId,
       )
       if (requestId === detailRequestId.current) {
         setSelectedBankDetail(detail)
@@ -2315,7 +2964,7 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
         setDetailLoading(false)
       }
     }
-  }, [toast])
+  }, [studentId, toast])
 
   useEffect(() => {
     void loadBanks(true)
@@ -2342,6 +2991,15 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
     setQuestionPage(1)
     void loadBankPage(bankId, 1)
   }
+
+  useEffect(() => {
+    if (!initialBankId || openedInitialBankId.current === initialBankId) return
+    openedInitialBankId.current = initialBankId
+    setSelectedBankId(initialBankId)
+    setSelectedBankDetail(null)
+    setQuestionPage(1)
+    void loadBankPage(initialBankId, 1)
+  }, [initialBankId, loadBankPage])
 
   const closeBank = () => {
     detailRequestId.current += 1
@@ -2371,7 +3029,7 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
     }
     setUploading(true)
     try {
-      const bank = await createQuestionBank(file, title, knowledgeBase)
+      const bank = await createQuestionBank(file, title, knowledgeBase, { studentId })
       toast.success('题库附件已保存，正在提取题目与知识点')
       setUploadOpen(false)
       setFileList([])
@@ -2392,12 +3050,12 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
     setActionId(bankId)
     try {
       if (action === 'retry') {
-        await reprocessQuestionBank(bankId)
+        await reprocessQuestionBank(bankId, studentId)
         toast.success('已重新开始识别题库')
         setQuestionPage(1)
         await loadBankPage(bankId, 1)
       } else {
-        await deleteQuestionBank(bankId)
+        await deleteQuestionBank(bankId, studentId)
         closeBank()
         toast.success('题库已删除')
       }
@@ -2412,7 +3070,7 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
   const removeQuestion = async (bankId: string, questionId: string) => {
     setDeletingQuestionId(questionId)
     try {
-      await deleteQuestionBankQuestion(bankId, questionId)
+      await deleteQuestionBankQuestion(bankId, questionId, studentId)
       toast.success('题目已从题库删除')
       const nextTotal = Math.max(0, (selectedBank?.question_count || 1) - 1)
       const nextPage = Math.min(
@@ -2563,6 +3221,15 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
             {selectedBank.processing_error ? (
               <div className="homework-detail-error"><AlertTriangle size={18} /><div><strong>题库识别未完成</strong><span>{selectedBank.processing_error}</span></div></div>
             ) : null}
+            {selectedBank.processing_warnings?.length ? (
+              <div className="homework-detail-error">
+                <AlertTriangle size={18} />
+                <div>
+                  <strong>已保留可用题目，部分内容需要核对</strong>
+                  <span>{selectedBank.processing_warnings.slice(0, 4).join('；')}</span>
+                </div>
+              </div>
+            ) : null}
             {detailLoading && !selectedBankDetail ? (
               <div className="student-bank-detail-loading">
                 <LoaderCircle className="spin" size={24} />
@@ -2577,6 +3244,7 @@ function QuestionBankView({ knowledgeBase }: { knowledgeBase: string }) {
                       question={question}
                       deleting={deletingQuestionId === question.id}
                       onDelete={() => void removeQuestion(selectedBank.id, question.id)}
+                      onAsk={() => onAskQuestion(selectedBank, question)}
                     />
                   ))}
                 </div>
@@ -2880,25 +3548,51 @@ function MistakeBookView({
                 {selectedMistake.annotations?.map((annotation) => (
                   <article key={annotation.id}>
                     {editingAnnotationId === annotation.id ? (
-                      <TextArea value={editingAnnotationContent} maxLength={4000} showCount autoSize={{ minRows: 3, maxRows: 8 }} onChange={(event) => setEditingAnnotationContent(event.target.value)} />
+                      <TextArea
+                        value={editingAnnotationContent}
+                        maxLength={4000}
+                        showCount
+                        autoSize={{ minRows: 3, maxRows: 8 }}
+                        onChange={(event) => setEditingAnnotationContent(event.target.value)}
+                      />
                     ) : <p>{annotation.content}</p>}
                     <div>
                       {editingAnnotationId === annotation.id ? (
                         <>
-                          <Button size="small" loading={savingAction === 'annotation-update'} onClick={() => void runAction('annotation-update', async () => {
-                            await updateMistakeAnnotation(studentId, selectedMistake.id, annotation.id, editingAnnotationContent.trim())
-                            setEditingAnnotationId('')
-                          }, '批注已更新')}>保存</Button>
+                          <Button
+                            size="small"
+                            loading={savingAction === 'annotation-update'}
+                            onClick={() => void runAction('annotation-update', async () => {
+                              await updateMistakeAnnotation(
+                                studentId,
+                                selectedMistake.id,
+                                annotation.id,
+                                editingAnnotationContent.trim(),
+                              )
+                              setEditingAnnotationId('')
+                            }, '批注已更新')}
+                          >保存</Button>
                           <Button size="small" onClick={() => setEditingAnnotationId('')}>取消</Button>
                         </>
-                      ) : <Button size="small" onClick={() => { setEditingAnnotationId(annotation.id); setEditingAnnotationContent(annotation.content) }}>编辑</Button>}
-                      <Popconfirm title="删除这条批注？" okText="删除" cancelText="取消" onConfirm={() => void runAction('annotation-delete', async () => { await deleteMistakeAnnotation(studentId, selectedMistake.id, annotation.id) }, '批注已删除')}>
+                      ) : (
+                        <Button size="small" onClick={() => { setEditingAnnotationId(annotation.id); setEditingAnnotationContent(annotation.content) }}>编辑</Button>
+                      )}
+                      <Popconfirm
+                        title="删除这条批注？"
+                        okText="删除"
+                        cancelText="取消"
+                        onConfirm={() => void runAction('annotation-delete', async () => {
+                          await deleteMistakeAnnotation(studentId, selectedMistake.id, annotation.id)
+                        }, '批注已删除')}
+                      >
                         <Button size="small" danger>删除</Button>
                       </Popconfirm>
                     </div>
                   </article>
                 ))}
-                {!selectedMistake.annotations?.length && <p className="mistake-annotation-empty">还没有批注，可记录错误原因、正确思路或复习提醒。</p>}
+                {!selectedMistake.annotations?.length && (
+                  <p className="mistake-annotation-empty">还没有批注，可记录错误原因、正确思路或复习提醒。</p>
+                )}
               </div>
               <TextArea
                 value={annotationDraft}
@@ -2908,7 +3602,12 @@ function MistakeBookView({
                 onChange={(event) => { setAnnotationDraft(event.target.value); setAnnotationRequestId('') }}
                 placeholder="记录错误原因、解题反思、正确思路、易错点或后续复习提示…"
               />
-              <Button type="primary" loading={savingAction === 'annotation-create'} disabled={!annotationDraft.trim()} onClick={() => void saveAnnotation()}>保存批注</Button>
+              <Button
+                type="primary"
+                loading={savingAction === 'annotation-create'}
+                disabled={!annotationDraft.trim()}
+                onClick={() => void saveAnnotation()}
+              >保存批注</Button>
             </section>
           </div>
         )}
@@ -3419,8 +4118,15 @@ function StudentPageContent() {
   const [mistakeCategories, setMistakeCategories] = useState<MistakeCategory[]>([])
   const [mistakeAnalysis, setMistakeAnalysis] = useState<MistakeAnalysis>()
   const [pendingMistakeDrafts, setPendingMistakeDrafts] = useState<MistakeCandidateDraft[]>([])
+  const [pendingReferenceCandidate, setPendingReferenceCandidate] = useState<{
+    id: string
+    summary: string
+    question: string
+    knowledge_points: string[]
+  }>()
   const [savingMistakeDecision, setSavingMistakeDecision] = useState(false)
   const [scheduleItems, setScheduleItems] = useState<ScheduleItem[]>([])
+  const [photoPdfBankId, setPhotoPdfBankId] = useState('')
   const studentId = useChatStore((state) => state.studentId)
   const messages = useChatStore((state) => state.messages)
   const sessionId = useChatStore((state) => state.sessionId)
@@ -3428,6 +4134,8 @@ function StudentPageContent() {
   const setMode = useChatStore((state) => state.setMode)
   const setScene = useChatStore((state) => state.setScene)
   const setActivePractice = useChatStore((state) => state.setActivePractice)
+  const setActiveQuestionRef = useChatStore((state) => state.setActiveQuestionRef)
+  const setActiveFocus = useChatStore((state) => state.setActiveFocus)
   const send = useChatStore((state) => state.send)
   const knowledgeBase = useChatStore((state) => state.knowledgeBase)
   const defaultKnowledgeBase = useChatStore((state) => state.defaultKnowledgeBase)
@@ -3609,6 +4317,42 @@ function StudentPageContent() {
     void send(prompt, { recognitionConfirmed }).then(() => refreshSessions())
   }
 
+  const uploadPhotoPdf = async (file: File) => {
+    if (!/\.pdf$/i.test(file.name)) {
+      toast.warning('请选择 PDF 文件')
+      return
+    }
+    try {
+      toast.info('正在保存 PDF，保存后将在当前聊天显示拆题进度')
+      const bank = await createQuestionBank(
+        file,
+        file.name.replace(/\.pdf$/i, ''),
+        knowledgeBase,
+        { studentId, sourceOrigin: 'photo_answer' },
+      )
+      setPhotoPdfBankId(bank.id)
+      toast.success('PDF 已保存，正在聊天页内后台拆题')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'PDF 上传失败')
+    }
+  }
+
+  const askQuestionBankQuestion = (bank: QuestionBank, question: HomeworkQuestion) => {
+    const questionRef: QuestionReference = {
+      kind: 'question_bank',
+      question_bank_id: bank.id,
+      question_id: question.id,
+    }
+    setPhotoPdfBankId('')
+    setActiveView('chat')
+    setMode('answer')
+    setScene('image_answer')
+    void send(
+      `请解答题库《${bank.title}》第 ${question.number || question.sequence} 题。`,
+      { questionRef },
+    ).then(() => refreshSessions())
+  }
+
   const startPracticeAnswer = (practice: PracticeExercise) => {
     setMode('quiz')
     setActivePractice(practice)
@@ -3623,6 +4367,95 @@ function StudentPageContent() {
 
   const generateAnotherPractice = () => {
     ask('请基于刚才这道题再生成一道同构变式题，保持知识点、拓扑和待求量结构，只调整情境或参数。', 'quiz')
+  }
+
+  const generateSimilarFromRecommendation = (reference: QuestionReference) => {
+    setActiveView('chat')
+    setMode('quiz')
+    setScene('chat')
+    void send('请基于这道原书题生成一道同知识点、同结构的变式题。', {
+      questionRef: reference,
+    }).then(() => refreshSessions())
+  }
+
+  const recommendAnother = (query?: string) => {
+    setMode('recommend')
+    setScene('chat')
+    void send(query?.trim() ? `请按这些条件推荐一道原书题目：${query.trim()}` : '再来一道')
+      .then(() => refreshSessions())
+  }
+
+  const startRecommendationAnswer = (recommendation: QuestionRecommendation) => {
+    const question = recommendation.question
+    setMode('recommend')
+    setActivePractice({
+      question_type: question.question_type,
+      question: question.prompt,
+      question_stem: question.prompt,
+      question_parts: (question.subquestions || []).map((item) => `(${item.label}) ${item.text}`),
+      knowledge_point: recommendation.profile.knowledge_points.join('、'),
+      difficulty: recommendation.profile.difficulty,
+      solution: '',
+      solution_steps: [],
+      answer: '',
+      answer_items: [],
+      common_mistakes: [],
+    })
+    setScene('quiz_grade')
+    setActiveQuestionRef(recommendation.question_ref)
+    window.setTimeout(() => {
+      document.querySelector('.practice-submit-banner')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      })
+    }, 0)
+  }
+
+  const requestRecommendationHint = (
+    reference: QuestionReference,
+    level: 'direction' | 'formula',
+  ) => {
+    setMode('answer')
+    setScene('chat')
+    const prompt = level === 'formula'
+      ? '只给我解决这道题需要使用的关键公式和每个符号的含义，不要代入数值，不要给最终答案。'
+      : '只给我一级思路提示：指出第一步应该判断什么或从哪里开始，不要展开完整步骤，不要给公式计算结果和最终答案。'
+    void send(prompt, { questionRef: reference }).then(() => refreshSessions())
+  }
+
+  const proposeReferenceMistake = async (reference: QuestionReference) => {
+    try {
+      setPendingReferenceCandidate(await createQuestionReferenceMistakeCandidate(
+        reference,
+        studentId,
+        sessionId,
+        knowledgeBase,
+      ))
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '错题候选创建失败')
+    }
+  }
+
+  const confirmReferenceMistake = async (decision: {
+    reason: MistakeReason
+    categoryId: string
+    title: string
+  }) => {
+    if (!pendingReferenceCandidate || savingMistakeDecision) return
+    setSavingMistakeDecision(true)
+    try {
+      await confirmMistakeCandidate(studentId, pendingReferenceCandidate.id, {
+        ...decision,
+        photoRetention: 'original_and_processed',
+      })
+      setPendingReferenceCandidate(undefined)
+      await refreshMistakes()
+      toast.success('已加入错题本')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '加入错题本失败')
+    } finally {
+      setSavingMistakeDecision(false)
+    }
   }
 
   const proposeMistakes = (drafts: MistakeCandidateDraft | MistakeCandidateDraft[]) => {
@@ -3904,7 +4737,7 @@ function StudentPageContent() {
             <button className="menu-button" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu size={19} /></button>
             <div>
               <span className="breadcrumb">学生工作台 /</span>
-              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'question-bank' ? '题库' : activeView === 'homework' ? '我的作业' : activeView === 'mistakes' ? '错题本' : activeView === 'schedule' ? '学习日历' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
+              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'question-bank' ? '题库' : activeView === 'homework' ? '我的作业' : activeView === 'mistakes' ? '错题本' : activeView === 'schedule' ? '学习日历' : mode === 'recommend' ? 'AI 出题' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
             </div>
           </div>
           <div className="topbar-actions">
@@ -3971,17 +4804,30 @@ function StudentPageContent() {
                     onConfirmPhoto={(content) => ask(content, 'answer', true)}
                     onStartPractice={startPracticeAnswer}
                     onGenerateSimilar={generateAnotherPractice}
+                    onRecommendationSimilar={generateSimilarFromRecommendation}
+                    onRecommendationBookmark={(reference) => void proposeReferenceMistake(reference)}
+                    onRecommendationAnother={recommendAnother}
+                    onRecommendationStart={startRecommendationAnswer}
+                    onRecommendationHint={requestRecommendationHint}
                   />
                 )}
               </div>
-              <ChatComposer onSend={(value) => ask(value)} />
+              <ChatComposer
+                onSend={(value) => ask(value)}
+                onPdfUpload={(file) => void uploadPhotoPdf(file)}
+              />
             </div>
             <KnowledgePanel statuses={statuses} onCreate={() => setKbModalOpen(true)} />
           </section>
         ) : activeView === 'graph' ? (
           <KnowledgeGraphView graph={knowledgeGraph} loading={graphLoading} />
         ) : activeView === 'question-bank' ? (
-          <QuestionBankView knowledgeBase={knowledgeBase} />
+          <QuestionBankView
+            knowledgeBase={knowledgeBase}
+            studentId={studentId}
+            initialBankId={photoPdfBankId}
+            onAskQuestion={askQuestionBankQuestion}
+          />
         ) : activeView === 'mistakes' ? (
           <MistakeBookView
             mistakes={mistakes}
@@ -4019,6 +4865,19 @@ function StudentPageContent() {
         saving={savingMistakeDecision}
         onCancel={() => !savingMistakeDecision && setPendingMistakeDrafts([])}
         onConfirm={(decision) => void confirmMistakeDecision(decision)}
+      />
+      <ReferenceMistakeConfirmModal
+        candidate={pendingReferenceCandidate}
+        categories={mistakeCategories}
+        saving={savingMistakeDecision}
+        onCancel={() => !savingMistakeDecision && setPendingReferenceCandidate(undefined)}
+        onConfirm={(decision) => void confirmReferenceMistake(decision)}
+      />
+      <PhotoPdfQuestionPickerModal
+        bankId={photoPdfBankId}
+        studentId={studentId}
+        onClose={() => setPhotoPdfBankId('')}
+        onAsk={askQuestionBankQuestion}
       />
 
       <Modal

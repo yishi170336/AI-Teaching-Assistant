@@ -9,6 +9,13 @@ export function normalizeLatex(input: string): string {
     // adjacent display blocks (`$$...$$\n$$...$$`).
     .replace(/(?<!\$)\${3}(?!\$)/g, '$$')
 
+  // Compatible APIs occasionally emit HTML-style subscripts even when the
+  // prompt requests LaTeX.  ReactMarkdown escapes raw HTML, so normalize the
+  // common variable form without enabling unsafe HTML rendering.
+  text = text
+    .replace(/([A-Za-zΑ-Ωα-ω])<sub>([A-Za-z0-9Α-Ωα-ω,+\-]+)<\/sub>/gi, (_, base, subscript) => `$${base}_{\\mathrm{${subscript}}}$`)
+    .replace(/([A-Za-zΑ-Ωα-ω])<sup>([A-Za-z0-9Α-Ωα-ω,+\-]+)<\/sup>/gi, (_, base, superscript) => `$${base}^{\\mathrm{${superscript}}}$`)
+
   const protectedBlocks: string[] = []
   text = text.replace(/\$\$[\s\S]*?\$\$/g, (block) => {
     protectedBlocks.push(block)
