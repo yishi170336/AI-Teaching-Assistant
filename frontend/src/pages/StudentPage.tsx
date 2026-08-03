@@ -3904,36 +3904,35 @@ function KnowledgeExplanationView({
 }: {
   explanation?: KnowledgeExplanation
   history: KnowledgeExplanation[]
-  pageCount: number
+  pageCount: number | null
   imageModel: KnowledgeImageModel
-  onPageCountChange: (value: number) => void
+  onPageCountChange: (value: number | null) => void
   onImageModelChange: (value: KnowledgeImageModel) => void
   onSelect: (value: KnowledgeExplanation) => void
 }) {
   const [selectedPage, setSelectedPage] = useState(1)
-  const [customPageCount, setCustomPageCount] = useState(
-    [0, 4, 6, 8].includes(pageCount) ? 5 : pageCount,
+  const [pageCountMode, setPageCountMode] = useState<number | 'custom'>(
+    pageCount !== null && [0, 4, 6, 8].includes(pageCount) ? pageCount : 'custom',
+  )
+  const [customPageCount, setCustomPageCount] = useState<number | null>(
+    pageCount !== null && ![0, 4, 6, 8].includes(pageCount) ? pageCount : null,
   )
   useEffect(() => setSelectedPage(1), [explanation?.id])
-  useEffect(() => {
-    if (![0, 4, 6, 8].includes(pageCount)) setCustomPageCount(pageCount)
-  }, [pageCount])
 
   const pages = explanation?.pages || []
   const activePage = pages.find((page) => page.index === selectedPage) || pages[0]
   const readyCount = pages.filter((page) => page.status === 'ready').length
   const isActive = explanation?.status === 'planning' || explanation?.status === 'generating'
-  const pageCountMode: number | 'custom' = [0, 4, 6, 8].includes(pageCount)
-    ? pageCount
-    : 'custom'
+  const customPageCountInvalid = customPageCount !== null
+    && (customPageCount < 1 || customPageCount > 8)
 
   const changePageCountMode = (value: number | 'custom') => {
+    setPageCountMode(value)
     onPageCountChange(value === 'custom' ? customPageCount : value)
   }
 
   const changeCustomPageCount = (value: number | null) => {
-    if (value === null) return
-    const nextValue = Math.max(1, Math.min(8, Math.round(value)))
+    const nextValue = value === null ? null : Math.round(value)
     setCustomPageCount(nextValue)
     onPageCountChange(nextValue)
   }
@@ -3956,7 +3955,7 @@ function KnowledgeExplanationView({
             <span><b>03</b><small>逐页绘制</small></span>
           </div>
           <div className="explanation-count-control">
-            <div>
+            <div className="explanation-control-copy">
               <strong>讲解页数</strong>
               <small>推荐自动规划，让内容结构随问题变化</small>
             </div>
@@ -3973,22 +3972,26 @@ function KnowledgeExplanationView({
                 ]}
               />
               {pageCountMode === 'custom' && (
-                <InputNumber
-                  className="explanation-custom-count"
-                  size="small"
-                  min={1}
-                  max={8}
-                  precision={0}
-                  value={customPageCount}
-                  addonAfter="页"
-                  aria-label="自定义讲解页数，范围一到八页"
-                  onChange={changeCustomPageCount}
-                />
+                <div className="explanation-custom-field">
+                  <InputNumber
+                    className="explanation-custom-count"
+                    size="small"
+                    precision={0}
+                    controls={false}
+                    value={customPageCount}
+                    placeholder="1–8"
+                    status={customPageCountInvalid ? 'error' : undefined}
+                    addonAfter="页"
+                    aria-label="自定义讲解页数，范围一到八页"
+                    onChange={changeCustomPageCount}
+                  />
+                  {customPageCountInvalid && <span>请输入 1–8 页</span>}
+                </div>
               )}
             </div>
           </div>
           <div className="explanation-count-control explanation-model-control">
-            <div>
+            <div className="explanation-control-copy">
               <strong>生图模型</strong>
               <small>标准版生成更快，Pro 版强化文字渲染与语义遵循</small>
             </div>
@@ -4434,7 +4437,7 @@ function StudentPageContent() {
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog>(fallbackModelCatalog)
   const [explanationHistory, setExplanationHistory] = useState<KnowledgeExplanation[]>([])
   const [activeExplanation, setActiveExplanation] = useState<KnowledgeExplanation>()
-  const [explanationPageCount, setExplanationPageCount] = useState(0)
+  const [explanationPageCount, setExplanationPageCount] = useState<number | null>(0)
   const [explanationImageModel, setExplanationImageModel] = useState<KnowledgeImageModel>('qwen-image-2.0')
   const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraph>()
   const [graphLoading, setGraphLoading] = useState(false)
@@ -4683,6 +4686,13 @@ function StudentPageContent() {
   const generateKnowledgeExplanation = async (prompt: string) => {
     const question = prompt.trim()
     if (!question) return
+    if (
+      explanationPageCount === null
+      || (explanationPageCount !== 0 && (explanationPageCount < 1 || explanationPageCount > 8))
+    ) {
+      toast.warning('自定义讲解页数请输入 1–8 之间的整数')
+      return
+    }
     if (explanationBusy) {
       toast.warning('请先等待当前讲解生成完成，或取消当前任务')
       return
