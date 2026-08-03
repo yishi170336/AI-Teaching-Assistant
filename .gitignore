@@ -1,4 +1,5 @@
 .env
+.env.local
 models/
 __pycache__/
 *.py[cod]
