@@ -477,6 +477,63 @@ class LearningPlanPptRequest(BaseModel):
         return value.strip()
 
 
+class KnowledgeExplanationRequest(BaseModel):
+    student_id: str = Field(default="learner-demo", min_length=1, max_length=96)
+    question: str = Field(min_length=3, max_length=2000)
+    page_count: int = Field(default=0, ge=0, le=8)
+    model_provider: Literal["ollama", "deepseek", "qwen", "custom"] = "ollama"
+    model: str = Field(default="qwen3.5:2b", min_length=1, max_length=128)
+    api_key: str = Field(default="", max_length=512)
+    base_url: str = Field(default="", max_length=512)
+    image_model: str = Field(default="", max_length=128)
+    image_api_key: str = Field(default="", max_length=512)
+    image_base_url: str = Field(default="", max_length=512)
+
+    @field_validator("student_id")
+    @classmethod
+    def safe_explanation_student_identifier(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", value):
+            raise ValueError("学生标识仅允许字母、数字、连字符和下划线")
+        return value
+
+    @field_validator(
+        "question",
+        "model",
+        "api_key",
+        "base_url",
+        "image_model",
+        "image_api_key",
+        "image_base_url",
+    )
+    @classmethod
+    def strip_explanation_fields(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def valid_explanation_configuration(self) -> "KnowledgeExplanationRequest":
+        if self.page_count not in {0, 3, 4, 5, 6, 7, 8}:
+            raise ValueError("讲解页数必须为自动或 3 到 8 页")
+        if not re.fullmatch(r"[A-Za-z0-9._:/-]+", self.model):
+            raise ValueError("文本模型名称包含不支持的字符")
+        if self.image_model and not re.fullmatch(
+            r"qwen-image-2\.0(?:-[A-Za-z0-9.-]+)?", self.image_model
+        ):
+            raise ValueError("知识讲解当前仅支持 Qwen Image 2.0 系列模型")
+        for label, value in (
+            ("文本模型 API Base URL", self.base_url),
+            ("Qwen Image API Base URL", self.image_base_url),
+        ):
+            if not value:
+                continue
+            parsed = urlparse(value)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError(f"{label} 必须是有效的 HTTP(S) 地址")
+        if self.model_provider == "custom" and (not self.api_key or not self.base_url):
+            raise ValueError("自定义文本模型必须填写 API Key 和 Base URL")
+        return self
+
+
 class QuestionBankSelection(BaseModel):
     bank_id: str = Field(min_length=32, max_length=32)
     question_ids: list[str] = Field(min_length=1, max_length=500)

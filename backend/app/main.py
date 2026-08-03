@@ -43,6 +43,7 @@ from backend.app.schemas import (
     HomeworkQuestionUpdateRequest,
     HomeworkSubmissionAnswer,
     KnowledgeBaseRebuildRequest,
+    KnowledgeExplanationRequest,
     LearningPlanPptRequest,
     MistakeAnnotationRequest,
     MistakeCandidateConfirmRequest,
@@ -81,6 +82,12 @@ from backend.app.services.homework import (
     retag_question_bank,
 )
 from backend.app.services.question_recommendations import QuestionRecommendationService
+from backend.app.services.knowledge_explanations import (
+    KnowledgeExplanationService,
+    KnowledgeExplanationStore,
+    QwenImageClient,
+    qwen_image_endpoint,
+)
 from backend.app.services.model_catalog import (
     QWEN_MODELS,
     QWEN_MODEL_OPTIONS,
@@ -124,6 +131,9 @@ student_schedule = StudentSchedule()
 homework_store = HomeworkStore()
 question_recommendations = QuestionRecommendationService(homework_store)
 engine = CircuitTutorEngine(ollama, knowledge_bases, question_recommendations)
+knowledge_explanation_store = KnowledgeExplanationStore()
+knowledge_explanations = KnowledgeExplanationService(knowledge_explanation_store)
+knowledge_explanation_tasks: dict[str, asyncio.Task[Any]] = {}
 
 
 class QuestionBankTaskRegistry:
@@ -371,9 +381,15 @@ def _should_replace_focus_with_photo(
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     knowledge_bases.load_existing()
+    knowledge_explanation_store.recover_interrupted()
     await memory.connect()
     yield
     question_bank_tasks.cancel_all()
+    pending_explanations = list(knowledge_explanation_tasks.values())
+    for task in pending_explanations:
+        task.cancel()
+    if pending_explanations:
+        await asyncio.gather(*pending_explanations, return_exceptions=True)
     await ollama.close()
     await memory.close()
     knowledge_bases.close_all()
@@ -1293,6 +1309,169 @@ def select_vision_client(payload: ChatRequest, selected_client: Any) -> tuple[An
             base_url=qwen_base_url,
         ),
         True,
+    )
+
+
+def _safe_explanation_error(exc: Exception) -> str:
+    message = re.sub(r"sk-[A-Za-z0-9_-]+", "[API KEY 已隐藏]", str(exc)).strip()
+    return (message or "知识讲解生成失败")[:500]
+
+
+async def _run_knowledge_explanation(
+    task_id: str,
+    payload: KnowledgeExplanationRequest,
+    selected_client: Any,
+    close_selected_client: bool,
+    image_client: QwenImageClient,
+) -> None:
+    try:
+        await knowledge_explanations.generate(
+            task_id,
+            question=payload.question,
+            requested_page_count=payload.page_count,
+            text_client=selected_client,
+            image_client=image_client,
+        )
+    except asyncio.CancelledError:
+        with suppress(FileNotFoundError):
+            knowledge_explanation_store.update(
+                task_id,
+                status="cancelled",
+                message="生成已取消，已完成的页面仍可查看",
+            )
+        raise
+    except Exception as exc:
+        logger.exception("Knowledge explanation generation failed for %s", task_id)
+        with suppress(FileNotFoundError):
+            knowledge_explanation_store.update(
+                task_id,
+                status="error",
+                message="知识讲解生成失败",
+                error=_safe_explanation_error(exc),
+            )
+    finally:
+        await image_client.close()
+        if close_selected_client:
+            await selected_client.close()
+
+
+@app.post("/api/knowledge-explanations", status_code=202)
+async def create_knowledge_explanation(
+    payload: KnowledgeExplanationRequest,
+) -> dict[str, Any]:
+    selected_client: Any | None = None
+    close_selected_client = False
+    try:
+        selected_client, close_selected_client = select_model_client(payload)  # type: ignore[arg-type]
+        image_api_key = (
+            payload.image_api_key
+            or (payload.api_key if payload.model_provider == "qwen" else "")
+            or settings.qwen_api_key
+        )
+        image_model = payload.image_model or settings.qwen_image_model
+        if payload.image_api_key:
+            image_endpoint = qwen_image_endpoint(
+                payload.image_base_url or settings.qwen_base_url
+            )
+        elif payload.model_provider == "qwen" and payload.api_key:
+            image_endpoint = qwen_image_endpoint(
+                payload.image_base_url or payload.base_url or settings.qwen_base_url
+            )
+        else:
+            image_endpoint = settings.qwen_image_endpoint
+        image_client = QwenImageClient(
+            api_key=image_api_key,
+            model=image_model,
+            endpoint=image_endpoint,
+        )
+    except ValueError as exc:
+        if selected_client is not None and close_selected_client:
+            await selected_client.close()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    explanation = knowledge_explanation_store.create(
+        student_id=payload.student_id,
+        question=payload.question,
+        requested_page_count=payload.page_count,
+        text_model=canonical_model_id(payload.model_provider, payload.model),
+        image_model=image_model,
+    )
+    task_id = str(explanation["id"])
+    task = asyncio.create_task(
+        _run_knowledge_explanation(
+            task_id,
+            payload,
+            selected_client,
+            close_selected_client,
+            image_client,
+        )
+    )
+    knowledge_explanation_tasks[task_id] = task
+
+    def forget(completed: asyncio.Task[Any]) -> None:
+        if knowledge_explanation_tasks.get(task_id) is completed:
+            knowledge_explanation_tasks.pop(task_id, None)
+
+    task.add_done_callback(forget)
+    return {"ok": True, "explanation": explanation}
+
+
+@app.get("/api/knowledge-explanations")
+async def list_knowledge_explanations(
+    student_id: str = "learner-demo", limit: int = 12
+) -> dict[str, Any]:
+    try:
+        items = knowledge_explanation_store.list(student_id, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"explanations": items}
+
+
+@app.get("/api/knowledge-explanations/{task_id}")
+async def get_knowledge_explanation(
+    task_id: str, student_id: str = "learner-demo"
+) -> dict[str, Any]:
+    try:
+        explanation = knowledge_explanation_store.get(task_id, student_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="知识讲解任务不存在") from exc
+    return {"explanation": explanation}
+
+
+@app.post("/api/knowledge-explanations/{task_id}/cancel")
+async def cancel_knowledge_explanation(
+    task_id: str, student_id: str = "learner-demo"
+) -> dict[str, Any]:
+    try:
+        explanation = knowledge_explanation_store.get(task_id, student_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="知识讲解任务不存在") from exc
+    task = knowledge_explanation_tasks.get(task_id)
+    if task is not None and not task.done():
+        knowledge_explanation_store.update(
+            task_id,
+            status="cancelled",
+            message="正在取消生成…",
+        )
+        task.cancel()
+        explanation = knowledge_explanation_store.get(task_id, student_id)
+    return {"ok": True, "explanation": explanation}
+
+
+@app.get("/api/knowledge-explanations/{task_id}/pages/{page_index}")
+async def get_knowledge_explanation_page(
+    task_id: str, page_index: int, student_id: str = "learner-demo"
+) -> FileResponse:
+    try:
+        path = knowledge_explanation_store.page_file(task_id, page_index, student_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="知识讲解页不存在") from exc
+    return FileResponse(
+        path,
+        media_type="image/png",
+        filename=path.name,
+        content_disposition_type="inline",
+        headers={"Cache-Control": "private, max-age=31536000, immutable"},
     )
 
 

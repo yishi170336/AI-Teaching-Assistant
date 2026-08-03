@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { AttachmentInfo, ConversationFocus, KBStatus, ModelConfig, ModelProviderId, PhotoRecognition, PracticeExercise, PracticeGrading, QuestionRecommendation, QuestionReference, QuestionSummary, SourceInfo, StoredMessage, streamChat, uploadChatAttachment, VisionModelConfig } from '../lib/api'
 
-export type ChatMode = 'auto' | 'answer' | 'quiz' | 'plan' | 'recommend'
+export type ChatMode = 'auto' | 'answer' | 'quiz' | 'plan' | 'recommend' | 'explain'
 export type ChatScene = 'chat' | 'image_answer' | 'quiz_grade'
 
 export type ChatMessage = {

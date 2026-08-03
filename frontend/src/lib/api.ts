@@ -62,6 +62,47 @@ export type VisionModelConfig = {
   baseUrl: string
 }
 
+export type KnowledgeExplanationStatus = 'planning' | 'generating' | 'completed' | 'cancelled' | 'error'
+
+export type KnowledgeExplanationSection = {
+  heading: string
+  body: string
+  visual: string
+  accent: 'blue' | 'green' | 'orange' | 'red'
+}
+
+export type KnowledgeExplanationPage = {
+  index: number
+  title: string
+  subtitle: string
+  learning_goal: string
+  sections: KnowledgeExplanationSection[]
+  key_takeaway: string
+  status: 'pending' | 'writing' | 'drawing' | 'ready'
+  message: string
+  image_file: string
+  image_url: string
+}
+
+export type KnowledgeExplanation = {
+  id: string
+  student_id: string
+  question: string
+  status: KnowledgeExplanationStatus
+  progress: number
+  message: string
+  title: string
+  subtitle: string
+  requested_page_count: number
+  page_count: number
+  text_model: string
+  image_model: string
+  pages: KnowledgeExplanationPage[]
+  error: string
+  created_at: string
+  updated_at: string
+}
+
 export type ModelProviderInfo = {
   id: ModelProviderId
   label: string
@@ -1267,6 +1308,71 @@ export async function reprocessQuestionBank(bankId: string, studentId = ''): Pro
     method: 'POST',
   })
   await homeworkResponse(response, '重新识别题库失败')
+}
+
+export async function createKnowledgeExplanation(fields: {
+  studentId: string
+  question: string
+  pageCount: number
+  modelConfig: ModelConfig
+  visionModelConfig: VisionModelConfig
+}): Promise<KnowledgeExplanation> {
+  const response = await fetch('/api/knowledge-explanations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      student_id: fields.studentId,
+      question: fields.question,
+      page_count: fields.pageCount,
+      model_provider: fields.modelConfig.provider,
+      model: fields.modelConfig.model,
+      api_key: fields.modelConfig.apiKey,
+      base_url: fields.modelConfig.baseUrl,
+      image_api_key: fields.visionModelConfig.apiKey,
+      image_base_url: fields.visionModelConfig.baseUrl,
+    }),
+  })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(apiErrorMessage(result, '知识讲解任务创建失败'))
+  return result.explanation
+}
+
+export async function fetchKnowledgeExplanations(
+  studentId: string,
+  limit = 12,
+): Promise<KnowledgeExplanation[]> {
+  const query = new URLSearchParams({ student_id: studentId, limit: String(limit) })
+  const response = await fetch(`/api/knowledge-explanations?${query.toString()}`)
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(apiErrorMessage(result, '知识讲解历史读取失败'))
+  return result.explanations || []
+}
+
+export async function fetchKnowledgeExplanation(
+  taskId: string,
+  studentId: string,
+): Promise<KnowledgeExplanation> {
+  const query = new URLSearchParams({ student_id: studentId })
+  const response = await fetch(
+    `/api/knowledge-explanations/${encodeURIComponent(taskId)}?${query.toString()}`,
+  )
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(apiErrorMessage(result, '知识讲解任务读取失败'))
+  return result.explanation
+}
+
+export async function cancelKnowledgeExplanation(
+  taskId: string,
+  studentId: string,
+): Promise<KnowledgeExplanation> {
+  const query = new URLSearchParams({ student_id: studentId })
+  const response = await fetch(
+    `/api/knowledge-explanations/${encodeURIComponent(taskId)}/cancel?${query.toString()}`,
+    { method: 'POST' },
+  )
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(apiErrorMessage(result, '知识讲解取消失败'))
+  return result.explanation
 }
 
 export async function cancelQuestionBank(bankId: string, studentId = ''): Promise<QuestionBank> {

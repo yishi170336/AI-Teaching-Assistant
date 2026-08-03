@@ -19,6 +19,7 @@
 - 答疑、AI 出题和外部题库内容均可加入持久化错题本；支持来源追踪、分类、批注、知识图谱对齐、章节/前置知识定位和确定性薄弱点学习规划。实现、接口与迁移约定见 [错题本集成说明](docs/MISTAKE_BOOK.md)。
 - 教师可上传试卷、课后习题、学习指导书、图片或扫描版习题册；`qwen3-vl-flash` 联合 PDF-Extract-Kit 过滤目录、知识讲解等非题目内容，按题提取题号、共同题干、分层小问、选项、所属插图、参考答案与评分点，并重排为可打印的作业内容和参考答案。
 - 学生端“我的作业”支持多张作答照片提交；`qwen3-vl-flash` 识别手写内容并评分，`qwen3-vl-8b-instruct` 独立复核漏题、错读、步骤分与总分，疑点会标记为教师复查。
+- 学生交互栏新增“知识讲解”：文本模型先按具体问题动态规划 4–7 页大纲并逐页撰写图文蓝图，`qwen-image-2.0` 再生成 16:9 中文信息图；前端展示实时进度、页面大纲、缩略图、大图预览、下载与最近记录。
 
 ## 当前数据成果
 
@@ -130,6 +131,10 @@ powershell -ExecutionPolicy Bypass -File scripts/start.ps1
 - 上传或重建知识库仍固定使用 `qwen3-vl-flash` 做视觉/OCR 分析，并按需调用 `qwen3-vl-embedding`；完成后不会改变页面的回答模型配置。
 
 页面输入的模型配置和 API Key 会写入当前浏览器的 `localStorage`，不会写入项目文件；配置弹窗提供清除入口。公用电脑不建议保存云端密钥。也可以在 `.env` 配置对应服务的 API Key 和 Base URL。使用云端模型时，题目、最近对话、检索上下文及附件视觉内容会发送到所选 API。
+
+### 知识讲解与 Qwen Image
+
+知识讲解使用当前回答模型完成大纲分析和逐页文案，再通过 DashScope 原生接口调用 Qwen Image 2.0。浏览器单独配置的 Qwen 图片识别 API Key 可以直接复用；未填写时使用后端 `QWEN_API_KEY`。可通过 `QWEN_IMAGE_MODEL`、`QWEN_IMAGE_ENDPOINT`、`QWEN_IMAGE_SIZE` 和 `QWEN_IMAGE_TIMEOUT_SECONDS` 调整图像模型、地域端点、分辨率及超时。生成结果会立即下载到 `data/knowledge_explanations/`，不依赖仅保留 24 小时的临时 OSS URL。
 
 ## 环境重建
 

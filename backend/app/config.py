@@ -55,6 +55,16 @@ class Settings:
         "QWEN_HOMEWORK_REVIEW_MODEL", "qwen3-vl-8b-instruct"
     )
     qwen_vision_max_tokens: int = int(os.getenv("QWEN_VISION_MAX_TOKENS", "8192"))
+    qwen_image_model: str = os.getenv("QWEN_IMAGE_MODEL", "qwen-image-2.0")
+    qwen_image_endpoint: str = os.getenv(
+        "QWEN_IMAGE_ENDPOINT",
+        "https://dashscope.aliyuncs.com/api/v1/services/aigc/"
+        "multimodal-generation/generation",
+    )
+    qwen_image_size: str = os.getenv("QWEN_IMAGE_SIZE", "2688*1536")
+    qwen_image_timeout_seconds: float = float(
+        os.getenv("QWEN_IMAGE_TIMEOUT_SECONDS", "360")
+    )
     qwen_multimodal_embedding_model: str = os.getenv(
         "QWEN_MULTIMODAL_EMBEDDING_MODEL", "qwen3-vl-embedding"
     )

@@ -17,6 +17,7 @@ data/mistake_candidates.json
 data/mistakes/
 data/student_schedule.json
 data/presentations/
+data/knowledge_explanations/
 tmp/
 logs/
 .codex-server*.log

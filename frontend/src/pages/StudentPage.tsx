@@ -89,12 +89,14 @@ import {
   addScheduleItem,
   AttachmentInfo,
   cancelQuestionBank,
+  cancelKnowledgeExplanation,
   cancelKnowledgeBaseBuild,
   ChapterKnowledgeSummary,
   ConversationFocus,
   confirmMistakeCandidate,
   createQuestionReferenceMistakeCandidate,
   createQuestionBank,
+  createKnowledgeExplanation,
   createMistakeCandidate,
   createMistakeCategory,
   deleteKnowledgeBase,
@@ -107,6 +109,8 @@ import {
   deleteSession,
   fetchKnowledgeGraph,
   fetchKnowledgeBases,
+  fetchKnowledgeExplanation,
+  fetchKnowledgeExplanations,
   fetchMistakeNotebook,
   fetchSchedule,
   fetchModels,
@@ -118,6 +122,7 @@ import {
   HomeworkQuestion,
   KBStatus,
   knowledgeBaseSourceUrl,
+  KnowledgeExplanation,
   KnowledgeGraph,
   generateLearningPlanPpt,
   ModelCatalog,
@@ -797,9 +802,13 @@ const photoSuffixPattern = /\.(png|jpe?g|webp|bmp)$/i
 function ChatComposer({
   onSend,
   onPdfUpload,
+  externalBusy = false,
+  onExternalStop,
 }: {
   onSend: (value: string) => void
   onPdfUpload: (file: File) => void
+  externalBusy?: boolean
+  onExternalStop?: () => void
 }) {
   const { message: toast } = AntApp.useApp()
   const [value, setValue] = useState('')
@@ -824,14 +833,18 @@ function ChatComposer({
   const hasReadyImage = pendingAttachments.some((item) => item.status === 'ready' && item.kind === 'image')
   const hasUnfinishedAttachment = pendingAttachments.some((item) => item.status !== 'ready')
   const composerMode: ComposerMode = scene === 'image_answer' ? 'image_answer' : mode
-  const canSubmit = scene === 'image_answer'
+  const explanationBusy = mode === 'explain' && externalBusy
+  const busy = streaming || explanationBusy
+  const canSubmit = mode === 'explain'
+    ? Boolean(value.trim())
+    : scene === 'image_answer'
     ? hasReadyImage && !hasUnfinishedAttachment
     : scene === 'quiz_grade'
       ? (Boolean(value.trim()) || hasReadyImage) && !hasUnfinishedAttachment
     : (Boolean(value.trim()) || hasReadyAttachment) && !hasUnfinishedAttachment
 
   const submit = () => {
-    if (!canSubmit || streaming) return
+    if (!canSubmit || busy) return
     onSend(value)
     setValue('')
   }
@@ -877,6 +890,7 @@ function ChatComposer({
               { label: '拍照答题', value: 'image_answer' },
               { label: '同类出题', value: 'quiz' },
               { label: 'AI 出题', value: 'recommend' },
+              { label: '知识讲解', value: 'explain' },
               { label: '学习规划', value: 'plan' },
             ]}
           />
@@ -893,19 +907,20 @@ function ChatComposer({
             />
             <Select
               size="small"
-              value={(['auto', 'quiz', 'plan'] as ComposerMode[]).includes(composerMode) ? composerMode : undefined}
+              value={(['auto', 'quiz', 'explain', 'plan'] as ComposerMode[]).includes(composerMode) ? composerMode : undefined}
               placeholder="更多"
               onChange={(nextMode) => changeComposerMode(nextMode as ComposerMode)}
               options={[
                 { label: '智能路由', value: 'auto' },
                 { label: '同类出题', value: 'quiz' },
+                { label: '知识讲解', value: 'explain' },
                 { label: '学习规划', value: 'plan' },
               ]}
             />
           </div>
-          <span className="composer-tip">Shift + Enter 换行</span>
+          <span className="composer-tip">{mode === 'explain' ? 'Qwen Image 2.0 · 逐页生成' : 'Shift + Enter 换行'}</span>
         </div>
-        {activeFocus && (
+        {activeFocus && mode !== 'explain' && (
           <div className="conversation-focus-bar">
             <span className="conversation-focus-icon"><BrainCircuit size={15} /></span>
             <div className="conversation-focus-copy">
@@ -925,7 +940,7 @@ function ChatComposer({
             </div>
           </div>
         )}
-        {pendingAttachments.length > 0 && (
+        {pendingAttachments.length > 0 && mode !== 'explain' && (
           <div className="pending-attachments" aria-label="待发送附件">
             {pendingAttachments.map((item) => (
               <div key={item.localId} className={`pending-attachment ${item.status}`}>
@@ -961,7 +976,7 @@ function ChatComposer({
             multiple
             showUploadList={false}
             accept={scene === 'image_answer' ? '.png,.jpg,.jpeg,.webp,.bmp,.pdf' : '.png,.jpg,.jpeg,.webp,.bmp'}
-            disabled={streaming || pendingAttachments.length >= 5}
+            disabled={busy || pendingAttachments.length >= 5}
             beforeUpload={(file) => {
               selectFiles([file])
               return Upload.LIST_IGNORE
@@ -978,7 +993,7 @@ function ChatComposer({
           <div className="photo-submit-hint">请先拍照、选择题目图片，或上传整份 PDF。</div>
         )}
         <div className="composer-input-row">
-          {scene === 'chat' && <input
+          {scene === 'chat' && mode !== 'explain' && <input
             ref={fileInputRef}
             className="sr-only-file"
             type="file"
@@ -989,12 +1004,12 @@ function ChatComposer({
               event.target.value = ''
             }}
           />}
-          {scene === 'chat' && <Tooltip title="添加题目图片或附件">
+          {scene === 'chat' && mode !== 'explain' && <Tooltip title="添加题目图片或附件">
             <Button
               className="attach-button"
               shape="circle"
               onClick={() => fileInputRef.current?.click()}
-              disabled={streaming || pendingAttachments.length >= 5}
+              disabled={busy || pendingAttachments.length >= 5}
               icon={<Paperclip size={17} />}
               aria-label="添加题目图片或附件"
             />
@@ -1009,6 +1024,7 @@ function ChatComposer({
               }
             }}
             onPaste={(event) => {
+              if (mode === 'explain') return
               const files = Array.from(event.clipboardData.files || [])
               if (files.length) {
                 event.preventDefault()
@@ -1016,13 +1032,13 @@ function ChatComposer({
               }
             }}
             autoSize={{ minRows: 1, maxRows: 5 }}
-            placeholder={scene === 'quiz_grade' ? '输入你的答案或补充说明，例如“图片中第 2 步我取向右为正”…' : scene === 'image_answer' ? '可选：补充题目要求、指定解法或你看清的文字…' : mode === 'recommend' ? activeFocus ? '说明想从题库找怎样的相似题；Agent 会以当前题为参照阅读候选题干…' : '描述想练的知识点、题型和难度，例如“基础二极管限幅计算题”…' : mode === 'quiz' ? activeFocus ? '说明希望保留或改变哪些条件，Agent 会基于当前题生成变式…' : '粘贴原题，上传原题图片，或描述想练习的知识点…' : mode === 'plan' ? '描述学习目标、薄弱点和可用时间…' : activeFocus ? '继续追问当前题，或说明要解释、批改、生成变式还是检索相似题…' : '输入电路问题，支持 LaTeX 公式…'}
+            placeholder={scene === 'quiz_grade' ? '输入你的答案或补充说明，例如“图片中第 2 步我取向右为正”…' : scene === 'image_answer' ? '可选：补充题目要求、指定解法或你看清的文字…' : mode === 'recommend' ? activeFocus ? '说明想从题库找怎样的相似题；Agent 会以当前题为参照阅读候选题干…' : '描述想练的知识点、题型和难度，例如“基础二极管限幅计算题”…' : mode === 'quiz' ? activeFocus ? '说明希望保留或改变哪些条件，Agent 会基于当前题生成变式…' : '粘贴原题，上传原题图片，或描述想练习的知识点…' : mode === 'explain' ? '输入想讲清楚的问题，例如“为什么傅里叶变换能把时域信号分解成频率成分？”…' : mode === 'plan' ? '描述学习目标、薄弱点和可用时间…' : activeFocus ? '继续追问当前题，或说明要解释、批改、生成变式还是检索相似题…' : '输入电路问题，支持 LaTeX 公式…'}
             variant="borderless"
             aria-label="输入电路问题"
           />
-          {streaming ? (
-            <Tooltip title="停止生成">
-              <Button className="send-button stop" shape="circle" onClick={stop} icon={<CircleStop size={18} />} />
+          {busy ? (
+            <Tooltip title={explanationBusy ? '取消讲解页生成' : '停止生成'}>
+              <Button className="send-button stop" shape="circle" onClick={explanationBusy ? onExternalStop : stop} icon={<CircleStop size={18} />} />
             </Tooltip>
           ) : (
             <Tooltip title="发送">
@@ -1038,7 +1054,7 @@ function ChatComposer({
           )}
         </div>
       </div>
-      <p className="composer-footnote">AI 可能犯错，重要计算请结合教材与实验结果复核。</p>
+      <p className="composer-footnote">{mode === 'explain' ? '讲解页由 AI 生成，请核对关键公式、数值与专业术语。' : 'AI 可能犯错，重要计算请结合教材与实验结果复核。'}</p>
     </div>
   )
 }
@@ -3844,6 +3860,228 @@ function ScheduleView({
   )
 }
 
+const explanationStatusLabels: Record<KnowledgeExplanation['status'], string> = {
+  planning: '规划大纲',
+  generating: '逐页生成',
+  completed: '生成完成',
+  cancelled: '已取消',
+  error: '生成失败',
+}
+
+function explanationTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function KnowledgeExplanationView({
+  explanation,
+  history,
+  pageCount,
+  onPageCountChange,
+  onSelect,
+}: {
+  explanation?: KnowledgeExplanation
+  history: KnowledgeExplanation[]
+  pageCount: number
+  onPageCountChange: (value: number) => void
+  onSelect: (value: KnowledgeExplanation) => void
+}) {
+  const [selectedPage, setSelectedPage] = useState(1)
+  useEffect(() => setSelectedPage(1), [explanation?.id])
+
+  const pages = explanation?.pages || []
+  const activePage = pages.find((page) => page.index === selectedPage) || pages[0]
+  const readyCount = pages.filter((page) => page.status === 'ready').length
+  const isActive = explanation?.status === 'planning' || explanation?.status === 'generating'
+
+  if (!explanation) {
+    return (
+      <div className="knowledge-explanation-scroll">
+        <section className="knowledge-explanation-empty">
+          <div className="explanation-orbit explanation-orbit-a" />
+          <div className="explanation-orbit explanation-orbit-b" />
+          <span className="explanation-model-kicker"><WandSparkles size={14} /> QWEN IMAGE 2.0 · VISUAL LESSON</span>
+          <div className="explanation-empty-icon"><Presentation size={38} /></div>
+          <h1>把一个问题，讲成一组好懂的页面</h1>
+          <p>AI 会先理解问题的知识结构，再动态规划大纲，并生成紧凑、图文并茂的 16:9 中文讲解页。</p>
+          <div className="explanation-process">
+            <span><b>01</b><small>分析问题</small></span>
+            <ChevronRight size={16} />
+            <span><b>02</b><small>规划模块</small></span>
+            <ChevronRight size={16} />
+            <span><b>03</b><small>逐页绘制</small></span>
+          </div>
+          <div className="explanation-count-control">
+            <div>
+              <strong>讲解页数</strong>
+              <small>推荐自动规划，让内容结构随问题变化</small>
+            </div>
+            <Segmented<number>
+              value={pageCount}
+              onChange={onPageCountChange}
+              options={[
+                { label: '自动', value: 0 },
+                { label: '4 页', value: 4 },
+                { label: '6 页', value: 6 },
+                { label: '8 页', value: 8 },
+              ]}
+            />
+          </div>
+          <div className="explanation-example-row">
+            <span>试着提问</span>
+            <em>香农定理为什么限制了通信速率？</em>
+            <em>傅里叶变换的物理意义是什么？</em>
+            <em>PN 结为何单向导电？</em>
+          </div>
+        </section>
+        {history.length > 0 && (
+          <section className="explanation-history">
+            <header><div><Clock3 size={15} /><strong>最近生成</strong></div><span>{history.length} 组讲解</span></header>
+            <div className="explanation-history-grid">
+              {history.map((item) => (
+                <button key={item.id} type="button" onClick={() => onSelect(item)}>
+                  <span className={`history-lesson-icon ${item.status}`}><Presentation size={18} /></span>
+                  <span><strong>{item.title || item.question}</strong><small>{item.page_count || '—'} 页 · {explanationTime(item.created_at)}</small></span>
+                  <ChevronRight size={15} />
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="knowledge-explanation-scroll">
+      <section className="explanation-workbench">
+        <header className="explanation-workbench-head">
+          <div>
+            <span className="explanation-model-kicker"><WandSparkles size={13} /> QWEN IMAGE 2.0</span>
+            <h1>{explanation.title || '正在规划知识讲解…'}</h1>
+            <p>{explanation.subtitle || explanation.question}</p>
+          </div>
+          <div className="explanation-head-meta">
+            <Tag color={explanation.status === 'completed' ? 'green' : explanation.status === 'error' ? 'red' : explanation.status === 'cancelled' ? 'default' : 'blue'}>
+              {isActive && <LoaderCircle className="spin" size={12} />}
+              {explanationStatusLabels[explanation.status]}
+            </Tag>
+            <span>{readyCount}/{explanation.page_count || '—'} 页</span>
+          </div>
+        </header>
+
+        <div className={`explanation-progress-strip ${explanation.status}`}>
+          <Progress percent={explanation.progress} showInfo={false} status={explanation.status === 'error' ? 'exception' : explanation.status === 'completed' ? 'success' : 'active'} />
+          <span>{explanation.error || explanation.message}</span>
+          <b>{explanation.progress}%</b>
+        </div>
+
+        {pages.length > 0 && (
+          <div className="explanation-stage-grid">
+            <div className="explanation-canvas-card">
+              <div className="explanation-canvas-toolbar">
+                <div>
+                  <span>{activePage ? `${activePage.index}/${explanation.page_count}` : '—'}</span>
+                  <strong>{activePage?.title || '页面准备中'}</strong>
+                </div>
+                {activePage?.image_url && (
+                  <a href={activePage.image_url} download={`${explanation.title}-${activePage.index}.png`}>
+                    <Download size={14} /> 下载本页
+                  </a>
+                )}
+              </div>
+              <div className={`explanation-canvas ${activePage?.status || 'pending'}`}>
+                {activePage?.image_url ? (
+                  <AntImage
+                    src={activePage.image_url}
+                    alt={`${explanation.title}第 ${activePage.index} 页：${activePage.title}`}
+                    preview={{ mask: <span><Eye size={16} /> 查看大图</span> }}
+                  />
+                ) : (
+                  <div className="explanation-page-placeholder">
+                    <span className="placeholder-blueprint"><Presentation size={34} /></span>
+                    {activePage?.status === 'drawing' || activePage?.status === 'writing' ? <LoaderCircle className="spin" size={21} /> : <Layers3 size={21} />}
+                    <strong>{activePage?.message || '正在准备页面结构…'}</strong>
+                    <small>{activePage?.learning_goal}</small>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <aside className="explanation-outline-panel">
+              <header><span>LESSON OUTLINE</span><strong>动态讲解大纲</strong></header>
+              <div className="explanation-outline-list">
+                {pages.map((page) => (
+                  <button
+                    type="button"
+                    key={page.index}
+                    className={page.index === activePage?.index ? 'active' : ''}
+                    onClick={() => setSelectedPage(page.index)}
+                  >
+                    <span className={`outline-number ${page.status}`}>
+                      {page.status === 'ready' ? <Check size={13} /> : page.status === 'drawing' || page.status === 'writing' ? <LoaderCircle className="spin" size={13} /> : page.index}
+                    </span>
+                    <span><strong>{page.title}</strong><small>{page.subtitle}</small></span>
+                  </button>
+                ))}
+              </div>
+              <div className="explanation-goal-card">
+                <BrainCircuit size={17} />
+                <div><small>本页学习目标</small><p>{activePage?.learning_goal || '等待大纲生成'}</p></div>
+              </div>
+            </aside>
+          </div>
+        )}
+
+        {!pages.length && (
+          <div className="explanation-planning-state">
+            <div className="planning-page-preview">
+              <span /><span /><span /><span />
+            </div>
+            <LoaderCircle className="spin" size={24} />
+            <div><strong>{explanation.message}</strong><small>正在判断概念、原理、推导、示例与应用之间的最佳讲解顺序</small></div>
+          </div>
+        )}
+
+        {pages.length > 0 && (
+          <div className="explanation-thumbnail-rail" aria-label="讲解页缩略图">
+            {pages.map((page) => (
+              <button key={page.index} type="button" className={page.index === activePage?.index ? 'active' : ''} onClick={() => setSelectedPage(page.index)}>
+                <span className={`thumbnail-image ${page.status}`}>
+                  {page.image_url ? <img src={page.image_url} alt="" /> : <Presentation size={20} />}
+                  <b>{page.index}</b>
+                </span>
+                <strong>{page.title}</strong>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {history.some((item) => item.id !== explanation.id) && (
+        <section className="explanation-history compact">
+          <header><div><Clock3 size={15} /><strong>其他讲解</strong></div><span>点击切换</span></header>
+          <div className="explanation-history-grid">
+            {history.filter((item) => item.id !== explanation.id).slice(0, 4).map((item) => (
+              <button key={item.id} type="button" onClick={() => onSelect(item)}>
+                <span className={`history-lesson-icon ${item.status}`}><Presentation size={18} /></span>
+                <span><strong>{item.title || item.question}</strong><small>{item.page_count || '—'} 页 · {explanationTime(item.created_at)}</small></span>
+                <ChevronRight size={15} />
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  )
+}
+
 function ModelSettingsModal({
   open,
   onClose,
@@ -4126,6 +4364,9 @@ function StudentPageContent() {
   const [statuses, setStatuses] = useState<KBStatus[]>([])
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog>(fallbackModelCatalog)
+  const [explanationHistory, setExplanationHistory] = useState<KnowledgeExplanation[]>([])
+  const [activeExplanation, setActiveExplanation] = useState<KnowledgeExplanation>()
+  const [explanationPageCount, setExplanationPageCount] = useState(0)
   const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraph>()
   const [graphLoading, setGraphLoading] = useState(false)
   const [mistakes, setMistakes] = useState<MistakeItem[]>([])
@@ -4157,13 +4398,16 @@ function StudentPageContent() {
   const setDefaultKnowledgeBase = useChatStore((state) => state.setDefaultKnowledgeBase)
   const syncKnowledgeBases = useChatStore((state) => state.syncKnowledgeBases)
   const modelConfig = useChatStore((state) => state.modelConfig)
+  const visionModelConfig = useChatStore((state) => state.visionModelConfig)
   const setModelConfig = useChatStore((state) => state.setModelConfig)
   const loadSession = useChatStore((state) => state.loadSession)
   const clear = useChatStore((state) => state.clear)
   const { message: toast } = AntApp.useApp()
   const previousBuildStates = useRef<Record<string, KBStatus['state']>>({})
+  const previousExplanationState = useRef<{ id: string; status: KnowledgeExplanation['status'] } | undefined>(undefined)
   const activeBuilds = statuses.filter((item) => item.state === 'building' || item.state === 'cancelling')
   const hasActiveBuilds = activeBuilds.length > 0
+  const explanationBusy = activeExplanation?.status === 'planning' || activeExplanation?.status === 'generating'
   const currentKbStatus = statuses.find((item) => item.id === knowledgeBase)
   const currentKbDisplayName = knowledgeBaseDisplayName(currentKbStatus, knowledgeBase)
   const deleteKbDisabledReason = !currentKbStatus
@@ -4211,6 +4455,14 @@ function StudentPageContent() {
     }
   }
 
+  const refreshExplanations = async () => {
+    try {
+      setExplanationHistory(await fetchKnowledgeExplanations(studentId))
+    } catch {
+      // Keep the latest successfully loaded explanation history during transient errors.
+    }
+  }
+
   const upsertBuildStatus = (state?: KBStatus) => {
     if (!state?.id) return
     setStatuses((current) => (
@@ -4243,6 +4495,7 @@ function StudentPageContent() {
     void refreshSessions()
     void refreshMistakes()
     void refreshSchedule()
+    void refreshExplanations()
     void refreshModels(true)
     const timer = window.setInterval(() => {
       void refreshStatuses()
@@ -4251,6 +4504,33 @@ function StudentPageContent() {
     }, 5000)
     return () => window.clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    if (!activeExplanation || !explanationBusy) return
+    const taskId = activeExplanation.id
+    const poll = () => {
+      void fetchKnowledgeExplanation(taskId, studentId)
+        .then((next) => {
+          setActiveExplanation(next)
+          setExplanationHistory((current) => [next, ...current.filter((item) => item.id !== next.id)])
+          if (!['planning', 'generating'].includes(next.status)) void refreshExplanations()
+        })
+        .catch(() => undefined)
+    }
+    const timer = window.setInterval(poll, 1500)
+    return () => window.clearInterval(timer)
+  }, [activeExplanation?.id, activeExplanation?.status, studentId])
+
+  useEffect(() => {
+    if (!activeExplanation) return
+    const previous = previousExplanationState.current
+    if (previous?.id === activeExplanation.id && ['planning', 'generating'].includes(previous.status)) {
+      if (activeExplanation.status === 'completed') toast.success('知识讲解页面已全部生成')
+      if (activeExplanation.status === 'error') toast.error(`知识讲解生成失败：${activeExplanation.error || activeExplanation.message}`)
+      if (activeExplanation.status === 'cancelled') toast.info('知识讲解生成已取消，已完成页面仍可查看')
+    }
+    previousExplanationState.current = { id: activeExplanation.id, status: activeExplanation.status }
+  }, [activeExplanation?.id, activeExplanation?.status])
 
   useEffect(() => {
     if (modelModalOpen) void refreshModels()
@@ -4329,6 +4609,40 @@ function StudentPageContent() {
       if (!recognitionConfirmed) setScene('chat')
     }
     void send(prompt, { recognitionConfirmed }).then(() => refreshSessions())
+  }
+
+  const generateKnowledgeExplanation = async (prompt: string) => {
+    const question = prompt.trim()
+    if (!question) return
+    if (explanationBusy) {
+      toast.warning('请先等待当前讲解生成完成，或取消当前任务')
+      return
+    }
+    try {
+      const explanation = await createKnowledgeExplanation({
+        studentId,
+        question,
+        pageCount: explanationPageCount,
+        modelConfig,
+        visionModelConfig,
+      })
+      setActiveExplanation(explanation)
+      setExplanationHistory((current) => [explanation, ...current.filter((item) => item.id !== explanation.id)])
+      toast.info('已开始分析问题并规划讲解大纲')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '知识讲解任务创建失败')
+    }
+  }
+
+  const stopKnowledgeExplanation = async () => {
+    if (!activeExplanation || !explanationBusy) return
+    try {
+      const explanation = await cancelKnowledgeExplanation(activeExplanation.id, studentId)
+      setActiveExplanation(explanation)
+      setExplanationHistory((current) => [explanation, ...current.filter((item) => item.id !== explanation.id)])
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '知识讲解取消失败')
+    }
   }
 
   const uploadPhotoPdf = async (file: File) => {
@@ -4751,7 +5065,7 @@ function StudentPageContent() {
             <button className="menu-button" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu size={19} /></button>
             <div>
               <span className="breadcrumb">学生工作台 /</span>
-              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'question-bank' ? '题库' : activeView === 'homework' ? '我的作业' : activeView === 'mistakes' ? '错题本' : activeView === 'schedule' ? '学习日历' : mode === 'recommend' ? 'AI 出题' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
+              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'question-bank' ? '题库' : activeView === 'homework' ? '我的作业' : activeView === 'mistakes' ? '错题本' : activeView === 'schedule' ? '学习日历' : mode === 'recommend' ? 'AI 出题' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'explain' ? '知识讲解' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
             </div>
           </div>
           <div className="topbar-actions">
@@ -4802,10 +5116,18 @@ function StudentPageContent() {
         )}
 
         {activeView === 'chat' ? (
-          <section className="learning-grid">
+          <section className={`learning-grid ${mode === 'explain' ? 'explanation-learning-grid' : ''}`}>
             <div className="chat-column">
               <div className="chat-scroll">
-                {messages.length === 0 ? (
+                {mode === 'explain' ? (
+                  <KnowledgeExplanationView
+                    explanation={activeExplanation}
+                    history={explanationHistory}
+                    pageCount={explanationPageCount}
+                    onPageCountChange={setExplanationPageCount}
+                    onSelect={setActiveExplanation}
+                  />
+                ) : messages.length === 0 ? (
                   <Welcome
                     onAsk={ask}
                     todaySchedule={todaySchedule}
@@ -4827,11 +5149,13 @@ function StudentPageContent() {
                 )}
               </div>
               <ChatComposer
-                onSend={(value) => ask(value)}
+                onSend={(value) => mode === 'explain' ? void generateKnowledgeExplanation(value) : ask(value)}
                 onPdfUpload={(file) => void uploadPhotoPdf(file)}
+                externalBusy={explanationBusy}
+                onExternalStop={() => void stopKnowledgeExplanation()}
               />
             </div>
-            <KnowledgePanel statuses={statuses} onCreate={() => setKbModalOpen(true)} />
+            {mode !== 'explain' && <KnowledgePanel statuses={statuses} onCreate={() => setKbModalOpen(true)} />}
           </section>
         ) : activeView === 'graph' ? (
           <KnowledgeGraphView graph={knowledgeGraph} loading={graphLoading} />
