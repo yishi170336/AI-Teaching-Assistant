@@ -1631,9 +1631,16 @@ button { color: inherit; }
 .explanation-count-control > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
 .explanation-count-control strong { color: #fff; font-size: 11px; }
 .explanation-count-control small { color: #88acd0; font-size: 9px; }
+.explanation-count-picker { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; flex-wrap: wrap; }
 .explanation-count-control .ant-segmented { background: rgba(255,255,255,.09); }
 .explanation-count-control .ant-segmented-item { color: #aac9e7; }
 .explanation-count-control .ant-segmented-item-selected { color: #0a4380; }
+.explanation-model-control { margin-top: 10px; }
+.explanation-custom-count { width: 104px; }
+.explanation-custom-count.ant-input-number-group-wrapper .ant-input-number,
+.explanation-custom-count .ant-input-number-group-addon { border-color: rgba(173,214,255,.25); background: rgba(255,255,255,.1); }
+.explanation-custom-count .ant-input-number-input,
+.explanation-custom-count .ant-input-number-group-addon { color: #e8f4ff; }
 .explanation-example-row { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 7px; margin-top: 17px; }
 .explanation-example-row span { padding: 5px 0; color: #6da7d9; font-size: 9px; font-weight: 800; letter-spacing: .1em; }
 .explanation-example-row em { padding: 5px 9px; color: #a8c9e7; background: rgba(255,255,255,.055); border-radius: 999px; font-size: 9px; font-style: normal; }
@@ -1744,6 +1751,7 @@ button { color: inherit; }
   .knowledge-explanation-scroll { padding: 14px 13px 28px; }
   .knowledge-explanation-empty { min-height: 390px; padding: 32px 24px; border-radius: 18px; }
   .explanation-count-control { align-items: stretch; flex-direction: column; }
+  .explanation-count-picker { justify-content: flex-start; }
   .explanation-stage-grid { grid-template-columns: 1fr; }
   .explanation-outline-panel { min-height: 0; }
   .explanation-outline-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1764,6 +1772,7 @@ button { color: inherit; }
   .explanation-process > span { padding: 7px; }
   .explanation-process > svg { width: 11px; }
   .explanation-count-control .ant-segmented { width: 100%; }
+  .explanation-count-picker { align-items: stretch; flex-direction: column; }
   .explanation-workbench-head { flex-direction: column; gap: 10px; }
   .explanation-progress-strip { grid-template-columns: minmax(100px, 1fr) auto; }
   .explanation-progress-strip > span { grid-column: 1 / -1; grid-row: 2; }

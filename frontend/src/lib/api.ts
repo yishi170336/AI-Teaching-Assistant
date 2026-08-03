@@ -1314,6 +1314,7 @@ export async function createKnowledgeExplanation(fields: {
   studentId: string
   question: string
   pageCount: number
+  imageModel: string
   modelConfig: ModelConfig
   visionModelConfig: VisionModelConfig
 }): Promise<KnowledgeExplanation> {
@@ -1324,6 +1325,7 @@ export async function createKnowledgeExplanation(fields: {
       student_id: fields.studentId,
       question: fields.question,
       page_count: fields.pageCount,
+      image_model: fields.imageModel,
       model_provider: fields.modelConfig.provider,
       model: fields.modelConfig.model,
       api_key: fields.modelConfig.apiKey,

@@ -240,3 +240,28 @@ def test_explanation_request_rejects_non_qwen_image_model() -> None:
             question="解释香农定理",
             image_model="wan2.7-image",
         )
+
+
+def test_explanation_request_accepts_qwen_image_pro_model() -> None:
+    request = KnowledgeExplanationRequest(
+        question="解释香农定理",
+        image_model="qwen-image-2.0-pro",
+    )
+    assert request.image_model == "qwen-image-2.0-pro"
+
+
+@pytest.mark.parametrize("page_count", [1, 2, 3, 5, 7, 8])
+def test_explanation_request_accepts_custom_page_count_within_safe_range(
+    page_count: int,
+) -> None:
+    assert KnowledgeExplanationRequest(
+        question="解释香农定理",
+        page_count=page_count,
+    ).page_count == page_count
+
+
+def test_explanation_request_rejects_page_count_outside_safe_range() -> None:
+    with pytest.raises(ValueError):
+        KnowledgeExplanationRequest(question="解释香农定理", page_count=-1)
+    with pytest.raises(ValueError):
+        KnowledgeExplanationRequest(question="解释香农定理", page_count=9)

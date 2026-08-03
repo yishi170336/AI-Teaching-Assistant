@@ -13,6 +13,7 @@ import {
   Empty,
   Image as AntImage,
   Input,
+  InputNumber,
   Modal,
   Pagination,
   Popconfirm,
@@ -3868,6 +3869,19 @@ const explanationStatusLabels: Record<KnowledgeExplanation['status'], string> = 
   error: '生成失败',
 }
 
+type KnowledgeImageModel = 'qwen-image-2.0' | 'qwen-image-2.0-pro'
+
+const knowledgeImageModelLabels: Record<KnowledgeImageModel, string> = {
+  'qwen-image-2.0': 'QWEN IMAGE 2.0',
+  'qwen-image-2.0-pro': 'QWEN IMAGE 2.0 PRO',
+}
+
+function knowledgeImageModelLabel(value: string) {
+  return value === 'qwen-image-2.0-pro'
+    ? knowledgeImageModelLabels['qwen-image-2.0-pro']
+    : knowledgeImageModelLabels['qwen-image-2.0']
+}
+
 function explanationTime(value: string) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
@@ -3883,22 +3897,46 @@ function KnowledgeExplanationView({
   explanation,
   history,
   pageCount,
+  imageModel,
   onPageCountChange,
+  onImageModelChange,
   onSelect,
 }: {
   explanation?: KnowledgeExplanation
   history: KnowledgeExplanation[]
   pageCount: number
+  imageModel: KnowledgeImageModel
   onPageCountChange: (value: number) => void
+  onImageModelChange: (value: KnowledgeImageModel) => void
   onSelect: (value: KnowledgeExplanation) => void
 }) {
   const [selectedPage, setSelectedPage] = useState(1)
+  const [customPageCount, setCustomPageCount] = useState(
+    [0, 4, 6, 8].includes(pageCount) ? 5 : pageCount,
+  )
   useEffect(() => setSelectedPage(1), [explanation?.id])
+  useEffect(() => {
+    if (![0, 4, 6, 8].includes(pageCount)) setCustomPageCount(pageCount)
+  }, [pageCount])
 
   const pages = explanation?.pages || []
   const activePage = pages.find((page) => page.index === selectedPage) || pages[0]
   const readyCount = pages.filter((page) => page.status === 'ready').length
   const isActive = explanation?.status === 'planning' || explanation?.status === 'generating'
+  const pageCountMode: number | 'custom' = [0, 4, 6, 8].includes(pageCount)
+    ? pageCount
+    : 'custom'
+
+  const changePageCountMode = (value: number | 'custom') => {
+    onPageCountChange(value === 'custom' ? customPageCount : value)
+  }
+
+  const changeCustomPageCount = (value: number | null) => {
+    if (value === null) return
+    const nextValue = Math.max(1, Math.min(8, Math.round(value)))
+    setCustomPageCount(nextValue)
+    onPageCountChange(nextValue)
+  }
 
   if (!explanation) {
     return (
@@ -3906,7 +3944,7 @@ function KnowledgeExplanationView({
         <section className="knowledge-explanation-empty">
           <div className="explanation-orbit explanation-orbit-a" />
           <div className="explanation-orbit explanation-orbit-b" />
-          <span className="explanation-model-kicker"><WandSparkles size={14} /> QWEN IMAGE 2.0 · VISUAL LESSON</span>
+          <span className="explanation-model-kicker"><WandSparkles size={14} /> {knowledgeImageModelLabels[imageModel]} · VISUAL LESSON</span>
           <div className="explanation-empty-icon"><Presentation size={38} /></div>
           <h1>把一个问题，讲成一组好懂的页面</h1>
           <p>AI 会先理解问题的知识结构，再动态规划大纲，并生成紧凑、图文并茂的 16:9 中文讲解页。</p>
@@ -3922,14 +3960,44 @@ function KnowledgeExplanationView({
               <strong>讲解页数</strong>
               <small>推荐自动规划，让内容结构随问题变化</small>
             </div>
-            <Segmented<number>
-              value={pageCount}
-              onChange={onPageCountChange}
+            <div className="explanation-count-picker">
+              <Segmented<number | 'custom'>
+                value={pageCountMode}
+                onChange={changePageCountMode}
+                options={[
+                  { label: '自动', value: 0 },
+                  { label: '4 页', value: 4 },
+                  { label: '6 页', value: 6 },
+                  { label: '8 页', value: 8 },
+                  { label: '自定义', value: 'custom' },
+                ]}
+              />
+              {pageCountMode === 'custom' && (
+                <InputNumber
+                  className="explanation-custom-count"
+                  size="small"
+                  min={1}
+                  max={8}
+                  precision={0}
+                  value={customPageCount}
+                  addonAfter="页"
+                  aria-label="自定义讲解页数，范围一到八页"
+                  onChange={changeCustomPageCount}
+                />
+              )}
+            </div>
+          </div>
+          <div className="explanation-count-control explanation-model-control">
+            <div>
+              <strong>生图模型</strong>
+              <small>标准版生成更快，Pro 版强化文字渲染与语义遵循</small>
+            </div>
+            <Segmented<KnowledgeImageModel>
+              value={imageModel}
+              onChange={onImageModelChange}
               options={[
-                { label: '自动', value: 0 },
-                { label: '4 页', value: 4 },
-                { label: '6 页', value: 6 },
-                { label: '8 页', value: 8 },
+                { label: 'Qwen Image 2.0', value: 'qwen-image-2.0' },
+                { label: 'Qwen Image 2.0 Pro', value: 'qwen-image-2.0-pro' },
               ]}
             />
           </div>
@@ -3963,7 +4031,7 @@ function KnowledgeExplanationView({
       <section className="explanation-workbench">
         <header className="explanation-workbench-head">
           <div>
-            <span className="explanation-model-kicker"><WandSparkles size={13} /> QWEN IMAGE 2.0</span>
+            <span className="explanation-model-kicker"><WandSparkles size={13} /> {knowledgeImageModelLabel(explanation.image_model)}</span>
             <h1>{explanation.title || '正在规划知识讲解…'}</h1>
             <p>{explanation.subtitle || explanation.question}</p>
           </div>
@@ -4367,6 +4435,7 @@ function StudentPageContent() {
   const [explanationHistory, setExplanationHistory] = useState<KnowledgeExplanation[]>([])
   const [activeExplanation, setActiveExplanation] = useState<KnowledgeExplanation>()
   const [explanationPageCount, setExplanationPageCount] = useState(0)
+  const [explanationImageModel, setExplanationImageModel] = useState<KnowledgeImageModel>('qwen-image-2.0')
   const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraph>()
   const [graphLoading, setGraphLoading] = useState(false)
   const [mistakes, setMistakes] = useState<MistakeItem[]>([])
@@ -4623,6 +4692,7 @@ function StudentPageContent() {
         studentId,
         question,
         pageCount: explanationPageCount,
+        imageModel: explanationImageModel,
         modelConfig,
         visionModelConfig,
       })
@@ -5124,7 +5194,9 @@ function StudentPageContent() {
                     explanation={activeExplanation}
                     history={explanationHistory}
                     pageCount={explanationPageCount}
+                    imageModel={explanationImageModel}
                     onPageCountChange={setExplanationPageCount}
+                    onImageModelChange={setExplanationImageModel}
                     onSelect={setActiveExplanation}
                   />
                 ) : messages.length === 0 ? (

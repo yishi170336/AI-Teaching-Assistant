@@ -512,8 +512,8 @@ class KnowledgeExplanationRequest(BaseModel):
 
     @model_validator(mode="after")
     def valid_explanation_configuration(self) -> "KnowledgeExplanationRequest":
-        if self.page_count not in {0, 3, 4, 5, 6, 7, 8}:
-            raise ValueError("讲解页数必须为自动或 3 到 8 页")
+        if self.page_count != 0 and not 1 <= self.page_count <= 8:
+            raise ValueError("讲解页数必须为自动或 1 到 8 页")
         if not re.fullmatch(r"[A-Za-z0-9._:/-]+", self.model):
             raise ValueError("文本模型名称包含不支持的字符")
         if self.image_model and not re.fullmatch(
