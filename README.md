@@ -91,7 +91,8 @@ python scripts/download_embedding_model.py
 如果本次没有执行 `git pull`，也没有合并或变基他人的推送，前端依赖和构建产物没有变化，可在项目根目录直接启动后端：
 
 ```powershell
-conda run -n llm python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+conda activate llm
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```
 
 这是日常使用的默认启动方式，会直接复用现有的 `frontend/dist`，无需重复安装前端依赖和构建页面。
