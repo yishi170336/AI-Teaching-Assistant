@@ -44,9 +44,11 @@ import {
   HomeworkSubmission,
   publishHomework,
   QuestionBank,
+  retagQuestionBank,
   reprocessQuestionBank,
   reprocessHomework,
   startHomeworkSubmissionGrading,
+  setQuestionBankRecommendationEnabled,
   updateDocumentQuestion,
   uploadDocumentQuestionAsset,
 } from '../lib/api'
@@ -450,6 +452,25 @@ function QuestionEditorModal({
         caption: asset.caption || '',
         position: asset.position || '',
       })),
+      ...(context.kind === 'question-bank' ? {
+        retrieval_profile: {
+          knowledge_points: draft.retrieval_profile?.knowledge_points || draft.knowledge_points || [],
+          question_type: draft.retrieval_profile?.question_type || draft.question_type,
+          difficulty: draft.retrieval_profile?.difficulty || 'intermediate',
+          skills: draft.retrieval_profile?.skills || [],
+          components: draft.retrieval_profile?.components || [],
+          methods: draft.retrieval_profile?.methods || [],
+          circuit_functions: draft.retrieval_profile?.circuit_functions || [],
+          tasks: draft.retrieval_profile?.tasks || [],
+          chapter: draft.retrieval_profile?.chapter || draft.section_title,
+          section: draft.retrieval_profile?.section || draft.section_title,
+          source: 'manual',
+          version: draft.retrieval_profile?.version || '2026.07',
+          confidence: 1,
+          status: 'manual',
+          manual_fields: ['knowledge_points', 'question_type', 'difficulty', 'skills', 'components', 'methods', 'circuit_functions', 'tasks', 'chapter', 'section'],
+        },
+      } : {}),
     }
     try {
       const document = await updateDocumentQuestion(
@@ -598,6 +619,60 @@ function QuestionEditorModal({
           {(draft.answer_subquestions || []).map((part, index) => <div key={`${part.label}-${index}`}><Input className="part-label" value={part.label} onChange={(event) => updatePart('answer_subquestions', index, 'label', event.target.value)} /><TextArea autoSize value={part.text} onChange={(event) => updatePart('answer_subquestions', index, 'text', event.target.value)} /><Button danger type="text" onClick={() => removePart('answer_subquestions', index)}>删除</Button></div>)}
         </section>
         <label className="question-editor-field"><span>评分标准</span><TextArea autoSize={{ minRows: 2, maxRows: 8 }} value={draft.rubric || ''} onChange={(event) => setDraft({ ...draft, rubric: event.target.value })} /></label>
+        {context.kind === 'question-bank' && (
+          <section className="question-editor-list-field">
+            <header><strong>AI 推荐检索标签</strong><Tag color={draft.retrieval_profile?.status === 'manual' ? 'success' : 'blue'}>{draft.retrieval_profile?.status === 'manual' ? '教师已确认' : '自动标签'}</Tag></header>
+            <div className="question-editor-row columns-2">
+              <label>
+                <span>规范知识点（逗号分隔）</span>
+                <Input
+                  value={(draft.retrieval_profile?.knowledge_points || draft.knowledge_points || []).join('，')}
+                  onChange={(event) => setDraft({
+                    ...draft,
+                    retrieval_profile: {
+                      ...(draft.retrieval_profile || {
+                        knowledge_points: [], question_type: draft.question_type, difficulty: 'intermediate',
+                        skills: [], components: [], methods: [], chapter: draft.section_title,
+                        section: draft.section_title, source: 'manual', version: '2026.07',
+                        confidence: 1, status: 'manual', manual_fields: [],
+                      }),
+                      knowledge_points: event.target.value.split(/[，,]/).map((item) => item.trim()).filter(Boolean),
+                    },
+                  })}
+                />
+              </label>
+              <label>
+                <span>难度</span>
+                <Select
+                  value={draft.retrieval_profile?.difficulty || 'intermediate'}
+                  options={[
+                    { value: 'basic', label: '基础' },
+                    { value: 'intermediate', label: '进阶' },
+                    { value: 'advanced', label: '挑战' },
+                  ]}
+                  onChange={(difficulty) => setDraft({
+                    ...draft,
+                    retrieval_profile: {
+                      ...(draft.retrieval_profile || {
+                        knowledge_points: draft.knowledge_points || [], question_type: draft.question_type,
+                        difficulty: 'intermediate', skills: [], components: [], methods: [],
+                        chapter: draft.section_title, section: draft.section_title, source: 'manual',
+                        version: '2026.07', confidence: 1, status: 'manual', manual_fields: [],
+                      }),
+                      difficulty,
+                    },
+                  })}
+                />
+              </label>
+              <label><span>解题技能（逗号分隔）</span><Input value={(draft.retrieval_profile?.skills || []).join('，')} onChange={(event) => setDraft({ ...draft, retrieval_profile: { ...(draft.retrieval_profile || { knowledge_points: draft.knowledge_points || [], question_type: draft.question_type, difficulty: 'intermediate', skills: [], components: [], methods: [], chapter: draft.section_title, section: draft.section_title, source: 'manual', version: '2026.07', confidence: 1, status: 'manual', manual_fields: [] }), skills: event.target.value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) } })} /></label>
+              <label><span>核心元件 / 电路对象（逗号分隔）</span><Input value={(draft.retrieval_profile?.components || []).join('，')} onChange={(event) => setDraft({ ...draft, retrieval_profile: { ...(draft.retrieval_profile || { knowledge_points: draft.knowledge_points || [], question_type: draft.question_type, difficulty: 'intermediate', skills: [], components: [], methods: [], tasks: [], chapter: draft.section_title, section: draft.section_title, source: 'manual', version: '2026.07', confidence: 1, status: 'manual', manual_fields: [] }), components: event.target.value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) } })} /></label>
+              <label><span>实际分析任务（逗号分隔）</span><Input value={(draft.retrieval_profile?.tasks || []).join('，')} onChange={(event) => setDraft({ ...draft, retrieval_profile: { ...(draft.retrieval_profile || { knowledge_points: draft.knowledge_points || [], question_type: draft.question_type, difficulty: 'intermediate', skills: [], components: [], methods: [], tasks: [], chapter: draft.section_title, section: draft.section_title, source: 'manual', version: '2026.07', confidence: 1, status: 'manual', manual_fields: [] }), tasks: event.target.value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) } })} /></label>
+              <label><span>电路功能 / 拓扑（逗号分隔）</span><Input value={(draft.retrieval_profile?.circuit_functions || []).join('，')} onChange={(event) => setDraft({ ...draft, retrieval_profile: { ...(draft.retrieval_profile || { knowledge_points: draft.knowledge_points || [], question_type: draft.question_type, difficulty: 'intermediate', skills: [], components: [], methods: [], circuit_functions: [], tasks: [], chapter: draft.section_title, section: draft.section_title, source: 'manual', version: '2026.07', confidence: 1, status: 'manual', manual_fields: [] }), circuit_functions: event.target.value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) } })} /></label>
+              <label><span>分析方法（逗号分隔）</span><Input value={(draft.retrieval_profile?.methods || []).join('，')} onChange={(event) => setDraft({ ...draft, retrieval_profile: { ...(draft.retrieval_profile || { knowledge_points: draft.knowledge_points || [], question_type: draft.question_type, difficulty: 'intermediate', skills: [], components: [], methods: [], tasks: [], chapter: draft.section_title, section: draft.section_title, source: 'manual', version: '2026.07', confidence: 1, status: 'manual', manual_fields: [] }), methods: event.target.value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) } })} /></label>
+              <label><span>章节</span><Input value={draft.retrieval_profile?.chapter || draft.section_title} onChange={(event) => setDraft({ ...draft, retrieval_profile: { ...(draft.retrieval_profile || { knowledge_points: draft.knowledge_points || [], question_type: draft.question_type, difficulty: 'intermediate', skills: [], components: [], methods: [], chapter: '', section: draft.section_title, source: 'manual', version: '2026.07', confidence: 1, status: 'manual', manual_fields: [] }), chapter: event.target.value } })} /></label>
+            </div>
+          </section>
+        )}
         <label className="question-editor-field compact"><span>题图位置</span><Select value={draft.figure_position || 'after_question'} options={[{ value: 'before_question', label: '题干前' }, { value: 'after_question', label: '题干后' }, { value: 'after_options', label: '选项后' }]} onChange={(value) => setDraft({ ...draft, figure_position: value })} /></label>
         {renderAssets('figures', '题图')}
         {renderAssets('answer_figures', '答案图')}
@@ -665,7 +740,7 @@ export default function TeacherPage() {
     void Promise.all([loadHomeworks(true), loadQuestionBanks()])
   }, [loadHomeworks, loadQuestionBanks])
 
-  const hasRunningTask = questionBanks.some((bank) => bank.status === 'processing')
+  const hasRunningTask = questionBanks.some((bank) => bank.status === 'processing' || bank.tagging_status === 'processing')
     || homeworks.some((homework) =>
       homework.status === 'processing'
       || homework.submissions?.some((submission) => submission.status === 'grading'),
@@ -796,6 +871,32 @@ export default function TeacherPage() {
     }
   }
 
+  const maintainBankTags = async (bankId: string) => {
+    setBankActionId(bankId)
+    try {
+      await retagQuestionBank(bankId)
+      message.success('已开始维护检索标签')
+      await loadQuestionBanks()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '标签维护启动失败')
+    } finally {
+      setBankActionId('')
+    }
+  }
+
+  const toggleRecommendationBank = async (bank: QuestionBank) => {
+    setBankActionId(bank.id)
+    try {
+      await setQuestionBankRecommendationEnabled(bank.id, !bank.recommendation_enabled)
+      message.success(bank.recommendation_enabled ? '已停止用于 AI 出题' : '已启用 AI 出题')
+      await loadQuestionBanks()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '推荐题库设置失败')
+    } finally {
+      setBankActionId('')
+    }
+  }
+
   const removeBankQuestion = async (bankId: string, questionId: string) => {
     setDeletingQuestionId(questionId)
     try {
@@ -896,11 +997,25 @@ export default function TeacherPage() {
                     </div>
                     <h3>{bank.title}</h3>
                     <p>{bank.source_name}</p>
+                    <div className="question-bank-card-flags">
+                      <Tag color={bank.recommendation_enabled ? 'purple' : 'default'}>
+                        {bank.recommendation_enabled ? 'AI 出题已启用' : '不参与 AI 出题'}
+                      </Tag>
+                      {bank.tagging_status === 'ready' && <Tag color="success">标签 v{bank.tagging_version || '1'}</Tag>}
+                      {bank.tagging_status === 'error' && <Tag color="error">标签维护失败</Tag>}
+                    </div>
                     {bank.status === 'processing' && <Progress percent={bank.processing_progress || 1} showInfo={false} status="active" />}
+                    {bank.tagging_status === 'processing' && <Progress percent={bank.tagging_progress || 1} showInfo={false} status="active" />}
                     {bank.processing_error && <div className="homework-card-error">{bank.processing_error}</div>}
                     <div className="question-bank-card-data">
                       <span><strong>{bank.question_count}</strong> 道题</span>
                       <span><strong>{bank.page_count || '—'}</strong> 页</span>
+                    </div>
+                    <div className="question-bank-card-actions" onClick={(event) => event.stopPropagation()}>
+                      <Button size="small" loading={bankActionId === bank.id} onClick={() => void maintainBankTags(bank.id)}>重新维护标签</Button>
+                      <Button size="small" type={bank.recommendation_enabled ? 'primary' : 'default'} loading={bankActionId === bank.id} onClick={() => void toggleRecommendationBank(bank)}>
+                        {bank.recommendation_enabled ? '关闭推荐' : '启用推荐'}
+                      </Button>
                     </div>
                     <footer><span>{formatTime(bank.updated_at)} 更新</span><ChevronRight size={16} /></footer>
                   </article>

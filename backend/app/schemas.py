@@ -7,14 +7,31 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+class QuestionReference(BaseModel):
+    kind: Literal["question_bank"] = "question_bank"
+    question_bank_id: str
+    question_id: str
+
+    @field_validator("question_bank_id", "question_id")
+    @classmethod
+    def safe_question_identifier(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[a-f0-9]{32}", value):
+            raise ValueError("题库或题目标识不合法")
+        return value
+
+
 class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=96)
+    student_id: str = Field(default="learner-demo", min_length=1, max_length=96)
     message: str = Field(default="", max_length=8000)
-    mode: Literal["auto", "answer", "quiz", "plan"] = "auto"
+    mode: Literal["auto", "answer", "quiz", "plan", "recommend"] = "auto"
     scene: Literal["chat", "image_answer", "quiz_grade"] = "chat"
     recognition_confirmed: bool = False
     knowledge_base: str = Field(default="default", min_length=1, max_length=48)
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
+    question_ref: QuestionReference | None = None
+    focus_id: str = Field(default="", max_length=32)
     model_provider: Literal["ollama", "deepseek", "qwen", "custom"] = "ollama"
     model: str = Field(default="qwen3.5:2b", min_length=1, max_length=128)
     api_key: str = Field(default="", max_length=512)
@@ -23,7 +40,7 @@ class ChatRequest(BaseModel):
     vision_api_key: str = Field(default="", max_length=512)
     vision_base_url: str = Field(default="", max_length=512)
 
-    @field_validator("session_id", "knowledge_base")
+    @field_validator("session_id", "student_id", "knowledge_base")
     @classmethod
     def safe_identifier(cls, value: str) -> str:
         value = value.strip()
@@ -56,9 +73,17 @@ class ChatRequest(BaseModel):
                 raise ValueError("附件标识不合法")
         return values
 
+    @field_validator("focus_id")
+    @classmethod
+    def safe_focus_id(cls, value: str) -> str:
+        value = value.strip()
+        if value and not re.fullmatch(r"[a-f0-9]{32}", value):
+            raise ValueError("题目焦点标识不合法")
+        return value
+
     @model_validator(mode="after")
     def message_or_attachment(self) -> "ChatRequest":
-        if not self.message and not self.attachment_ids:
+        if not self.message and not self.attachment_ids and not self.question_ref:
             raise ValueError("消息和附件不能同时为空")
         if not re.fullmatch(r"[A-Za-z0-9._:/-]+", self.model):
             raise ValueError("模型名称包含不支持的字符")
@@ -515,6 +540,32 @@ class HomeworkAssetEdit(BaseModel):
         return value.strip()
 
 
+class RetrievalProfileEdit(BaseModel):
+    knowledge_points: list[str] = Field(default_factory=list, max_length=16)
+    question_type: str = Field(default="", max_length=40)
+    difficulty: Literal["basic", "intermediate", "advanced"] = "intermediate"
+    skills: list[str] = Field(default_factory=list, max_length=12)
+    components: list[str] = Field(default_factory=list, max_length=12)
+    methods: list[str] = Field(default_factory=list, max_length=12)
+    circuit_functions: list[str] = Field(default_factory=list, max_length=12)
+    tasks: list[str] = Field(default_factory=list, max_length=12)
+    chapter: str = Field(default="", max_length=160)
+    section: str = Field(default="", max_length=160)
+    status: Literal["auto", "manual", "needs_review"] = "manual"
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    manual_fields: list[str] = Field(default_factory=list, max_length=16)
+
+    @field_validator("knowledge_points", "skills", "components", "methods", "circuit_functions", "tasks", "manual_fields")
+    @classmethod
+    def normalize_profile_lists(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+    @field_validator("question_type", "chapter", "section")
+    @classmethod
+    def strip_profile_fields(cls, value: str) -> str:
+        return value.strip()
+
+
 class HomeworkQuestionUpdateRequest(BaseModel):
     section_key: str | None = Field(default=None, max_length=40)
     section_title: str | None = Field(default=None, max_length=240)
@@ -533,12 +584,30 @@ class HomeworkQuestionUpdateRequest(BaseModel):
     rubric: str | None = Field(default=None, max_length=12000)
     figures: list[HomeworkAssetEdit] | None = Field(default=None, max_length=30)
     answer_figures: list[HomeworkAssetEdit] | None = Field(default=None, max_length=30)
+    retrieval_profile: RetrievalProfileEdit | None = None
 
     @field_validator("section_key", "section_title", "number", "prompt", "answer", "rubric")
     @classmethod
     def strip_question_fields(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else value
 
+
+class QuestionBankRecommendationUpdateRequest(BaseModel):
+    recommendation_enabled: bool
+
+
+class QuestionReferenceActionRequest(BaseModel):
+    student_id: str = Field(min_length=1, max_length=96)
+    session_id: str = Field(default="", max_length=96)
+    knowledge_base: str = Field(default="default", min_length=1, max_length=48)
+
+    @field_validator("student_id", "session_id", "knowledge_base")
+    @classmethod
+    def safe_action_identifier(cls, value: str) -> str:
+        value = value.strip()
+        if value and not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+            raise ValueError("标识仅允许字母、数字、连字符和下划线")
+        return value
 
 class HomeworkSubmissionAnswer(BaseModel):
     question_id: str = Field(min_length=32, max_length=32)

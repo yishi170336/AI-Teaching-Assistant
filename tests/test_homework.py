@@ -352,6 +352,75 @@ def test_question_bank_is_durable_and_selected_questions_become_independent_home
     assert student["questions"][0]["origin_question_id"] == question_id
 
 
+def test_private_question_banks_are_scoped_and_expose_answer_readiness(tmp_path):
+    store = HomeworkStore(tmp_path / "homework")
+    bank = store.create_question_bank(
+        title="学生 PDF",
+        filename="questions.pdf",
+        content_type="application/pdf",
+        data=b"%PDF-1.4\n",
+        owner_student_id="learner-a",
+        source_origin="photo_answer",
+    )
+    question_id = "a" * 32
+    store.update_question_bank(
+        bank["id"],
+        status="ready",
+        processing_warnings=["第 2 页仍有题干/小问归属风险：第3题错位"],
+        questions=[{
+            "id": question_id,
+            "sequence": 1,
+            "number": "3",
+            "section_key": "questions",
+            "section_title": "题目",
+            "question_type": "choice",
+            "prompt": "如图所示，选择正确结论。",
+            "subquestions": [],
+            "options": [{"label": "A", "text": "正确"}],
+            "figures": [],
+            "answer": "A",
+            "answer_subquestions": [],
+            "answer_figures": [],
+            "rubric": "选对得分",
+            "page_start": 2,
+            "page_end": 2,
+        }],
+    )
+
+    visible = store.get_question_bank(bank["id"], student_id="learner-a")
+    assert visible["owner_student_id"] == "learner-a"
+    assert visible["source_origin"] == "photo_answer"
+    readiness = visible["questions"][0]["answer_readiness"]
+    assert readiness["status"] == "needs_confirmation"
+    assert "选择题选项不足" in readiness["reasons"]
+    assert any("题图未提取" in reason for reason in readiness["reasons"])
+    assert any("抽取警告" in reason for reason in readiness["reasons"])
+    assert store.list_question_banks(student_id="learner-b") == []
+    with pytest.raises(FileNotFoundError):
+        store.get_question_bank(bank["id"], student_id="learner-b")
+
+    context = store.get_question_answer_context(
+        bank["id"],
+        question_id,
+        student_id="learner-a",
+    )
+    assert "answer" not in context["question"]
+    assert context["reference"]["answer"] == "A"
+
+
+def test_legacy_ownerless_question_bank_remains_shared(tmp_path):
+    store = HomeworkStore(tmp_path / "homework")
+    bank = store.create_question_bank(
+        title="共享题库",
+        filename="questions.pdf",
+        content_type="application/pdf",
+        data=b"%PDF-1.4\n",
+    )
+
+    assert store.get_question_bank(bank["id"], student_id="learner-a")["id"] == bank["id"]
+    assert store.get_question_bank(bank["id"], student_id="learner-b")["id"] == bank["id"]
+
+
 def test_question_bank_questions_extract_and_expose_graph_alignment(tmp_path):
     questions = [{
         "id": "a" * 32,

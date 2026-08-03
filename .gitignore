@@ -11,6 +11,7 @@ tools/spreadsheet/node_modules/
 data/vector_stores/*/*.tmp
 data/uploads/
 data/session_memory/
+data/question_recommendations/
 data/mistake_book*.json
 data/mistake_candidates.json
 data/mistakes/
@@ -18,6 +19,7 @@ data/student_schedule.json
 data/presentations/
 tmp/
 logs/
+.codex-server*.log
 third_party/
 data/vector_stores/pdfkit_smoke/
 data/neo4j/

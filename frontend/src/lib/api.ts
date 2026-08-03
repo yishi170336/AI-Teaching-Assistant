@@ -390,6 +390,11 @@ export type HomeworkQuestion = {
     confidence: number
   }
   prerequisites?: MistakePrerequisite[]
+  answer_readiness?: {
+    status: 'ready' | 'needs_confirmation'
+    reasons: string[]
+  }
+  retrieval_profile?: RetrievalProfile
 }
 
 export type HomeworkStudentAnswer = {
@@ -418,6 +423,7 @@ export type HomeworkQuestionUpdate = Partial<Pick<HomeworkQuestion,
 >> & {
   figures?: Array<Pick<HomeworkAsset, 'file' | 'caption' | 'position'>>
   answer_figures?: Array<Pick<HomeworkAsset, 'file' | 'caption' | 'position'>>
+  retrieval_profile?: RetrievalProfile
 }
 
 export type HomeworkGradingItem = {
@@ -516,6 +522,15 @@ export type QuestionBank = {
   max_score: number
   question_count: number
   knowledge_base: string
+  owner_student_id?: string
+  source_origin?: string
+  recommendation_enabled?: boolean
+  tagging_status?: 'idle' | 'processing' | 'ready' | 'error'
+  tagging_progress?: number
+  tagging_message?: string
+  tagging_error?: string
+  tagging_warnings?: string[]
+  tagging_version?: string
   questions: HomeworkQuestion[]
   question_offset?: number
   question_limit?: number
@@ -582,6 +597,77 @@ export type AnswerReview = {
   issues?: string[]
   risk_reasons?: string[]
   sympy_checked?: boolean
+  reference_check?: 'consistent' | 'conflict' | 'unavailable'
+  reference_issues?: string[]
+}
+
+export type QuestionReference = {
+  kind: 'question_bank'
+  question_bank_id: string
+  question_id: string
+}
+
+export type RetrievalProfile = {
+  knowledge_points: string[]
+  question_type: string
+  difficulty: 'basic' | 'intermediate' | 'advanced'
+  skills: string[]
+  components: string[]
+  methods: string[]
+  circuit_functions?: string[]
+  tasks?: string[]
+  chapter: string
+  section: string
+  source: 'auto' | 'manual' | string
+  version: string
+  confidence: number
+  status: 'auto' | 'manual' | 'needs_review'
+  manual_fields: string[]
+}
+
+export type QuestionRecommendation = {
+  question_ref: QuestionReference
+  question: HomeworkQuestion
+  source: {
+    book_title: string
+    source_name: string
+    number: string
+    page_start: number | null
+    page_end: number | null
+    chapter: string
+    section: string
+  }
+  profile: RetrievalProfile
+  requirements: Record<string, unknown>
+  reason: string
+  evidence: string[]
+  score_summary: Record<string, number>
+  match_status: 'exact' | 'relaxed' | 'partial' | 'fallback'
+  relaxed_conditions: string[]
+  reference_available?: boolean
+  selection_method?: 'agent_rerank' | 'deterministic_fallback'
+  agent_analysis?: {
+    intent_summary?: string
+    reasoning_focus?: string
+    fit_dimensions?: string[]
+    tradeoffs?: string[]
+  }
+}
+
+export type QuestionSummary = {
+  bank_title: string
+  number?: string
+  prompt: string
+}
+
+export type ConversationFocus = {
+  id: string
+  kind: 'photo_question' | 'question_bank' | 'recommended_question' | 'generated_practice' | 'question'
+  label: string
+  summary: string
+  question_ref?: QuestionReference
+  parent_focus_id?: string
+  has_figure?: boolean
 }
 
 export type PracticeExercise = {
@@ -599,6 +685,7 @@ export type PracticeExercise = {
   verification?: Record<string, unknown>
   circuit_diagram?: {
     mode: 'topology_reference'
+    source?: 'question_bank' | 'conversation_attachment'
     attachments: AttachmentInfo[]
     topology: string
     component_types: string[]
@@ -640,11 +727,15 @@ export type StoredMessage = {
   review?: AnswerReview
   practice?: PracticeExercise
   grading?: PracticeGrading
+  question_ref?: QuestionReference
+  question_summary?: QuestionSummary
+  recommendation?: QuestionRecommendation
+  conversation_focus?: ConversationFocus
 }
 
 type SSECallbacks = {
   onStatus: (data: { stage: string; message: string; agent: string }) => void
-  onMeta: (data: { intent: string; agent: string; provider: ModelProviderId; model: string; sources: SourceInfo[]; cited_sources: SourceInfo[]; verification?: Record<string, unknown>; recognition?: PhotoRecognition; needs_confirmation?: boolean; evidence_mode?: 'grounded' | 'mixed' | 'general_only'; review?: AnswerReview; practice?: PracticeExercise; grading?: PracticeGrading }) => void
+  onMeta: (data: { intent: string; agent: string; provider: ModelProviderId; model: string; sources: SourceInfo[]; cited_sources: SourceInfo[]; verification?: Record<string, unknown>; recognition?: PhotoRecognition; needs_confirmation?: boolean; evidence_mode?: 'grounded' | 'mixed' | 'general_only'; review?: AnswerReview; practice?: PracticeExercise; grading?: PracticeGrading; question_ref?: QuestionReference; question_summary?: QuestionSummary; recommendation?: QuestionRecommendation; conversation_focus?: ConversationFocus }) => void
   onDelta: (content: string) => void
   onDone: () => void
   onError: (message: string) => void
@@ -670,6 +761,9 @@ export async function streamChat(
     attachment_ids: string[]
     scene?: 'chat' | 'image_answer' | 'quiz_grade'
     recognition_confirmed?: boolean
+    student_id: string
+    question_ref?: QuestionReference
+    focus_id?: string
     model_provider: ModelProviderId
     model: string
     api_key: string
@@ -1120,12 +1214,14 @@ export async function createHomeworkFromQuestionBank(fields: {
 }
 
 export async function fetchQuestionBanks(
-  options: { includeQuestions?: boolean } = {},
+  options: { includeQuestions?: boolean; studentId?: string } = {},
 ): Promise<QuestionBank[]> {
   const includeQuestions = options.includeQuestions ?? true
-  const response = await fetch(
-    `/api/question-banks?include_questions=${includeQuestions ? 'true' : 'false'}`,
-  )
+  const query = new URLSearchParams({
+    include_questions: includeQuestions ? 'true' : 'false',
+  })
+  if (options.studentId) query.set('student_id', options.studentId)
+  const response = await fetch(`/api/question-banks?${query.toString()}`)
   const result = await homeworkResponse<{ question_banks: QuestionBank[] }>(response, '题库读取失败')
   return result.question_banks || []
 }
@@ -1134,11 +1230,13 @@ export async function fetchQuestionBank(
   bankId: string,
   offset = 0,
   limit = 20,
+  studentId = '',
 ): Promise<QuestionBank> {
   const query = new URLSearchParams({
     offset: String(offset),
     limit: String(limit),
   })
+  if (studentId) query.set('student_id', studentId)
   const response = await fetch(
     `/api/question-banks/${encodeURIComponent(bankId)}?${query.toString()}`,
   )
@@ -1150,33 +1248,106 @@ export async function createQuestionBank(
   file: File,
   title: string,
   knowledgeBase = 'default',
+  options: { studentId?: string; sourceOrigin?: string } = {},
 ): Promise<QuestionBank> {
   const data = new FormData()
   data.append('file', file)
   data.append('title', title)
   data.append('knowledge_base', knowledgeBase)
+  if (options.studentId) data.append('student_id', options.studentId)
+  if (options.sourceOrigin) data.append('source_origin', options.sourceOrigin)
   const response = await fetch('/api/question-banks', { method: 'POST', body: data })
   const result = await homeworkResponse<{ question_bank: QuestionBank }>(response, '题库上传失败')
   return result.question_bank
 }
 
-export async function reprocessQuestionBank(bankId: string): Promise<void> {
-  const response = await fetch(`/api/question-banks/${encodeURIComponent(bankId)}/reprocess`, {
+export async function reprocessQuestionBank(bankId: string, studentId = ''): Promise<void> {
+  const query = studentId ? `?student_id=${encodeURIComponent(studentId)}` : ''
+  const response = await fetch(`/api/question-banks/${encodeURIComponent(bankId)}/reprocess${query}`, {
     method: 'POST',
   })
   await homeworkResponse(response, '重新识别题库失败')
 }
 
-export async function deleteQuestionBank(bankId: string): Promise<void> {
-  const response = await fetch(`/api/question-banks/${encodeURIComponent(bankId)}`, {
+export async function retagQuestionBank(bankId: string): Promise<void> {
+  const response = await fetch(`/api/question-banks/${encodeURIComponent(bankId)}/retag`, {
+    method: 'POST',
+  })
+  await homeworkResponse(response, '启动标签维护失败')
+}
+
+export async function setQuestionBankRecommendationEnabled(
+  bankId: string,
+  recommendationEnabled: boolean,
+): Promise<QuestionBank> {
+  const response = await fetch(`/api/question-banks/${encodeURIComponent(bankId)}/recommendation`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ recommendation_enabled: recommendationEnabled }),
+  })
+  const result = await homeworkResponse<{ question_bank: QuestionBank }>(response, '推荐题库设置失败')
+  return result.question_bank
+}
+
+export async function getRecommendedQuestionAnswer(
+  reference: QuestionReference,
+  studentId: string,
+): Promise<{
+  answer: string
+  answer_subquestions: HomeworkQuestionPart[]
+  rubric: string
+  answer_figures: HomeworkAsset[]
+}> {
+  const query = new URLSearchParams({ student_id: studentId })
+  const response = await fetch(
+    `/api/question-banks/${encodeURIComponent(reference.question_bank_id)}/questions/${encodeURIComponent(reference.question_id)}/answer?${query}`,
+  )
+  const result = await homeworkResponse<{ reference: {
+    answer: string
+    answer_subquestions: HomeworkQuestionPart[]
+    rubric: string
+    answer_figures: HomeworkAsset[]
+  } }>(response, '参考答案读取失败')
+  return result.reference
+}
+
+export async function createQuestionReferenceMistakeCandidate(
+  reference: QuestionReference,
+  studentId: string,
+  sessionId: string,
+  knowledgeBase: string,
+): Promise<{ id: string; summary: string; question: string; knowledge_points: string[] }> {
+  const response = await fetch(
+    `/api/question-banks/${encodeURIComponent(reference.question_bank_id)}/questions/${encodeURIComponent(reference.question_id)}/mistake-candidate`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        student_id: studentId,
+        session_id: sessionId,
+        knowledge_base: knowledgeBase || 'default',
+      }),
+    },
+  )
+  const result = await homeworkResponse<{ candidate: { id: string; summary: string; question: string; knowledge_points: string[] } }>(
+    response,
+    '错题候选创建失败',
+  )
+  return result.candidate
+}
+
+export async function deleteQuestionBank(bankId: string, studentId = ''): Promise<void> {
+  const query = studentId ? `?student_id=${encodeURIComponent(studentId)}` : ''
+  const response = await fetch(`/api/question-banks/${encodeURIComponent(bankId)}${query}`, {
     method: 'DELETE',
   })
   await homeworkResponse(response, '题库删除失败')
 }
 
-export async function deleteQuestionBankQuestion(bankId: string, questionId: string): Promise<void> {
+export async function deleteQuestionBankQuestion(bankId: string, questionId: string, studentId = ''): Promise<void> {
+  const query = studentId ? `?student_id=${encodeURIComponent(studentId)}` : ''
   const response = await fetch(
-    `/api/question-banks/${encodeURIComponent(bankId)}/questions/${encodeURIComponent(questionId)}`,
+    `/api/question-banks/${encodeURIComponent(bankId)}/questions/${encodeURIComponent(questionId)}${query}`,
     { method: 'DELETE' },
   )
   await homeworkResponse(response, '题目删除失败')

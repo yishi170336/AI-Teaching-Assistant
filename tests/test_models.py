@@ -329,3 +329,82 @@ def test_answer_workflow_repairs_visibly_incomplete_formula():
     )
     assert selected.calls == 2
     assert result["response"] == "### 推导过程\n$I=2\\,\\mathrm{A}$。结果校验完成。"
+
+
+def test_focus_chain_recovers_photo_to_generated_to_recommended_path():
+    photo = {"id": "photo", "kind": "photo_question", "summary": "拍照原题"}
+    generated = {
+        "id": "generated",
+        "kind": "generated_practice",
+        "parent_focus_id": "photo",
+        "summary": "同类生成题",
+    }
+    recommended = {
+        "id": "recommended",
+        "kind": "recommended_question",
+        "parent_focus_id": "generated",
+        "summary": "题库推荐题",
+    }
+    history = [
+        {"role": "assistant", "conversation_focus": photo},
+        {"role": "assistant", "conversation_focus": generated},
+        {"role": "assistant", "conversation_focus": recommended},
+    ]
+
+    chain = main_module._focus_chain_from_history(history, recommended)
+
+    assert [item["id"] for item in chain] == ["photo", "generated", "recommended"]
+
+
+def test_inherited_photo_does_not_replace_generated_or_recommended_focus():
+    assert main_module._should_replace_focus_with_photo(
+        {"id": "generated", "kind": "generated_practice"}, ["photo-attachment"]
+    ) is False
+    assert main_module._should_replace_focus_with_photo(
+        {"id": "recommended", "kind": "recommended_question"}, ["photo-attachment"]
+    ) is False
+    assert main_module._should_replace_focus_with_photo(
+        {"id": "old-photo", "kind": "photo_question", "attachment_ids": ["old"]},
+        ["new"],
+    ) is True
+
+
+def test_bound_question_bank_turn_does_not_inherit_early_photo_attachment():
+    old_attachment_id = "a" * 32
+    history = [{
+        "role": "user",
+        "content": "请解答这张图",
+        "attachments": [{"id": old_attachment_id, "kind": "image"}],
+    }]
+
+    inherited = main_module._inherited_attachment_ids_for_turn(
+        effective_message="基于这道题生成同类题",
+        history=history,
+        requested_focus={
+            "id": "bank-focus",
+            "kind": "recommended_question",
+            "question_ref": {
+                "kind": "question_bank",
+                "question_bank_id": "bank",
+                "question_id": "question",
+            },
+        },
+        has_bound_question=True,
+        has_explicit_attachments=False,
+    )
+
+    assert inherited == []
+
+
+def test_generated_focus_with_owned_bank_figure_suppresses_early_photo_inheritance():
+    focus = {
+        "kind": "generated_practice",
+        "question_snapshot": {
+            "circuit_diagram": {
+                "source": "question_bank",
+                "attachments": [{"url": "/api/question-banks/bank/assets/figure.png"}],
+            },
+        },
+    }
+
+    assert main_module._focus_has_owned_circuit_reference(focus) is True

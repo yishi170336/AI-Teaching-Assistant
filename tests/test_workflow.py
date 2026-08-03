@@ -2,16 +2,19 @@ import asyncio
 
 from backend.app.agents.workflow import (
     CircuitTutorEngine,
+    _annotation_scope_contract,
     _circuit_blueprint_matches,
     _contextual_attachment_ids,
     _detect_quiz_family,
     _filter_grounding_hits,
     _finalize_answer_citations,
     _plan_structure_guidance,
+    _physical_assignment_conflicts,
     _quiz_reference,
     _quiz_family_matches,
     _recent_generated_questions,
     _source_context,
+    _student_answer_surface_issues,
 )
 from backend.app.rag.models import RetrievalHit, TextChunk
 from backend.app.rag.section_titles import repair_legacy_chunk_sections
@@ -58,6 +61,18 @@ def test_backend_rebuilds_reference_section_from_valid_inline_citations():
     )
     assert [source["id"] for source in cited_sources] == ["chunk-4"]
     assert cited_sources[0]["citation_index"] == 4
+
+
+def test_physical_assignment_conflicts_cover_general_quantities_and_units():
+    voltage = _physical_assignment_conflicts("先算得 $V_o=5 V$，后面又写 $V_o=8 V$。")
+    frequency = _physical_assignment_conflicts("计算得到 $f_H=20 kHz$，结论却是 $f_H=2 MHz$。")
+    assert any("V_o" in issue for issue in voltage)
+    assert any("f_H" in issue for issue in frequency)
+
+
+def test_physical_assignment_conflicts_allow_condition_dependent_values():
+    answer = "当输入为高电平时 $V_o=+5 V$；当输入为低电平时 $V_o=-5 V$。"
+    assert _physical_assignment_conflicts(answer) == []
 
 
 def test_legacy_unit_section_is_corrected_in_context_sources_and_reference_list():
@@ -247,6 +262,7 @@ def test_contextual_followup_reuses_latest_attachment_and_history_for_retrieval(
         attachment_id
     ]
     assert _contextual_attachment_ids("同类出题", history) == [attachment_id]
+    assert _contextual_attachment_ids("根据刚刚的一道题，从题库检索一道类似的", history) == [attachment_id]
     assert _contextual_attachment_ids("请解释共射放大电路", history) == []
 
     engine = object.__new__(CircuitTutorEngine)
@@ -297,6 +313,10 @@ def test_answer_prompt_labels_student_and_retrieved_circuit_images(tmp_path):
         def get(self, _knowledge_base):
             return FakeRetriever()
 
+    class FakeVisionClient:
+        provider = "qwen"
+        model = "qwen3-vl-flash"
+
     engine = object.__new__(CircuitTutorEngine)
     engine.knowledge_bases = FakeKnowledgeBases()
 
@@ -308,6 +328,7 @@ def test_answer_prompt_labels_student_and_retrieved_circuit_images(tmp_path):
         "attachment_context": "识别为共射放大电路",
         "attachment_images": ["student-image"],
         "hits": [hit],
+        "llm": FakeVisionClient(),
     }))
 
     user_message = result["answer_messages"][1]
@@ -628,17 +649,360 @@ def test_router_uses_model_to_select_learning_plan_intent():
     class FakeRouterModel:
         model = "test-router"
 
+        def __init__(self):
+            self.calls = 0
+
         async def chat(self, *_args, **_kwargs):
-            return '{"intent":"plan"}'
+            self.calls += 1
+            return '{"intent":"plan","reason":"需要系统补齐知识"}'
 
     engine = object.__new__(CircuitTutorEngine)
+    model = FakeRouterModel()
     routed = asyncio.run(engine._route_intent({
         "message": "我总在二极管和晶体管题上出错，应该怎么系统补齐？",
         "attachment_context": "",
         "mode": "auto",
-        "llm": FakeRouterModel(),
+        "llm": model,
     }))
     assert routed["intent"] == "plan"
+    assert routed["supervisor_decision"]["agent"] == "学习规划 Agent"
+    assert routed["supervisor_decision"]["context_policy"] == "focus_summary_recent_related"
+    assert model.calls == 1
+
+
+def test_explicit_user_action_overrides_stale_ui_mode():
+    engine = object.__new__(CircuitTutorEngine)
+    routed = asyncio.run(engine._route_intent({
+        "message": "根据刚刚的一道题，从题库检索一道类似的",
+        "attachment_context": "方波三角波发生器，比较器与积分器",
+        "mode": "answer",
+        "llm": object(),
+    }))
+    assert routed["intent"] == "recommend"
+
+
+def test_supervisor_marks_bound_reference_answer_followup_as_explanation():
+    engine = object.__new__(CircuitTutorEngine)
+    routed = asyncio.run(engine._supervise({
+        "message": "这个参考答案有点看不懂，能解释一下吗？",
+        "attachment_context": "原书第 7.3.6 题",
+        "reference_answer": {"answer": "A1 工作在线性区，A2 工作在非线性区"},
+        "mode": "auto",
+        "llm": object(),
+    }))
+
+    assert routed["intent"] == "answer"
+    assert routed["answer_task"] == "explain_bound_answer"
+    assert routed["supervisor_decision"]["answer_task"] == "explain_bound_answer"
+    assert routed["supervisor_decision"]["context_policy"] == "bound_question_and_reference_answer"
+    assert "结合原题进一步解释" in routed["supervisor_decision"]["reason"]
+
+
+def test_supervisor_understands_short_answer_is_unclear_followup():
+    engine = object.__new__(CircuitTutorEngine)
+    routed = asyncio.run(engine._supervise({
+        "message": "答案我看不懂",
+        "attachment_context": "方波—三角波发生器，判断工作区并求频率。",
+        "reference_answer": {"answer": "A1 非线性，A2 线性，频率约 798 Hz"},
+        "mode": "auto",
+        "llm": object(),
+    }))
+
+    assert routed["intent"] == "answer"
+    assert routed["answer_task"] == "explain_bound_answer"
+    assert routed["supervisor_decision"]["context_policy"] == "bound_question_and_reference_answer"
+
+
+def test_selected_text_annotation_is_bound_without_calling_router_model():
+    class RouterMustNotRun:
+        async def chat(self, *_args, **_kwargs):
+            raise AssertionError("structured annotation follow-up must route deterministically")
+
+    engine = object.__new__(CircuitTutorEngine)
+    routed = asyncio.run(engine._supervise({
+        "message": (
+            "【学习批注追问】\n标记来源：答疑 Agent\n来源消息：assistant-1\n\n"
+            "标记内容：\n> A₂ 构成反相积分器。\n\n我的问题：这里为什么能使用虚短？"
+        ),
+        "attachment_context": "方波—三角波发生器，判断两个运放的工作区。",
+        "conversation_focus": {"kind": "photo_question", "focus_id": "photo-1"},
+        "mode": "answer",
+        "llm": RouterMustNotRun(),
+    }))
+
+    assert routed["intent"] == "answer"
+    assert routed["answer_task"] == "annotation_followup"
+    assert routed["supervisor_decision"]["context_policy"] == "bound_question"
+
+
+def test_annotation_contract_generalizes_across_followup_intents():
+    hint = _annotation_scope_contract(
+        "【学习批注追问】\n标记内容：\n> 由 KCL 可得阈值。\n\n我的问题：只给我一个提示，不要答案"
+    )
+    verify = _annotation_scope_contract(
+        "【学习批注追问】\n标记内容：\n> $f=798\\,Hz$\n\n我的问题：请验算这个数值是否正确"
+    )
+    figure = _annotation_scope_contract(
+        "【学习批注追问】\n标记内容：\n> 反馈支路\n\n我的问题：图中这条连接关系表示什么？"
+    )
+
+    assert hint["intent"] == "hint"
+    assert hint["numeric_result_requested"] is False
+    assert verify["intent"] == "verify"
+    assert verify["numeric_result_requested"] is True
+    assert figure["intent"] == "explain_figure"
+    assert all(item["answer_scope"] == "marked_content_only" for item in (hint, verify, figure))
+
+
+def test_annotation_surface_checks_prevent_scope_drift_and_hint_leakage():
+    message = (
+        "【学习批注追问】\n标记内容：\n> 先判断反馈极性。\n\n"
+        "我的问题：只给我一个提示，不要答案"
+    )
+    issues = _student_answer_surface_issues(
+        message,
+        "下面完整解答整题。最终答案为 B，所以选择 B。",
+        answer_task="annotation_followup",
+    )
+
+    assert any("其他部分" in issue for issue in issues)
+    assert any("最终答案" in issue for issue in issues)
+
+
+def test_supervisor_uses_semantic_model_for_bound_answer_subtask():
+    class SemanticSupervisor:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, messages, **_kwargs):
+            self.calls += 1
+            prompt = messages[0]["content"]
+            assert "方波—三角波发生器" in prompt
+            assert "A1 非线性" in prompt
+            assert "不要只按关键词匹配" in prompt
+            return (
+                '{"answer_task":"explain_bound_answer",'
+                '"reason":"学生是在追问当前答案的判断依据和计算过程"}'
+            )
+
+    engine = object.__new__(CircuitTutorEngine)
+    model = SemanticSupervisor()
+    routed = asyncio.run(engine._supervise({
+        "message": "这块你再带着我过一遍",
+        "attachment_context": "方波—三角波发生器，判断工作区并求频率。",
+        "reference_answer": {"answer": "A1 非线性，A2 线性，频率约 798 Hz"},
+        "conversation_focus": {"kind": "generated_practice", "focus_id": "practice-1"},
+        "conversation_context": "学生刚查看了这道题的标准答案。",
+        "mode": "answer",
+        "llm": model,
+    }))
+
+    assert model.calls == 1
+    assert routed["intent"] == "answer"
+    assert routed["answer_task"] == "explain_bound_answer"
+    assert "判断依据和计算过程" in routed["supervisor_decision"]["reason"]
+
+
+def test_semantic_supervisor_can_distinguish_answer_verification():
+    class SemanticSupervisor:
+        async def chat(self, *_args, **_kwargs):
+            return '{"answer_task":"verify_bound_answer","reason":"学生在质疑已有数值结论"}'
+
+    engine = object.__new__(CircuitTutorEngine)
+    routed = asyncio.run(engine._supervise({
+        "message": "这个 798 Hz 真的是对的吗？",
+        "attachment_context": "方波—三角波发生器。",
+        "reference_answer": {"answer": "频率约 798 Hz"},
+        "mode": "answer",
+        "llm": SemanticSupervisor(),
+    }))
+
+    assert routed["answer_task"] == "verify_bound_answer"
+    assert routed["supervisor_decision"]["context_policy"] == "bound_question_and_reference_answer"
+
+
+def test_bound_answer_explanation_builds_a_knowledge_base_query():
+    engine = object.__new__(CircuitTutorEngine)
+    result = asyncio.run(engine._rewrite_query({
+        "message": "答案我看不懂",
+        "answer_task": "explain_bound_answer",
+        "scene": "chat",
+        "attachment_context": "方波—三角波发生器，判断 A1、A2 工作区并求频率。",
+        "reference_answer": {"answer": "A1 非线性，A2 线性，频率约 798 Hz"},
+    }))
+
+    query = result["rewritten_query"]
+    assert "解释原题参考答案中的概念、公式来源和推导步骤" in query
+    assert "方波—三角波发生器" in query
+    assert "798 Hz" in query
+
+
+def test_bound_answer_explanation_rejects_a_one_sentence_restatement():
+    issues = _student_answer_surface_issues(
+        "答案我看不懂",
+        "A1 工作在非线性区，A2 工作在线性区，输出频率约为 798 Hz。",
+        answer_task="explain_bound_answer",
+    )
+
+    assert any("逐步讲解过短" in issue for issue in issues)
+    assert any("缺少公式来源" in issue for issue in issues)
+
+
+def test_answer_explanation_prompt_contains_bound_question_and_reference(tmp_path):
+    class FakeRetriever:
+        index_dir = tmp_path
+
+    class FakeKnowledgeBases:
+        def get(self, _knowledge_base):
+            return FakeRetriever()
+
+    class FakeVisionClient:
+        provider = "qwen"
+        model = "qwen3-vl-flash"
+
+    engine = object.__new__(CircuitTutorEngine)
+    engine.knowledge_bases = FakeKnowledgeBases()
+    result = asyncio.run(engine._compose_answer_prompt({
+        "message": "参考答案里的阈值公式是怎么来的？",
+        "answer_task": "explain_bound_answer",
+        "rewritten_query": "解释阈值公式",
+        "knowledge_base": "default",
+        "conversation_context": "当前焦点是原书第 7.3.6 题",
+        "attachment_context": "[服务器题库题目]\n方波—三角波发生器，求阈值与周期。",
+        "structured_question": {"prompt": "方波—三角波发生器，求阈值与周期。"},
+        "reference_answer": {
+            "answer": "阈值为正负 R2/R1·Vz",
+            "answer_subquestions": [],
+            "rubric": "由比较器输入节点关系推出",
+        },
+        "question_images": ["question-image"],
+        "reference_images": ["answer-image"],
+        "hits": [],
+        "evidence_scope": {},
+        "llm": FakeVisionClient(),
+    }))
+
+    system_prompt = result["answer_messages"][0]["content"]
+    user_message = result["answer_messages"][1]
+    assert "不是重新猜答案" in system_prompt
+    assert "不得只复述答案原文" in system_prompt
+    assert "方波—三角波发生器，求阈值与周期" in user_message["content"]
+    assert "阈值为正负 R2/R1·Vz" in user_message["content"]
+    assert "参考答案里的阈值公式是怎么来的" in user_message["content"]
+    assert user_message["images"] == ["question-image", "answer-image"]
+    assert "原书参考答案图片" in user_message["content"]
+
+
+def test_annotation_prompt_keeps_marked_scope_and_original_question(tmp_path):
+    class FakeRetriever:
+        index_dir = tmp_path
+
+    class FakeKnowledgeBases:
+        def get(self, _knowledge_base):
+            return FakeRetriever()
+
+    class FakeVisionClient:
+        provider = "qwen"
+        model = "qwen3-vl-flash"
+
+    message = (
+        "【学习批注追问】\n标记来源：答疑 Agent\n来源消息：assistant-1\n\n"
+        "标记内容：\n> A₂ 构成反相积分器。\n\n我的问题：这里为什么能使用虚短？"
+    )
+    engine = object.__new__(CircuitTutorEngine)
+    engine.knowledge_bases = FakeKnowledgeBases()
+    result = asyncio.run(engine._compose_answer_prompt({
+        "message": message,
+        "answer_task": "annotation_followup",
+        "rewritten_query": "解释积分器使用虚短的条件",
+        "knowledge_base": "default",
+        "conversation_context": "当前焦点是学生上传的方波—三角波发生器题。",
+        "conversation_focus": {"kind": "photo_question", "focus_id": "photo-1"},
+        "attachment_context": "原题：判断 A₁、A₂ 的工作区，并说明反馈路径。",
+        "structured_question": {"prompt": "判断 A₁、A₂ 的工作区"},
+        "question_images": ["question-image"],
+        "reference_images": ["answer-image"],
+        "reference_answer": {"answer": "A₁ 非线性，A₂ 线性"},
+        "hits": [],
+        "evidence_scope": {},
+        "llm": FakeVisionClient(),
+    }))
+
+    system_prompt = result["answer_messages"][0]["content"]
+    user_message = result["answer_messages"][1]
+    assert "只回答学生标记的局部内容" in system_prompt
+    assert '"answer_scope": "marked_content_only"' in user_message["content"]
+    assert "原题：判断 A₁、A₂ 的工作区" in user_message["content"]
+    assert "A₂ 构成反相积分器" in user_message["content"]
+    assert "A₁ 非线性，A₂ 线性" not in user_message["content"]
+    assert user_message["images"] == ["question-image"]
+
+
+def test_answer_explanation_does_not_send_question_images_to_deepseek(tmp_path):
+    class FakeRetriever:
+        index_dir = tmp_path
+
+    class FakeKnowledgeBases:
+        def get(self, _knowledge_base):
+            return FakeRetriever()
+
+    class FakeDeepSeekClient:
+        provider = "deepseek"
+        model = "deepseek-v4-flash"
+
+    engine = object.__new__(CircuitTutorEngine)
+    engine.knowledge_bases = FakeKnowledgeBases()
+    result = asyncio.run(engine._compose_answer_prompt({
+        "message": "参考答案看不懂，请解释",
+        "answer_task": "explain_bound_answer",
+        "rewritten_query": "解释原有参考答案",
+        "knowledge_base": "default",
+        "conversation_context": "当前焦点是题库题",
+        "attachment_context": "积分运算电路，求 1 秒后的输出电压。",
+        "structured_question": {"prompt": "积分运算电路"},
+        "reference_answer": {"answer": "v_O=-5V"},
+        "question_images": ["question-image"],
+        "reference_images": ["answer-image"],
+        "hits": [],
+        "evidence_scope": {},
+        "llm": FakeDeepSeekClient(),
+    }))
+
+    user_message = result["answer_messages"][1]
+    assert "images" not in user_message
+    assert "积分运算电路" in user_message["content"]
+    assert "v_O=-5V" in user_message["content"]
+
+
+def test_supervisor_invalid_model_output_calls_once_and_falls_back_to_answer():
+    class InvalidRouterModel:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, *_args, **_kwargs):
+            self.calls += 1
+            return '{"intent":"unsupported"}'
+
+    model = InvalidRouterModel()
+    engine = object.__new__(CircuitTutorEngine)
+    routed = asyncio.run(engine._supervise({
+        "message": "帮我看看这个",
+        "attachment_context": "",
+        "mode": "auto",
+        "llm": model,
+    }))
+    assert routed["intent"] == "answer"
+    assert model.calls == 1
+
+
+def test_finalize_rejects_empty_agent_response():
+    engine = object.__new__(CircuitTutorEngine)
+    try:
+        asyncio.run(engine._finalize({"intent": "answer", "response": "  "}))
+    except RuntimeError as exc:
+        assert "未生成有效响应" in str(exc)
+    else:
+        raise AssertionError("finalize should reject an empty response")
 
 
 def test_learning_plan_structure_scales_with_scope_without_time_arrangements():
@@ -793,6 +1157,35 @@ def test_same_type_quiz_reuses_recognition_for_inherited_original_image():
     assert "继承的原题结构化识别" in result["attachment_context"]
 
 
+def test_generated_practice_focus_becomes_authoritative_question_context():
+    engine = object.__new__(CircuitTutorEngine)
+    result = asyncio.run(engine._analyze_attachments({
+        "scene": "chat",
+        "conversation_focus": {
+            "kind": "generated_practice",
+            "question_snapshot": {
+                "question_type": "numeric",
+                "question": "方波-三角波发生器中，判断 A1、A2 工作区并求频率。",
+                "question_parts": ["判断反馈极性", "计算振荡频率"],
+                "knowledge_point": "滞回比较器、积分器、正反馈、负反馈",
+                "difficulty": "进阶",
+                "solution": "这部分不能进入独立解答上下文。",
+                "answer": "500 Hz",
+                "circuit_diagram": {
+                    "topology": "A1 为滞回比较器，A2 为反相积分器",
+                    "component_types": ["运放", "电阻", "电容"],
+                },
+            },
+        },
+    }))
+
+    assert "当前生成练习题" in result["attachment_context"]
+    assert "方波-三角波发生器" in result["attachment_context"]
+    assert "500 Hz" not in result["attachment_context"]
+    assert result["attachment_blueprint"]["knowledge_points"][:2] == ["滞回比较器", "积分器"]
+    assert "反相积分器" in result["attachment_blueprint"]["topology"]
+
+
 def test_quiz_rendering_hides_solution_and_returns_structured_practice():
     engine = object.__new__(CircuitTutorEngine)
     draft = CircuitTutorEngine._fallback_quiz(
@@ -823,6 +1216,97 @@ def test_quiz_rendering_hides_solution_and_returns_structured_practice():
     assert rendered["practice"]["solution_steps"]
     assert rendered["practice"]["verification"]["passed"] is True
     assert rendered["sources"] == []
+
+
+def test_opamp_waveform_fallback_uses_one_consistent_threshold_and_period_model():
+    draft = CircuitTutorEngine._fallback_quiz(
+        "方波-三角波发生器、滞回比较器、积分器",
+        0,
+        "numeric",
+        [],
+        "opamp_comparator_integrator_waveform",
+    )
+
+    assert "同相端通过" in draft["question"]
+    assert "反相端接地" in draft["question"]
+    assert "R_1}{R_2" in draft["solution"]
+    assert "R_1+R_2" not in draft["solution"]
+    assert "\\ln" not in draft["solution"]
+    assert "500" in draft["answer"]
+    assert len(draft["solution_steps"]) == 4
+
+
+def test_opamp_quiz_requires_independent_topology_and_formula_audit():
+    class LogicReviewer:
+        model = "test-logic-reviewer"
+
+        async def chat(self, messages, **_kwargs):
+            prompt = messages[0]["content"]
+            assert "不能混用 R1/R2" in prompt
+            assert "不得套用RC指数充放电的ln公式" in prompt
+            return '{"passed":false,"issues":["翻转阈值与周期推导使用了不同分压关系"]}'
+
+    engine = object.__new__(CircuitTutorEngine)
+    draft = CircuitTutorEngine._fallback_quiz(
+        "方波-三角波发生器",
+        0,
+        "numeric",
+        [],
+        "opamp_comparator_integrator_waveform",
+    )
+    result = asyncio.run(engine._verify_quiz({
+        "draft": draft,
+        "quiz_type": "numeric",
+        "quiz_family": "opamp_comparator_integrator_waveform",
+        "history": [],
+        "llm": LogicReviewer(),
+        "attachment_blueprint": {},
+    }))
+
+    assert result["verification"]["passed"] is False
+    assert result["verification"]["method"] == "circuit_logic"
+    assert result["verification"]["logic_checked"] is True
+    assert "不同分压关系" in result["verification"]["message"]
+
+
+def test_rlc_quiz_uses_the_same_independent_reasoning_audit_framework():
+    class RlcReviewer:
+        model = "test-rlc-reviewer"
+
+        async def chat(self, messages, **_kwargs):
+            prompt = messages[0]["content"]
+            assert "先只根据题干独立重建电路对象" in prompt
+            assert "交流专项" in prompt
+            assert "统一有效值与峰值" in prompt
+            assert "运放专项" not in prompt
+            return (
+                '{"passed":false,"issues":["无功功率符号与感性参考方向矛盾"],'
+                '"checks":["相量参考方向","复功率符号"],'
+                '"independent_summary":"重新按复功率定义复算。"}'
+            )
+
+    engine = object.__new__(CircuitTutorEngine)
+    draft = CircuitTutorEngine._fallback_quiz(
+        "正弦稳态、功率因数、感抗、容抗",
+        0,
+        "numeric",
+        [],
+        "parallel_series_rl_capacitor_unity_pf",
+    )
+    result = asyncio.run(engine._verify_quiz({
+        "draft": draft,
+        "quiz_type": "numeric",
+        "quiz_family": "parallel_series_rl_capacitor_unity_pf",
+        "knowledge_point": "正弦稳态、功率因数、感抗、容抗",
+        "history": [],
+        "llm": RlcReviewer(),
+        "attachment_blueprint": {},
+    }))
+
+    assert result["verification"]["passed"] is False
+    assert result["verification"]["method"] == "circuit_logic"
+    assert result["verification"]["reasoning_checks"] == ["相量参考方向", "复功率符号"]
+    assert "无功功率符号" in result["verification"]["message"]
 
 
 def test_circuit_blueprint_requires_same_components_and_topology():
@@ -872,9 +1356,100 @@ def test_quiz_practice_reuses_original_circuit_image_as_topology_reference():
 
     diagram = rendered["practice"]["circuit_diagram"]
     assert diagram["mode"] == "topology_reference"
+    assert diagram["source"] == "conversation_attachment"
     assert diagram["attachments"][0]["name"] == "original-circuit.png"
     assert "图内原题数值不作为新题条件" in diagram["notice"]
     assert diagram["topology"] == "电源与两个电阻串联"
+
+
+def test_quiz_practice_prefers_bound_question_bank_figure_over_old_photo():
+    engine = object.__new__(CircuitTutorEngine)
+    draft = CircuitTutorEngine._fallback_quiz("运放波形发生器", 2, "numeric")
+    rendered = asyncio.run(engine._render_quiz({
+        "draft": draft,
+        "verification": {"passed": True, "method": "sympy"},
+        "history": [],
+        "quiz_type": "numeric",
+        "question_images": ["question-bank-base64"],
+        "attachment_images": ["old-upload-base64"],
+        "attachment_blueprint": {
+            "has_circuit": True,
+            "topology": "题库题中的比较器与积分器连接",
+            "component_types": ["运放", "电阻", "电容"],
+        },
+        "structured_question": {
+            "prompt": "题库原书题目",
+            "figures": [{
+                "file": "bank-figure.png",
+                "caption": "题库原题图",
+                "url": "/api/question-banks/bank/assets/bank-figure.png?student_id=s1",
+                "content_type": "image/png",
+            }],
+        },
+        "attachment_items": [{
+            "id": "b" * 32,
+            "name": "first-upload.png",
+            "content_type": "image/png",
+            "size": 1234,
+            "kind": "image",
+            "url": "/api/attachments/" + "b" * 32,
+        }],
+    }))
+
+    diagram = rendered["practice"]["circuit_diagram"]
+    assert diagram["source"] == "question_bank"
+    assert diagram["attachments"][0]["name"] == "题库原题图"
+    assert diagram["attachments"][0]["url"].startswith("/api/question-banks/")
+    assert "题库原题" in diagram["notice"]
+    assert all(item["name"] != "first-upload.png" for item in diagram["attachments"])
+
+
+def test_followup_variant_keeps_question_bank_figure_provenance_from_focus():
+    engine = object.__new__(CircuitTutorEngine)
+    draft = CircuitTutorEngine._fallback_quiz("运放波形发生器", 3, "numeric")
+    rendered = asyncio.run(engine._render_quiz({
+        "draft": draft,
+        "verification": {"passed": True, "method": "sympy"},
+        "history": [],
+        "quiz_type": "numeric",
+        "attachment_blueprint": {
+            "has_circuit": True,
+            "topology": "比较器与积分器连接",
+            "component_types": ["运放", "电阻", "电容"],
+        },
+        "conversation_focus": {
+            "kind": "generated_practice",
+            "question_snapshot": {
+                "circuit_diagram": {
+                    "mode": "topology_reference",
+                    "source": "question_bank",
+                    "attachments": [{
+                        "id": "bank-figure",
+                        "name": "题库原题图",
+                        "content_type": "image/png",
+                        "size": 0,
+                        "kind": "image",
+                        "url": "/api/question-banks/bank/assets/figure.png",
+                    }],
+                    "topology": "比较器与积分器连接",
+                    "component_types": ["运放", "电阻", "电容"],
+                    "notice": "题库题图",
+                },
+            },
+        },
+        "attachment_items": [{
+            "id": "c" * 32,
+            "name": "early-photo.png",
+            "content_type": "image/png",
+            "size": 1,
+            "kind": "image",
+            "url": "/api/attachments/" + "c" * 32,
+        }],
+    }))
+
+    diagram = rendered["practice"]["circuit_diagram"]
+    assert diagram["source"] == "question_bank"
+    assert diagram["attachments"][0]["name"] == "题库原题图"
 
 
 def test_practice_grading_uses_latest_exercise_and_returns_actionable_feedback():
@@ -915,3 +1490,251 @@ def test_practice_grading_uses_latest_exercise_and_returns_actionable_feedback()
     assert result["grading"]["score"] == 95
     assert result["grading"]["issues"][0]["suggestion"] == "代入量保留 V 和 Ω"
     assert "AI 批改反馈" in result["response"]
+
+
+def test_recommended_original_question_can_be_graded_from_server_reference():
+    class Grader:
+        model = "grader"
+
+        async def chat(self, messages, **_kwargs):
+            prompt = messages[0]["content"]
+            assert "[题目]\n计算二极管导通后的电流。" in prompt
+            assert "[标准答案]\nI=2mA" in prompt
+            assert "[学生文字作答]\nI=2mA" in prompt
+            return (
+                '{"score":100,"is_correct":true,"summary":"结果正确。",'
+                '"extracted_answer":"I=2mA","strengths":["计算正确"],'
+                '"issues":[],"next_steps":["尝试提高难度"]}'
+            )
+
+    engine = object.__new__(CircuitTutorEngine)
+    result = asyncio.run(engine._grade_practice({
+        "message": "I=2mA",
+        "attachment_context": "",
+        "llm": Grader(),
+        "history": [],
+        "structured_question": {
+            "question_type": "calculation",
+            "prompt": "计算二极管导通后的电流。",
+            "subquestions": [],
+            "options": [],
+            "knowledge_points": ["二极管"],
+        },
+        "reference_answer": {
+            "answer": "I=2mA",
+            "answer_subquestions": [],
+            "rubric": [],
+        },
+    }))
+
+    assert result["grading"]["score"] == 100
+    assert result["practice"]["question"] == "计算二极管导通后的电流。"
+
+
+def test_recommend_agent_understands_intent_and_reranks_question_stems():
+    class RecommendationLLM:
+        model = "test-recommender"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, messages, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                assert "不要只做关键词匹配" in messages[0]["content"]
+                return (
+                    '{"intent_summary":"练习先判断二极管状态再计算",'
+                    '"knowledge_points":["二极管"],"components":["二极管"],'
+                    '"methods":[],"tasks":["工作状态判断"],"skills":["参数计算"],'
+                    '"reasoning_focus":"先判断导通条件","soft_preferences":[],"avoid":[]}'
+                )
+            assert "阅读每道题的题干和小问" in messages[0]["content"]
+            return (
+                '{"question_id":"q2","reason":"第二题包含状态判断和后续计算。",'
+                '"evidence":["先判断二极管是否导通","再计算输出电压"],'
+                '"tradeoffs":[],"fit_dimensions":["分析任务","题目结构"]}'
+            )
+
+    class RecommendationService:
+        def __init__(self):
+            self.recommend_kwargs = {}
+
+        def shortlist(self, **_kwargs):
+            return [
+                {"question_id": "q1", "prompt": "直接代入公式计算。"},
+                {"question_id": "q2", "prompt": "判断二极管状态并计算输出电压。"},
+            ]
+
+        def recommend(self, **kwargs):
+            self.recommend_kwargs = kwargs
+            return {
+                "question_ref": {"kind": "question_bank", "question_bank_id": "b", "question_id": "q2"},
+                "selection_method": "agent_rerank",
+            }
+
+    engine = object.__new__(CircuitTutorEngine)
+    service = RecommendationService()
+    engine.recommendation_service = service
+    result = asyncio.run(engine._run_recommend_agent({
+        "message": "我想练一道需要先判断导通状态的二极管计算题",
+        "student_id": "student-agent",
+        "history": [],
+        "llm": RecommendationLLM(),
+    }))
+
+    assert service.recommend_kwargs["preferred_question_id"] == "q2"
+    assert service.recommend_kwargs["agent_analysis"]["reasoning_focus"] == "先判断导通条件"
+    assert result["recommendation"]["selection_method"] == "agent_rerank"
+
+
+def test_recommend_again_excludes_current_bound_question_from_agent_candidates():
+    class RecommendationLLM:
+        model = "test-recommender"
+
+        async def chat(self, messages, **_kwargs):
+            assert '"question_id": "q-new"' in messages[0]["content"]
+            assert '"question_id": "q-current"' not in messages[0]["content"]
+            return (
+                '{"question_id":"q-new","reason":"换一道新的题目。",'
+                '"evidence":["题干不同"],"tradeoffs":[],"fit_dimensions":["分析任务"]}'
+            )
+
+    class RecommendationService:
+        def __init__(self):
+            self.shortlist_kwargs = {}
+            self.recommend_kwargs = {}
+
+        def shortlist(self, **kwargs):
+            self.shortlist_kwargs = kwargs
+            return [{"question_id": "q-new", "prompt": "另一道二极管分析题。"}]
+
+        def recommend(self, **kwargs):
+            self.recommend_kwargs = kwargs
+            return {
+                "question_ref": {
+                    "kind": "question_bank",
+                    "question_bank_id": "book",
+                    "question_id": "q-new",
+                },
+                "selection_method": "agent_rerank",
+            }
+
+    engine = object.__new__(CircuitTutorEngine)
+    service = RecommendationService()
+    engine.recommendation_service = service
+    result = asyncio.run(engine._run_recommend_agent({
+        "message": "再检索一道",
+        "student_id": "student-current",
+        "history": [{
+            "role": "assistant",
+            "status": "completed",
+            "recommendation": {
+                "question_ref": {
+                    "kind": "question_bank",
+                    "question_bank_id": "book",
+                    "question_id": "q-current",
+                },
+                "requirements": {
+                    "agent_analysis": {
+                        "intent_summary": "继续练习同一知识点",
+                        "knowledge_points": ["二极管"],
+                    }
+                },
+            },
+        }],
+        "llm": RecommendationLLM(),
+        "question_ref": {
+            "kind": "question_bank",
+            "question_bank_id": "book",
+            "question_id": "q-current",
+        },
+        "conversation_focus": {
+            "question_ref": {
+                "kind": "question_bank",
+                "question_bank_id": "book",
+                "question_id": "q-current",
+            }
+        },
+    }))
+
+    assert service.shortlist_kwargs["excluded_question_ids"] == {"q-current"}
+    assert service.recommend_kwargs["excluded_question_ids"] == {"q-current"}
+    assert result["recommendation"]["question_ref"]["question_id"] == "q-new"
+
+
+def test_generated_opamp_focus_lets_agent_compare_stems_instead_of_tag_filtering():
+    class RecommendationLLM:
+        model = "test-source-aware-recommender"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, messages, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return '{"intent_summary":"根据当前题找相似题","knowledge_points":[]}'
+            prompt = messages[0]["content"]
+            assert '"question_id": "q-opamp"' in prompt
+            assert '"question_id": "q-fet"' in prompt
+            assert "标签、题型和难度只是可能不完整的检索线索" in prompt
+            return (
+                '{"question_id":"q-opamp","reason":"同样需要分析比较器与积分器。",'
+                '"evidence":["包含滞回比较器","包含反相积分器"],'
+                '"tradeoffs":[],"fit_dimensions":["电路拓扑","分析任务"]}'
+            )
+
+    class RecommendationService:
+        def __init__(self):
+            self.recommend_kwargs = {}
+
+        def shortlist(self, **_kwargs):
+            return [
+                {
+                    "question_id": "q-fet",
+                    "prompt": "计算场效应管的 rDS 与 rds。",
+                    "components": ["场效应管"],
+                    "tasks": ["参数计算"],
+                },
+                {
+                    "question_id": "q-opamp",
+                    "prompt": "分析滞回比较器与反相积分器组成的方波—三角波发生器。",
+                    "components": ["运放", "电阻", "电容"],
+                    "circuit_functions": ["比较", "积分", "波形发生"],
+                    "tasks": ["反馈极性判断", "工作区判断"],
+                },
+            ]
+
+        def recommend(self, **kwargs):
+            self.recommend_kwargs = kwargs
+            return {
+                "question_ref": {
+                    "kind": "question_bank",
+                    "question_bank_id": "book",
+                    "question_id": "q-opamp",
+                },
+                "selection_method": "agent_rerank",
+            }
+
+    engine = object.__new__(CircuitTutorEngine)
+    service = RecommendationService()
+    engine.recommendation_service = service
+    result = asyncio.run(engine._run_recommend_agent({
+        "message": "根据这个在题库里面检索一道题目",
+        "student_id": "student-focus",
+        "history": [],
+        "llm": RecommendationLLM(),
+        "attachment_context": "当前生成题：方波—三角波发生器工作区与频率分析",
+        "attachment_blueprint": {
+            "question": "判断 A1、A2 工作区并求方波—三角波频率",
+            "knowledge_points": ["滞回比较器", "反相积分器", "正反馈", "负反馈"],
+            "component_types": ["运放", "电阻", "电容"],
+            "topology": "A1 为滞回比较器，A2 为反相积分器",
+            "unknowns": ["工作区判断", "频率计算"],
+        },
+    }))
+
+    assert service.recommend_kwargs["allowed_question_ids"] == {"q-opamp", "q-fet"}
+    analysis = service.recommend_kwargs["agent_analysis"]
+    assert "滞回比较器" in analysis["knowledge_points"]
+    assert "积分" in analysis["circuit_functions"]
+    assert result["recommendation"]["question_ref"]["question_id"] == "q-opamp"

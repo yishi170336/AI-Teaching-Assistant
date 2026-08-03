@@ -41,6 +41,20 @@ def test_chat_request_new_fields_are_backward_compatible():
     assert payload.vision_model == ""
 
 
+def test_chat_request_accepts_authoritative_question_reference_without_message():
+    payload = ChatRequest(
+        session_id="student-1",
+        student_id="learner-1",
+        question_ref={
+            "kind": "question_bank",
+            "question_bank_id": "a" * 32,
+            "question_id": "b" * 32,
+        },
+    )
+    assert payload.question_ref is not None
+    assert payload.question_ref.question_id == "b" * 32
+
+
 def test_quiz_grading_scene_is_supported():
     payload = ChatRequest(
         session_id="student-1",
@@ -178,6 +192,44 @@ def test_photo_recognition_uses_separate_visual_client():
     assert "附件结构化识别" in result["attachment_context"]
 
 
+def test_structured_question_bypasses_photo_ocr_and_uses_readiness():
+    class UnusedVisionModel:
+        async def chat(self, *_args, **_kwargs):
+            raise AssertionError("structured question must bypass OCR")
+
+    engine = object.__new__(CircuitTutorEngine)
+    analyzed = asyncio.run(engine._analyze_attachments({
+        "scene": "image_answer",
+        "structured_question": {
+            "number": "1",
+            "question_type": "choice",
+            "prompt": "选择正确结论。",
+            "subquestions": [],
+            "options": [{"label": "A", "text": "结论 A"}],
+            "knowledge_points": ["欧姆定律"],
+            "figures": [],
+            "answer_readiness": {
+                "status": "needs_confirmation",
+                "reasons": ["选择题选项不足"],
+            },
+        },
+        "attachment_images": [],
+        "vision_llm": UnusedVisionModel(),
+    }))
+    gated = asyncio.run(engine._recognition_gate({
+        "scene": "image_answer",
+        "structured_question": {
+            "answer_readiness": {
+                "status": "needs_confirmation",
+                "reasons": ["选择题选项不足"],
+            },
+        },
+        "attachment_blueprint": analyzed["attachment_blueprint"],
+    }))
+    assert "服务器题库题目" in analyzed["attachment_context"]
+    assert gated["needs_confirmation"] is True
+
+
 def test_photo_recognition_falls_back_to_selected_multimodal_model():
     class BrokenQwenVision:
         async def chat(self, *_args, **_kwargs):
@@ -278,8 +330,10 @@ def test_risky_photo_answer_is_repaired_once_before_streaming():
             yield "## 课程知识库依据\n未检索到可引用的课程资料。\n\n"
             yield "## 补充推导\n错误草稿。\n\n## 结论与校验\nI=2A。"
 
-        async def chat(self, _messages, **_kwargs):
+        async def chat(self, messages, **_kwargs):
             self.review_calls += 1
+            if "独立的最终答案验收 Agent" in messages[0]["content"]:
+                return json.dumps({"passed": True, "issues": []}, ensure_ascii=False)
             return json.dumps({
                 "passed": False,
                 "issues": ["数值代入错误"],
@@ -313,9 +367,63 @@ def test_risky_photo_answer_is_repaired_once_before_streaming():
         return model, result, "".join(deltas)
 
     model, result, streamed = asyncio.run(scenario())
-    assert model.review_calls == 1
+    assert model.review_calls == 2
     assert result["review"]["repaired"] is True
     assert result["review"]["sympy_checked"] is True
     assert "0.5" in result["response"]
     assert "错误草稿" not in streamed
     assert streamed == result["response"]
+
+
+def test_question_bank_answer_is_used_as_private_expected_result_during_review():
+    statuses = []
+
+    async def on_status(status):
+        statuses.append(status)
+
+    class ReferenceAwareModel:
+        model = "reference-aware"
+
+        async def stream_chat(self, _messages, **_kwargs):
+            yield "由欧姆定律计算得到 $I=2\\,A$。"
+
+        async def chat(self, messages, **_kwargs):
+            prompt = messages[0]["content"]
+            assert "I=0.5A" in prompt
+            if "独立的最终答案验收 Agent" in prompt:
+                assert "题库预期答案" in prompt
+                return json.dumps({"passed": True, "issues": []}, ensure_ascii=False)
+            assert "必须逐项核对草稿的最终结论" in prompt
+            return json.dumps({
+                "passed": False,
+                "issues": ["草稿与题库预期答案冲突"],
+                "independent_errors": ["5/10 应为 0.5"],
+                "corrected_answer": "由 $I=U/R=5/10$，得到 $I=0.5\\,A$。",
+                "reference_check": "conflict",
+                "reference_issues": [],
+            }, ensure_ascii=False)
+
+    result = asyncio.run(CircuitTutorEngine._answer_photo_with_review(
+        object.__new__(CircuitTutorEngine),
+        {
+            "message": "求电流 I",
+            "answer_messages": [{"role": "user", "content": "answer"}],
+            "attachment_context": "U=5V，R=10Ω，求 I",
+            "attachment_blueprint": _complete_recognition(),
+            "reference_answer": {
+                "answer": "I=0.5A",
+                "answer_subquestions": [],
+                "rubric": [],
+            },
+            "on_status": on_status,
+            "hits": [],
+        },
+        ReferenceAwareModel(),
+        ["题库参考答案核验"],
+    ))
+
+    assert "0.5" in result["response"]
+    assert result["review"]["repaired"] is True
+    assert result["review"]["reference_check"] == "conflict"
+    assert statuses
+    assert all(status["agent"] == "答疑 Agent" for status in statuses)

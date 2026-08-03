@@ -1,7 +1,7 @@
 import { create } from 'zustand'
-import { AnswerReview, AttachmentInfo, KBStatus, ModelConfig, ModelProviderId, PhotoRecognition, PracticeExercise, PracticeGrading, SourceInfo, StoredMessage, streamChat, uploadChatAttachment, VisionModelConfig } from '../lib/api'
+import { AttachmentInfo, ConversationFocus, KBStatus, ModelConfig, ModelProviderId, PhotoRecognition, PracticeExercise, PracticeGrading, QuestionRecommendation, QuestionReference, QuestionSummary, SourceInfo, StoredMessage, streamChat, uploadChatAttachment, VisionModelConfig } from '../lib/api'
 
-export type ChatMode = 'auto' | 'answer' | 'quiz' | 'plan'
+export type ChatMode = 'auto' | 'answer' | 'quiz' | 'plan' | 'recommend'
 export type ChatScene = 'chat' | 'image_answer' | 'quiz_grade'
 
 export type ChatMessage = {
@@ -19,9 +19,12 @@ export type ChatMessage = {
   recognition?: PhotoRecognition
   needsConfirmation?: boolean
   evidenceMode?: 'grounded' | 'mixed' | 'general_only'
-  review?: AnswerReview
   practice?: PracticeExercise
   grading?: PracticeGrading
+  questionRef?: QuestionReference
+  questionSummary?: QuestionSummary
+  recommendation?: QuestionRecommendation
+  focus?: ConversationFocus
 }
 
 export type PendingAttachment = {
@@ -185,10 +188,14 @@ type ChatState = {
   activeMessageId?: string
   pendingAttachments: PendingAttachment[]
   activePractice?: PracticeExercise
+  activeQuestionRef?: QuestionReference
+  activeFocus?: ConversationFocus
   controller?: AbortController
   setMode: (mode: ChatMode) => void
   setScene: (scene: ChatScene) => void
   setActivePractice: (practice?: PracticeExercise) => void
+  setActiveQuestionRef: (reference?: QuestionReference) => void
+  setActiveFocus: (focus?: ConversationFocus) => void
   setKnowledgeBase: (id: string) => void
   setDefaultKnowledgeBase: (id: string) => void
   syncKnowledgeBases: (knowledgeBases: KBStatus[]) => void
@@ -196,9 +203,9 @@ type ChatState = {
   setVisionModelConfig: (config: VisionModelConfig) => void
   addAttachments: (files: File[]) => Promise<void>
   removeAttachment: (localId: string) => void
-  activateMessage: (messageId: string) => void
+  activateMessage: (messageId: string, bindFocus?: boolean) => void
   loadSession: (sessionId: string, messages: StoredMessage[]) => void
-  send: (message: string, options?: { recognitionConfirmed?: boolean }) => Promise<void>
+  send: (message: string, options?: { recognitionConfirmed?: boolean; questionRef?: QuestionReference; focusId?: string }) => Promise<void>
   stop: () => void
   clear: () => void
 }
@@ -221,12 +228,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
   activeMessageId: undefined,
   pendingAttachments: [],
   activePractice: undefined,
+  activeQuestionRef: undefined,
+  activeFocus: undefined,
   setMode: (mode) => set({ mode }),
   setScene: (scene) => set({
     scene,
     ...(scene === 'quiz_grade' ? {} : { activePractice: undefined }),
   }),
   setActivePractice: (activePractice) => set({ activePractice }),
+  setActiveQuestionRef: (activeQuestionRef) => set({ activeQuestionRef }),
+  setActiveFocus: (activeFocus) => set({
+    activeFocus,
+    activeQuestionRef: activeFocus?.question_ref,
+  }),
   setKnowledgeBase: (knowledgeBase) => set({ knowledgeBase }),
   setDefaultKnowledgeBase: (defaultKnowledgeBase) => {
     if (!defaultKnowledgeBase) {
@@ -282,7 +296,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       kind: file.type.startsWith('image/') ? 'image' : 'document',
       status: 'uploading',
     }))
-    set((state) => ({ pendingAttachments: [...state.pendingAttachments, ...pending] }))
+    const startsNewPhotoQuestion = get().scene === 'image_answer' && pending.some((item) => item.kind === 'image')
+    set((state) => ({
+      pendingAttachments: [...state.pendingAttachments, ...pending],
+      ...(startsNewPhotoQuestion ? { activeFocus: undefined, activeQuestionRef: undefined } : {}),
+    }))
     await Promise.all(
       selected.map(async (file, index) => {
         const localId = pending[index].localId
@@ -307,14 +325,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
   removeAttachment: (localId) => set((state) => ({
     pendingAttachments: state.pendingAttachments.filter((item) => item.localId !== localId),
   })),
-  activateMessage: (messageId) => set((state) => {
-    if (state.activeMessageId === messageId) return state
+  activateMessage: (messageId, bindFocus = false) => set((state) => {
     const message = state.messages.find((item) => item.id === messageId)
     if (!message || message.role !== 'assistant') return state
     return {
       activeMessageId: messageId,
       activeSources: message.sources || [],
       activeCitedSources: message.citedSources || [],
+      ...(bindFocus && message.focus
+        ? {
+            activeFocus: message.focus,
+            activeQuestionRef: message.focus.question_ref,
+          }
+        : {}),
     }
   }),
   loadSession: (sessionId, storedMessages) => {
@@ -342,12 +365,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
         recognition: item.recognition,
         needsConfirmation: item.needs_confirmation,
         evidenceMode: item.evidence_mode,
-        review: item.review,
         practice: item.practice,
         grading: item.grading,
+        questionRef: item.question_ref,
+        questionSummary: item.question_summary,
+        recommendation: item.recommendation,
+        focus: item.conversation_focus,
       }
     })
     const latestAssistant = [...messages].reverse().find((item) => item.role === 'assistant')
+    const latestQuestion = [...messages].reverse().find((item) => item.questionRef)?.questionRef
+    const latestFocus = [...messages].reverse().find((item) => item.focus)?.focus
     set({
       sessionId,
       messages,
@@ -359,10 +387,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activeMessageId: latestAssistant?.id,
       pendingAttachments: [],
       activePractice: undefined,
+      activeQuestionRef: latestFocus ? latestFocus.question_ref : latestQuestion,
+      activeFocus: latestFocus,
       controller: undefined,
     })
   },
   send: async (rawMessage, options) => {
+    const startsNewPhotoQuestion = get().scene === 'image_answer'
+      && get().pendingAttachments.some((item) => item.status === 'ready' && item.kind === 'image')
+    const questionRef = startsNewPhotoQuestion ? undefined : options?.questionRef || get().activeQuestionRef
+    const focusId = startsNewPhotoQuestion ? undefined : options?.focusId || get().activeFocus?.id
     const readyAttachments = get().pendingAttachments
       .filter((item) => (
         item.status === 'ready'
@@ -378,15 +412,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
           : get().mode === 'quiz'
           ? '请根据附件中的原题生成一道同类型新题。'
           : '请识别并解答附件中的电路题。'
-        : ''
+        : questionRef ? '请解答选中的题库题目。' : ''
     )
-    if ((!message && !readyAttachments.length) || get().streaming || hasUnfinished) return
+    if ((!message && !readyAttachments.length && !questionRef) || get().streaming || hasUnfinished) return
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content: message,
       attachments: readyAttachments,
       knowledgeBase: get().knowledgeBase,
+      questionRef,
+      focus: get().activeFocus,
     }
     const assistantId = crypto.randomUUID()
     const requestScene = get().scene
@@ -410,6 +446,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activeCitedSources: [],
       activeMessageId: assistantId,
       pendingAttachments: [],
+      activeQuestionRef: questionRef,
       controller,
     }))
     try {
@@ -420,6 +457,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           mode: get().mode,
           scene: get().scene,
           recognition_confirmed: Boolean(options?.recognitionConfirmed),
+          student_id: get().studentId,
+          question_ref: questionRef,
+          focus_id: focusId,
           knowledge_base: get().knowledgeBase,
           attachment_ids: readyAttachments.map((item) => item.id),
           model_provider: selectedModel.provider,
@@ -460,12 +500,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
                         recognition: data.recognition,
                         needsConfirmation: data.needs_confirmation,
                         evidenceMode: data.evidence_mode,
-                        review: data.review,
                         practice: data.practice,
                         grading: data.grading,
+                        questionRef: data.question_ref,
+                        questionSummary: data.question_summary,
+                        recommendation: data.recommendation,
+                        focus: data.conversation_focus,
                       }
                     : item,
                 ),
+                activeFocus: data.conversation_focus || state.activeFocus,
+                activeQuestionRef: data.conversation_focus
+                  ? data.conversation_focus.question_ref
+                  : data.question_ref || state.activeQuestionRef,
               }
             })
           },
@@ -481,7 +528,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
             stage: '',
             stageAgent: '',
             controller: undefined,
-            ...(requestScene === 'quiz_grade' ? { scene: 'chat' as ChatScene, activePractice: undefined } : {}),
+            ...(
+              requestScene === 'quiz_grade'
+                ? { scene: 'chat' as ChatScene, activePractice: undefined }
+                : requestScene === 'image_answer'
+                  ? { scene: 'chat' as ChatScene }
+                  : {}
+            ),
           }),
           onError: (error) => {
             set((state) => ({
@@ -546,6 +599,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activeMessageId: undefined,
       pendingAttachments: [],
       activePractice: undefined,
+      activeQuestionRef: undefined,
+      activeFocus: undefined,
       controller: undefined,
     })
   },
