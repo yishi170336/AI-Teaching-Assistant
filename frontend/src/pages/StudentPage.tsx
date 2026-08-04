@@ -1496,7 +1496,7 @@ function RecommendationCard({
   disabled: boolean
   onSimilar: (reference: QuestionReference) => void
   onBookmark: (reference: QuestionReference) => void
-  onAnother: (query?: string) => void
+  onAnother: () => void
   onStart: (recommendation: QuestionRecommendation) => void
   onHint: (reference: QuestionReference, level: 'direction' | 'formula') => void
 }) {
@@ -1504,7 +1504,6 @@ function RecommendationCard({
   const [answer, setAnswer] = useState<Awaited<ReturnType<typeof getRecommendedQuestionAnswer>>>()
   const [loadingAnswer, setLoadingAnswer] = useState(false)
   const [answerError, setAnswerError] = useState('')
-  const [removedConditions, setRemovedConditions] = useState<Set<string>>(() => new Set())
   const question = recommendation.question
   const difficultyLabels = { basic: '基础', intermediate: '进阶', advanced: '挑战' }
 
@@ -1524,21 +1523,6 @@ function RecommendationCard({
     calculation: '计算题', choice: '选择题', true_false: '判断题',
     design: '设计题', short_answer: '简答题', other: '综合题',
   }
-  const requirementEntries = [
-    ...((recommendation.requirements.knowledge_points as string[] | undefined) || []).map((value) => [`topic:${value}`, value] as const),
-    ...(recommendation.requirements.question_type ? [[`type:${recommendation.requirements.question_type}`, typeLabels[String(recommendation.requirements.question_type)] || String(recommendation.requirements.question_type)] as const] : []),
-    ...(recommendation.requirements.difficulty ? [[`difficulty:${recommendation.requirements.difficulty}`, difficultyLabels[recommendation.requirements.difficulty as keyof typeof difficultyLabels]] as const] : []),
-    ...((recommendation.requirements.skills as string[] | undefined) || []).map((value) => [`skill:${value}`, value] as const),
-    ...((recommendation.requirements.components as string[] | undefined) || []).map((value) => [`component:${value}`, value] as const),
-    ...((recommendation.requirements.tasks as string[] | undefined) || []).map((value) => [`task:${value}`, value] as const),
-    ...((recommendation.requirements.methods as string[] | undefined) || []).map((value) => [`method:${value}`, value] as const),
-    ...((recommendation.requirements.circuit_functions as string[] | undefined) || []).map((value) => [`function:${value}`, value] as const),
-    ...(recommendation.requirements.chapter ? [[`chapter:${recommendation.requirements.chapter}`, String(recommendation.requirements.chapter)] as const] : []),
-    ...(recommendation.requirements.requires_figure === true ? [['figure:yes', '包含题图'] as const] : []),
-    ...(recommendation.requirements.requires_figure === false ? [['figure:no', '纯文字题'] as const] : []),
-  ].filter(([key]) => !removedConditions.has(key))
-  const nextQuery = requirementEntries.map(([, label]) => label).join(' ')
-
   return (
     <section className="recommendation-card" onClick={(event) => event.stopPropagation()}>
       <div className="recommendation-question">
@@ -1638,26 +1622,11 @@ function RecommendationCard({
             </div>
           )}
         </div>
-        <div className="recommendation-condition-bar">
-          <small>再来一道将沿用</small>
-          <div>
-            {requirementEntries.map(([key, label]) => (
-              <Tag
-                key={key}
-                closable
-                onClose={(event) => {
-                  event.preventDefault()
-                  setRemovedConditions((current) => new Set(current).add(key))
-                }}
-              ><InlineMath content={label} /></Tag>
-            ))}
-          </div>
-        </div>
         <div className="recommendation-actions">
           <Button disabled={disabled} type="primary" onClick={() => onStart(recommendation)}>开始作答</Button>
           <Button disabled={disabled} onClick={() => onHint(recommendation.question_ref, 'direction')}>给点提示</Button>
           <Button disabled={disabled} onClick={() => onHint(recommendation.question_ref, 'formula')}>关键公式</Button>
-          <Button disabled={disabled} icon={<RotateCcw size={14} />} onClick={() => onAnother(nextQuery || '不限条件')}>再来一道</Button>
+          <Button disabled={disabled} icon={<RotateCcw size={14} />} onClick={onAnother}>再来一道</Button>
           <Button disabled={disabled} icon={<WandSparkles size={14} />} onClick={() => onSimilar(recommendation.question_ref)}>同类出题</Button>
           <Button disabled={disabled} icon={<BookmarkPlus size={14} />} onClick={() => onBookmark(recommendation.question_ref)}>收藏错题</Button>
         </div>
@@ -1735,7 +1704,7 @@ function Conversation({
   onGenerateSimilar: () => void
   onRecommendationSimilar: (reference: QuestionReference) => void
   onRecommendationBookmark: (reference: QuestionReference) => void
-  onRecommendationAnother: (query?: string) => void
+  onRecommendationAnother: () => void
   onRecommendationStart: (recommendation: QuestionRecommendation) => void
   onRecommendationHint: (reference: QuestionReference, level: 'direction' | 'formula') => void
 }) {
@@ -4867,10 +4836,10 @@ function StudentPageContent() {
     }).then(() => refreshSessions())
   }
 
-  const recommendAnother = (query?: string) => {
+  const recommendAnother = () => {
     setMode('recommend')
     setScene('chat')
-    void send(query?.trim() ? `请按这些条件推荐一道原书题目：${query.trim()}` : '再来一道')
+    void send('再来一道')
       .then(() => refreshSessions())
   }
 

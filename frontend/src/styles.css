@@ -1619,9 +1619,6 @@ button { color: inherit; }
 .recommendation-match.exact { color: #17684d; background: #dff5ea; }
 .recommendation-match.partial,
 .recommendation-match.fallback { color: #9a4238; background: #ffe8e4; }
-.recommendation-condition-bar { margin: 0; padding-top: 8px; border-top: 1px solid #d7e3e8; }
-.recommendation-condition-bar > small { display: block; margin-bottom: 5px; }
-.recommendation-condition-bar .ant-tag { margin: 0 4px 4px 0; font-size: 10px; }
 .recommendation-answer-error { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: #a3443a; }
 .recommendation-intent {
   padding: 7px 8px;
