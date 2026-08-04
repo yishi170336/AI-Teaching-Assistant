@@ -16,6 +16,7 @@ from backend.app.services.knowledge_explanations import (
     build_page_prompt,
     normalize_page_detail,
     normalize_plan,
+    normalize_visual_type,
     qwen_image_model_label,
     qwen_image_endpoint,
 )
@@ -416,6 +417,96 @@ def test_plan_normalizes_layouts_and_avoids_adjacent_duplicates() -> None:
 
     assert set(layouts) == set(PAGE_LAYOUTS)
     assert all(current != previous for previous, current in zip(layouts, layouts[1:]))
+
+
+def test_plan_preserves_complete_titles_instead_of_hard_truncating() -> None:
+    lesson_title = "共射放大电路中发射极电阻与旁路电容的完整权衡"
+    page_title = "Re-Ce协同设计：边界条件与工程取舍"
+    plan = normalize_plan(
+        {
+            "title": lesson_title,
+            "pages": [{"title": page_title, "layout": "system-diagram"}],
+        },
+        "解释发射极电阻与旁路电容",
+        1,
+    )
+
+    assert plan["title"] == lesson_title
+    assert plan["pages"][0]["title"] == page_title
+    assert not plan["pages"][0]["title"].endswith("工程取")
+
+
+@pytest.mark.parametrize(
+    ("visual_type", "expected_rule", "unexpected_rule"),
+    [
+        ("circuit", "电路图约束：只绘制文案或绘图说明明确给出的器件、节点和连接关系", "曲线图约束："),
+        ("curve", "曲线图约束：横轴、纵轴分别对应什么物理量及单位必须明确", "公式推导约束："),
+        ("formula-derivation", "公式推导约束：公式必须逐字符忠实复制正文", "电路图约束："),
+    ],
+)
+def test_page_prompt_adds_only_relevant_specialized_visual_rule(
+    visual_type: str,
+    expected_rule: str,
+    unexpected_rule: str,
+) -> None:
+    prompt = build_page_prompt(
+        lesson_title="共射放大电路",
+        lesson_subtitle="建立准确的图示",
+        page_count=1,
+        page={
+            "index": 1,
+            "title": "图示精讲",
+            "subtitle": "从结构到结论",
+            "layout": "system-diagram",
+            "sections": [
+                {
+                    "heading": "关键图示",
+                    "body": "只呈现本页给出的关系。",
+                    "visual": "按正文要求绘制",
+                    "visual_type": visual_type,
+                    "accent": "blue",
+                }
+            ],
+            "key_takeaway": "图示必须忠实于正文。",
+        },
+    )
+
+    assert "【05 专业图示准确性】" in prompt
+    assert expected_rule in prompt
+    assert unexpected_rule not in prompt
+
+
+def test_visual_type_inference_keeps_old_page_details_compatible() -> None:
+    assert normalize_visual_type("", {"visual": "共射放大器标准电路原理图"}) == "circuit"
+    assert normalize_visual_type("", {"visual": "横轴频率、纵轴增益的响应曲线"}) == "curve"
+    assert normalize_visual_type("general", {"body": "Av≈−Rc/(re+Re)"}) == "formula-derivation"
+
+
+def test_page_prompt_combines_rules_for_mixed_circuit_and_formula_content() -> None:
+    prompt = build_page_prompt(
+        lesson_title="共射放大电路",
+        lesson_subtitle="结构与增益",
+        page_count=1,
+        page={
+            "index": 1,
+            "title": "交流等效模型",
+            "subtitle": "从电路得到电压增益",
+            "layout": "formula-focus",
+            "sections": [
+                {
+                    "heading": "等效电路",
+                    "body": "由交流等效电路得到 Av≈−Rc/(re+Re)。",
+                    "visual": "绘制晶体管交流等效电路并标出节点",
+                    "visual_type": "circuit",
+                    "accent": "blue",
+                }
+            ],
+            "key_takeaway": "电路结构决定增益表达式。",
+        },
+    )
+
+    assert "电路图约束：" in prompt
+    assert "公式推导约束：" in prompt
 
 
 def test_page_detail_removes_mechanical_numbered_headings() -> None:

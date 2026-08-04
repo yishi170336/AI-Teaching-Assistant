@@ -35,6 +35,27 @@ PAGE_LAYOUT_INSTRUCTIONS = {
     "system-diagram": "用占据主要画面的结构图、剖面图或系统框图承载知识，文字作为精确标注。",
     "case-walkthrough": "从具体情境、例题或工程现象切入，按问题、分析、结果组织视觉叙事。",
 }
+VISUAL_TYPES = ("general", "circuit", "curve", "formula-derivation")
+SPECIALIZED_VISUAL_INSTRUCTIONS = {
+    "circuit": (
+        "电路图约束：只绘制文案或绘图说明明确给出的器件、节点和连接关系；使用规范二维电路符号、"
+        "直线导线与实心连接点，导线交叉但不连接时不得加连接点。电源、地、器件极性以及电压/电流"
+        "箭头方向必须前后一致。若拓扑信息不足，改画功能框图，不得猜测或补造完整电路。电路内部"
+        "只标说明中已经出现的标准变量和元件代号，不添加说明性中文或伪文字。"
+    ),
+    "curve": (
+        "曲线图约束：横轴、纵轴分别对应什么物理量及单位必须明确且互不混用；仅使用文案给出的"
+        "数值、拐点和阈值。若未给出轴变量、单位或关键数值，只画定性坐标箭头和趋势，不得自行添加"
+        "3 dB、fL、峰值或刻度。曲线的单调性、极值、渐近线和关键区域必须与正文公式及结论一致，"
+        "图例颜色与曲线一一对应。"
+    ),
+    "formula-derivation": (
+        "公式推导约束：公式必须逐字符忠实复制正文，保留负号、分式、括号、上下标和希腊字母；"
+        "按“已知关系→等价变形→结果”的方向排列，每个等号或箭头两侧必须数学等价。不得引入正文"
+        "未定义的变量、数值或中间结论；若正文没有提供完整中间步骤，只展示关系和结果，不得伪造"
+        "推导。公式字号高于普通正文，变量说明紧邻首次出现的位置。"
+    ),
+}
 
 
 class KnowledgeExplanationError(RuntimeError):
@@ -548,17 +569,17 @@ class KnowledgeExplanationService:
 要求：
 1. {count_instruction}
 2. 页面必须针对这个问题动态划分，形成从直觉/背景到核心原理，再到推导、例子、应用或误区的学习闭环；不要机械套模板。
-3. 每页只承担一个清晰教学任务，标题短而准确，适合 16:9 紧凑信息图。
+3. 每页只承担一个清晰教学任务，标题短而准确，适合 16:9 紧凑信息图。总标题和页面标题必须是完整短语或完整句子；若需要缩短，应完整改写，不得截断词尾或保留半句话。
 4. 最后一页负责收束关键联系、适用边界或迁移应用，标题必须表达具体知识主题，不得直接命名为“总结”“回顾”“最后一页”。
 5. 每页从 concept-map、process-flow、comparison、formula-focus、system-diagram、case-walkthrough 中选择最适合内容的 layout，相邻页不得重复。
 6. 只输出 JSON，不要 Markdown。
 
 JSON 结构：
 {{
-  "title": "整组讲解总标题，不超过24字",
+  "title": "整组讲解总标题，建议不超过24字且语义完整",
   "subtitle": "一句话说明学习主线，不超过42字",
   "pages": [
-    {{"title": "本页标题，不超过18字", "subtitle": "本页副标题，不超过30字", "learning_goal": "学完本页能回答什么，不超过48字", "layout": "六种 layout 之一"}}
+    {{"title": "本页标题，建议不超过18字且语义完整", "subtitle": "本页副标题，不超过30字", "learning_goal": "学完本页能回答什么，不超过48字", "layout": "六种 layout 之一"}}
   ]
 }}
 """.strip()
@@ -597,10 +618,11 @@ JSON 结构：
 每个正文最多 58 个汉字，优先使用准确术语、必要公式和单位；公式写成普通可读文本或 LaTeX，不要编造数值和结论。
 heading 必须是与主题直接相关的自然标题，不得使用“模块1”“要点2”“总结3”等通用编号。
 visual 要具体描述适合本知识点的简洁图示，例如坐标曲线、流程箭头、结构剖面、对比表或图标，不要只写“配图”。
+visual_type 必须选择 general、circuit、curve、formula-derivation 之一。绘制电路时，visual 必须写清器件、节点、连接、极性和箭头方向，信息不足则选择功能框图；绘制曲线时，必须写清横纵轴物理量、单位、趋势和正文明确给出的关键点；绘制公式推导时，必须写清起始关系、中间等价变形和结果，正文没有中间步骤时不得补造。
 只输出 JSON，不要 Markdown：
 {{
   "sections": [
-    {{"heading": "知识点标题，不超过12字", "body": "1至2句准确讲解", "visual": "图示内容，不超过36字", "accent": "blue|green|orange|red"}}
+    {{"heading": "知识点标题，不超过12字", "body": "1至2句准确讲解", "visual": "图示内容，不超过48字", "visual_type": "general|circuit|curve|formula-derivation", "accent": "blue|green|orange|red"}}
   ],
   "key_takeaway": "本页最重要的一句话结论，不超过52字"
 }}
@@ -639,6 +661,46 @@ def _short(value: Any, limit: int, fallback: str) -> str:
     return (normalized or fallback)[:limit]
 
 
+def _complete_title(value: Any, fallback: str) -> str:
+    """Normalize a title without slicing through a word or clause."""
+
+    normalized = re.sub(r"\s+", " ", str(value or "")).strip()
+    return normalized or fallback
+
+
+def _detected_specialized_visual_types(section: dict[str, Any]) -> list[str]:
+    visual_description = " ".join(
+        str(section.get(key) or "") for key in ("heading", "visual")
+    ).lower()
+    formula_description = " ".join(
+        str(section.get(key) or "") for key in ("body", "visual")
+    ).lower()
+    detected: list[str] = []
+    if re.search(r"电路|原理图|接线|拓扑|节点|支路|等效图|运放|晶体管|二极管", visual_description):
+        detected.append("circuit")
+    if re.search(r"曲线|坐标|波形|频响|频率响应|特性图|趋势图|折线|散点", visual_description):
+        detected.append("curve")
+    if re.search(r"公式|推导|方程|等式|恒等|化简|代入|求解|[=≈∝]|\\frac", formula_description):
+        detected.append("formula-derivation")
+    return detected
+
+
+def normalize_visual_type(value: Any, section: dict[str, Any]) -> str:
+    candidate = str(value or "").strip().lower().replace("_", "-")
+    aliases = {
+        "formula": "formula-derivation",
+        "derivation": "formula-derivation",
+        "schematic": "circuit",
+        "plot": "curve",
+        "chart": "curve",
+    }
+    candidate = aliases.get(candidate, candidate)
+    if candidate in VISUAL_TYPES and candidate != "general":
+        return candidate
+    detected = _detected_specialized_visual_types(section)
+    return detected[0] if detected else "general"
+
+
 def normalize_page_layout(value: Any, page_index: int, previous: str = "") -> str:
     candidate = str(value or "").strip().lower()
     if candidate not in PAGE_LAYOUTS:
@@ -674,16 +736,15 @@ def normalize_plan(
         layout = normalize_page_layout(raw.get("layout"), index + 1, previous_layout)
         pages.append(
             {
-                "title": _short(raw.get("title"), 18, default[0]),
+                "title": _complete_title(raw.get("title"), default[0]),
                 "subtitle": _short(raw.get("subtitle"), 30, default[1]),
                 "learning_goal": _short(raw.get("learning_goal"), 48, default[2]),
                 "layout": layout,
             }
         )
         previous_layout = layout
-    topic = _short(question, 24, "知识讲解")
     return {
-        "title": _short(value.get("title"), 24, f"{topic}详解"),
+        "title": _complete_title(value.get("title"), "知识讲解"),
         "subtitle": _short(value.get("subtitle"), 42, "从核心问题出发，建立可迁移的理解框架"),
         "pages": pages,
     }
@@ -705,7 +766,7 @@ def normalize_page_detail(
         if not body:
             continue
         accent = str(raw.get("accent", "blue")).lower()
-        raw_heading = _short(raw.get("heading"), 12, "")
+        raw_heading = _complete_title(raw.get("heading"), "")
         heading = re.sub(
             r"^(?:模块|要点|总结|部分)\s*[0-9一二三四五六七八九十]*\s*[:：、.\-]\s*",
             "",
@@ -721,6 +782,7 @@ def normalize_page_detail(
                 "heading": heading or fallback_headings[index],
                 "body": body,
                 "visual": _short(raw.get("visual"), 48, "简洁概念关系图"),
+                "visual_type": normalize_visual_type(raw.get("visual_type"), raw),
                 "accent": accent if accent in accents else "blue",
             }
         )
@@ -757,10 +819,27 @@ def build_page_prompt(
         )
         for section in page["sections"]
     )
-    visual_notes = "\n".join(
-        f"- 围绕“{section['heading']}”绘制：{section['visual']}；以 {section['accent']} 作少量强调。"
-        for section in page["sections"]
-    )
+    visual_types: list[str] = []
+    visual_note_lines: list[str] = []
+    for section in page["sections"]:
+        visual_type = normalize_visual_type(section.get("visual_type"), section)
+        section_visual_types = [
+            visual_type,
+            *_detected_specialized_visual_types(section),
+        ]
+        for detected_type in section_visual_types:
+            if detected_type not in visual_types:
+                visual_types.append(detected_type)
+        visual_note_lines.append(
+            f"- 围绕“{section['heading']}”绘制：{section['visual']}；"
+            f"图示类型为 {visual_type}；以 {section['accent']} 作少量强调。"
+        )
+    visual_notes = "\n".join(visual_note_lines)
+    specialized_rules = "\n".join(
+        f"- {SPECIALIZED_VISUAL_INSTRUCTIONS[visual_type]}"
+        for visual_type in visual_types
+        if visual_type in SPECIALIZED_VISUAL_INSTRUCTIONS
+    ) or "- 本页不含需要额外约束的电路、曲线或公式推导；所有图示仍须忠实于白名单文案。"
     layout = normalize_page_layout(page.get("layout"), page_index)
     layout_instruction = PAGE_LAYOUT_INSTRUCTIONS[layout]
     return f"""
@@ -788,7 +867,11 @@ def build_page_prompt(
 不要把所有内容强制做成等宽卡片。允许主图占据视觉中心，也允许文字沿流程、关系、对照或标注自然分布；结论用自然强调区、批注或视觉收束呈现，不固定为底部通栏。绘图说明不得整句入图：
 {visual_notes}
 
-【05 整组视觉一致性】
+【05 专业图示准确性】
+以下规则只作用于本页实际包含的图示类型，并且优先级高于装饰效果：
+{specialized_rules}
+
+【06 整组视觉一致性】
 保持白到浅蓝灰底色、海军蓝主标题与清晰细线图形；少量使用蓝、绿、橙、红作语义强调。页码位置、字体体系和线条风格保持统一，但主图位置、信息流向、分区比例和强调方式必须服从本页内容，不机械复用上一页构图。
 
 背景仅可有淡线稿。不要照片、人物、3D、品牌、水印、二维码或版权信息；不得裁字、压字。

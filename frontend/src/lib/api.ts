@@ -75,6 +75,7 @@ export type KnowledgeExplanationSection = {
   heading: string
   body: string
   visual: string
+  visual_type?: 'general' | 'circuit' | 'curve' | 'formula-derivation'
   accent: 'blue' | 'green' | 'orange' | 'red'
 }
 
