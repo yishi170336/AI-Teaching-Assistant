@@ -36,6 +36,38 @@ PAGE_LAYOUT_INSTRUCTIONS = {
     "case-walkthrough": "从具体情境、例题或工程现象切入，按问题、分析、结果组织视觉叙事。",
 }
 VISUAL_TYPES = ("general", "circuit", "curve", "formula-derivation")
+CONTENT_GENERATION_ATTEMPTS = 2
+DANGLING_TEXT_ENDINGS = (
+    "的",
+    "之",
+    "并",
+    "且",
+    "但",
+    "为",
+    "将",
+    "把",
+    "被",
+    "由",
+    "向",
+    "从",
+    "在",
+    "如",
+    "例如",
+    "即",
+    "则",
+    "若",
+    "使",
+    "让",
+    "旁标",
+    "标注",
+    "指向",
+    "包含",
+    "包括",
+    "通过",
+    "如下",
+    "分别为",
+    "依次为",
+)
 SPECIALIZED_VISUAL_INSTRUCTIONS = {
     "circuit": (
         "电路图约束：只绘制文案或绘图说明明确给出的器件、节点和连接关系；使用规范二维电路符号、"
@@ -474,6 +506,7 @@ class KnowledgeExplanationService:
                 "learning_goal": item["learning_goal"],
                 "content_brief": item["content_brief"],
                 "visual_focus": item["visual_focus"],
+                "covers": item["covers"],
                 "layout": item["layout"],
                 "sections": [],
                 "key_takeaway": "",
@@ -488,6 +521,7 @@ class KnowledgeExplanationService:
             task_id,
             title=plan["title"],
             subtitle=plan["subtitle"],
+            requirements=plan["requirements"],
             page_count=len(pages),
             pages=pages,
             status="generating",
@@ -594,27 +628,93 @@ class KnowledgeExplanationService:
 1. {count_instruction}
 2. 讲解内容、先后顺序和每页任务完全依据用户问题与知识依赖决定。不要默认套用“概念→原理→公式→案例→工程应用→总结”，也不要为了结构完整加入问题不需要的背景、应用、误区或例题。
 3. 先找出回答问题不可缺少的知识关系，再把它们组合为页面；允许多页连续推导、连续对比或连续解释同一机制，只要这是最清楚的讲法。
-4. 每页只承担一个明确任务。content_brief 要写清本页必须讲到的具体结论、条件、公式或关系；visual_focus 要写清最能帮助理解的主视觉，而不是泛泛写“配图”。
-5. 标题短而准确，适合 16:9 紧凑信息图。总标题和页面标题必须是完整短语或完整句子；若需要缩短，应完整改写，不得截断词尾或保留半句话。页面标题只写本页具体主题，不重复总标题、不自行添加“（一）”等页序。
-6. 从 concept-map、process-flow、comparison、formula-focus、system-diagram、case-walkthrough 中选择真正适合本页内容的 layout；相邻页可以相同，不为追求变化而牺牲内容表达。
-7. 只输出 JSON，不要 Markdown。
+4. requirements 必须逐项拆出用户明确要求解释的对象、关系、条件、观察角度和输出形式，使用 R1、R2……编号；不能把“结合直流通路、交流等效电路和频率响应”等要求合并或遗漏。每页 covers 必须列出实际覆盖的 requirements id，所有覆盖项至少被一页实质性讲解。
+5. 每页只承担一个明确任务。content_brief 要写清本页必须讲到的具体结论、条件、公式或关系，并实质覆盖 covers 对应内容；visual_focus 要写清最能帮助理解的主视觉，而不是泛泛写“配图”。
+6. 标题短而准确，适合 16:9 紧凑信息图。总标题和页面标题必须是完整短语或完整句子；若需要缩短，应完整改写，不得截断词尾或保留半句话。页面标题只写本页具体主题，不重复总标题、不自行添加“（一）”等页序。
+7. 从 concept-map、process-flow、comparison、formula-focus、system-diagram、case-walkthrough 中选择真正适合本页内容的 layout；相邻页可以相同，不为追求变化而牺牲内容表达。
+8. 所有字段必须在规定字数内写成完整语句或完整短语，不得以“的、之、与、旁标、标注、显示、绘制”等残缺词语结尾。
+9. 只输出 JSON，不要 Markdown。
 
 JSON 结构：
 {{
   "title": "整组讲解总标题，建议不超过24字且语义完整",
   "subtitle": "一句话说明这组页面如何回答用户问题，不超过42字",
+  "requirements": [
+    {{"id": "R1", "content": "用户问题中一个不可遗漏的具体要求，不超过80字"}}
+  ],
   "pages": [
-    {{"title": "本页标题，建议不超过18字且语义完整", "subtitle": "本页副标题，不超过30字", "learning_goal": "学完本页能回答什么，不超过48字", "content_brief": "本页必须覆盖的具体内容、条件与结论，不超过120字", "visual_focus": "本页最重要的主视觉及其信息关系，不超过80字", "layout": "六种 layout 之一"}}
+    {{"title": "本页标题，建议不超过18字且语义完整", "subtitle": "本页副标题，不超过30字", "learning_goal": "学完本页能回答什么，不超过48字", "content_brief": "本页必须覆盖的具体内容、条件与结论，不超过120字", "visual_focus": "本页最重要的主视觉及其信息关系，不超过80字", "covers": ["R1"], "layout": "六种 layout 之一"}}
   ]
 }}
 """.strip()
+        feedback = ""
+        for attempt in range(CONTENT_GENERATION_ATTEMPTS):
+            retry_instruction = (
+                "\n\n上一次结果未通过校验，必须针对以下问题完整重写，不要只做局部补丁：\n"
+                + feedback
+                if feedback
+                else ""
+            )
+            raw = await text_client.chat(
+                [{"role": "user", "content": prompt + retry_instruction}],
+                temperature=0.1,
+                json_mode=True,
+                reasoning_budget=768,
+            )
+            try:
+                plan = normalize_plan(
+                    _json_object(raw), question, requested_page_count
+                )
+            except KnowledgeExplanationError as exc:
+                feedback = str(exc)
+                continue
+            try:
+                passed, feedback = await self._review_plan_coverage(
+                    question=question,
+                    plan=plan,
+                    text_client=text_client,
+                )
+            except KnowledgeExplanationError as exc:
+                feedback = f"审查结果无效：{exc}"
+                continue
+            if passed:
+                return plan
+        raise KnowledgeExplanationError(
+            "讲解内容规划连续两次未通过问题覆盖与语义完整性校验：" + feedback
+        )
+
+    async def _review_plan_coverage(
+        self,
+        *,
+        question: str,
+        plan: dict[str, Any],
+        text_client: Any,
+    ) -> tuple[bool, str]:
+        prompt = f"""
+你是独立的知识讲解内容审查员。不要替规划辩护，要逐字核对用户问题中的每一个对象、因果关系、限定条件、要求采用的分析视角和输出要求，判断规划是否都有实质性页面内容承接。
+
+用户问题：{question}
+待审规划：
+{json.dumps(plan, ensure_ascii=False, indent=2)}
+
+审查标准：
+1. requirements 是否完整拆出用户的全部明确要求，不能用宽泛词语掩盖遗漏。
+2. 每个 requirement 是否至少被一页 covers 引用，且对应 content_brief 确实说明了要讲什么，而不是只在标题或 covers 中挂名。
+3. 指定页数较少时仍必须覆盖整个问题；如果一页装不下，应在该页内重新组织，而不是擅自只回答其中一部分。
+4. 标题、副标题、学习目标、content_brief 和 visual_focus 必须语义完整，无截断、半句、悬空连接词或未闭合公式。
+5. 不因没有套用固定教学顺序而判错，只检查用户问题覆盖、知识依赖和内容完整性。
+
+只输出 JSON：
+{{"passed": true, "missing_requirements": [], "issues": []}}
+未通过时 passed=false，并用 missing_requirements 列出缺少的具体问题要求，用 issues 列出需要重写的页面和原因。
+""".strip()
         raw = await text_client.chat(
             [{"role": "user", "content": prompt}],
-            temperature=0.1,
+            temperature=0.0,
             json_mode=True,
-            reasoning_budget=768,
+            reasoning_budget=512,
         )
-        return normalize_plan(_json_object(raw), question, requested_page_count)
+        return _review_feedback(_json_object(raw))
 
     async def _create_page_detail(
         self,
@@ -624,6 +724,13 @@ JSON 结构：
         page: dict[str, Any],
         text_client: Any,
     ) -> dict[str, Any]:
+        requirement_lookup = {
+            item["id"]: item["content"] for item in plan["requirements"]
+        }
+        page_requirements = [
+            {"id": requirement_id, "content": requirement_lookup[requirement_id]}
+            for requirement_id in page["covers"]
+        ]
         outline = "；".join(
             f"{index + 1}.{item['title']}（{item['content_brief']}）"
             for index, item in enumerate(plan["pages"])
@@ -639,6 +746,7 @@ JSON 结构：
 本页目标：{page['learning_goal']}
 本页内容边界：{page['content_brief']}
 本页主视觉：{page['visual_focus']}
+本页必须实质覆盖的问题要点：{json.dumps(page_requirements, ensure_ascii=False)}
 本页版式：{page['layout']}（{PAGE_LAYOUT_INSTRUCTIONS[page['layout']]}）
 
 严格在本页内容边界内规划 2 到 6 个内容分区，数量由内容决定，不得为凑版式拆分或补充无关模块。分区可以是推导步骤、对比对象、机制环节、条件、图解、案例数据或结论，不能默认套用概念、原理、应用的固定顺序。
@@ -646,6 +754,7 @@ JSON 结构：
 heading 必须是与主题直接相关的自然标题，不得使用“模块1”“要点2”“总结3”等通用编号。
 visual 要像给制图人员的指令一样具体，写明对象、空间关系、箭头、标签、坐标轴、公式或强调位置，不要只写“配图”。
 visual_type 必须选择 general、circuit、curve、formula-derivation 之一。绘制电路时，visual 必须写清器件、节点、连接、极性和箭头方向，信息不足则选择功能框图；绘制曲线时，必须写清横纵轴物理量、单位、趋势和正文明确给出的关键点；绘制公式推导时，必须写清起始关系、中间等价变形和结果，正文没有中间步骤时不得补造。
+所有 heading、body、visual 和 key_takeaway 都必须是完整语句或完整短语，不得因字数限制按字符截断，不得以“的、之、与、旁标、标注、显示、绘制”等残缺词语结尾；括号、引号、公式必须闭合。
 只输出 JSON，不要 Markdown：
 {{
   "sections": [
@@ -654,13 +763,87 @@ visual_type 必须选择 general、circuit、curve、formula-derivation 之一�
   "key_takeaway": "本页最重要的一句话结论，不超过52字"
 }}
 """.strip()
+        feedback = ""
+        for attempt in range(CONTENT_GENERATION_ATTEMPTS):
+            retry_instruction = (
+                "\n\n上一次本页文案未通过校验，必须针对以下问题完整重写：\n"
+                + feedback
+                if feedback
+                else ""
+            )
+            raw = await text_client.chat(
+                [{"role": "user", "content": prompt + retry_instruction}],
+                temperature=0.1,
+                json_mode=True,
+                reasoning_budget=640,
+            )
+            try:
+                detail = normalize_page_detail(_json_object(raw), page)
+            except KnowledgeExplanationError as exc:
+                feedback = str(exc)
+                continue
+            try:
+                passed, feedback = await self._review_page_detail(
+                    question=question,
+                    plan=plan,
+                    page=page,
+                    detail=detail,
+                    page_requirements=page_requirements,
+                    text_client=text_client,
+                )
+            except KnowledgeExplanationError as exc:
+                feedback = f"审查结果无效：{exc}"
+                continue
+            if passed:
+                return detail
+        raise KnowledgeExplanationError(
+            f"“{page['title']}”连续两次未通过内容覆盖与语义完整性校验：{feedback}"
+        )
+
+    async def _review_page_detail(
+        self,
+        *,
+        question: str,
+        plan: dict[str, Any],
+        page: dict[str, Any],
+        detail: dict[str, Any],
+        page_requirements: list[dict[str, str]],
+        text_client: Any,
+    ) -> tuple[bool, str]:
+        review_payload = {
+            "question": question,
+            "lesson_title": plan["title"],
+            "page_title": page["title"],
+            "page_subtitle": page["subtitle"],
+            "content_brief": page["content_brief"],
+            "visual_focus": page["visual_focus"],
+            "required_coverage": page_requirements,
+            "detail": detail,
+        }
+        prompt = f"""
+你是独立的单页教学内容审查员。核对下面页面是否真正覆盖本页承担的问题要点，并检查每一句正文和绘图说明是否完整、准确、可执行。
+
+待审内容：
+{json.dumps(review_payload, ensure_ascii=False, indent=2)}
+
+审查标准：
+1. required_coverage 中每一项都必须在 sections 的正文或关键结论中得到实质解释，不能只出现名词。
+2. detail 必须符合 content_brief，不遗漏指定条件、因果链、公式、分析视角或对比关系，也不能越界重复其他页任务。
+3. heading、body、visual、key_takeaway 不得有截断、半句、悬空动词或连接词；括号、引号、公式和因果箭头必须闭合。
+4. visual 必须给出足够执行的信息。出现“旁标、标注、显示、绘制、指向”等动作时，必须继续写清标什么、显示什么或指向什么。
+5. 电路拓扑、曲线坐标轴、公式变量若信息不足，应明确要求简化示意，不能暗示生图模型自行补造。
+
+只输出 JSON：
+{{"passed": true, "missing_requirements": [], "issues": []}}
+未通过时 passed=false，并具体指出缺失要点或残缺字段，供下一次完整重写。
+""".strip()
         raw = await text_client.chat(
             [{"role": "user", "content": prompt}],
-            temperature=0.1,
+            temperature=0.0,
             json_mode=True,
-            reasoning_budget=640,
+            reasoning_budget=512,
         )
-        return normalize_page_detail(_json_object(raw), page)
+        return _review_feedback(_json_object(raw))
 
     async def _create_image_prompt(
         self,
@@ -736,16 +919,63 @@ def _json_object(raw: str) -> dict[str, Any]:
     return value
 
 
-def _short(value: Any, limit: int, fallback: str) -> str:
-    normalized = re.sub(r"\s+", " ", str(value or "")).strip()
-    return (normalized or fallback)[:limit]
+def semantic_text_issue(
+    value: Any, *, label: str, check_dangling_words: bool = True
+) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return f"{label}为空"
+    if text.endswith(
+        ("，", ",", "、", "：", ":", "；", ";", "→", "=", "+", "-", "−", "/")
+    ):
+        return f"{label}以未完成的标点或运算符结尾"
+    if check_dangling_words:
+        for ending in sorted(DANGLING_TEXT_ENDINGS, key=len, reverse=True):
+            if text.endswith(ending):
+                return f"{label}以“{ending}”结尾，语义不完整"
+    delimiter_pairs = (("（", "）"), ("(", ")"), ("【", "】"), ("[", "]"), ("《", "》"))
+    for opening, closing in delimiter_pairs:
+        if text.count(opening) != text.count(closing):
+            return f"{label}中的括号或书名号不成对"
+    if text.count("“") != text.count("”") or text.count("‘") != text.count("’"):
+        return f"{label}中的引号不成对"
+    return ""
 
 
-def _complete_title(value: Any, fallback: str) -> str:
-    """Normalize a title without slicing through a word or clause."""
+def complete_text(
+    value: Any,
+    *,
+    label: str,
+    max_length: int,
+    fallback: str = "",
+    check_dangling_words: bool = True,
+) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip() or fallback
+    if len(text) > max_length:
+        raise KnowledgeExplanationError(
+            f"{label}超过 {max_length} 字，必须完整改写，不能按字符截断"
+        )
+    issue = semantic_text_issue(
+        text, label=label, check_dangling_words=check_dangling_words
+    )
+    if issue:
+        raise KnowledgeExplanationError(issue)
+    return text
 
-    normalized = re.sub(r"\s+", " ", str(value or "")).strip()
-    return normalized or fallback
+
+def _review_feedback(value: Any) -> tuple[bool, str]:
+    review = value if isinstance(value, dict) else {}
+    missing = review.get("missing_requirements")
+    issues = review.get("issues")
+    messages = [
+        str(item).strip()
+        for collection in (missing, issues)
+        if isinstance(collection, list)
+        for item in collection
+        if str(item).strip()
+    ]
+    passed = review.get("passed") is True and not messages
+    return passed, "；".join(messages) or "审查未通过，但审查器未给出具体原因"
 
 
 def _detected_specialized_visual_types(section: dict[str, Any]) -> list[str]:
@@ -792,6 +1022,31 @@ def normalize_page_layout(value: Any, page_index: int, previous: str = "") -> st
 def normalize_plan(
     value: dict[str, Any], question: str, requested_page_count: int
 ) -> dict[str, Any]:
+    raw_requirements = value.get("requirements")
+    if not isinstance(raw_requirements, list) or not raw_requirements:
+        raise KnowledgeExplanationError("讲解大纲缺少用户问题覆盖清单")
+    requirements: list[dict[str, str]] = []
+    requirement_ids: set[str] = set()
+    for index, raw_requirement in enumerate(raw_requirements, start=1):
+        if not isinstance(raw_requirement, dict):
+            raise KnowledgeExplanationError(f"问题覆盖项 R{index} 格式不正确")
+        requirement_id = str(raw_requirement.get("id") or "").strip().upper()
+        if not re.fullmatch(r"R[1-9][0-9]?", requirement_id):
+            raise KnowledgeExplanationError(f"问题覆盖项 R{index} 缺少合法 id")
+        if requirement_id in requirement_ids:
+            raise KnowledgeExplanationError(f"问题覆盖项 {requirement_id} 重复")
+        requirement_ids.add(requirement_id)
+        requirements.append(
+            {
+                "id": requirement_id,
+                "content": complete_text(
+                    raw_requirement.get("content"),
+                    label=f"问题覆盖项 {requirement_id}",
+                    max_length=80,
+                ),
+            }
+        )
+
     raw_pages = value.get("pages")
     if not isinstance(raw_pages, list):
         raw_pages = []
@@ -802,36 +1057,87 @@ def normalize_plan(
         raise KnowledgeExplanationError(
             f"讲解大纲只返回 {len(raw_pages)} 页，少于要求的 {target} 页，请重新生成"
         )
-    pages: list[dict[str, str]] = []
+    pages: list[dict[str, Any]] = []
+    covered_requirement_ids: set[str] = set()
     for index in range(target):
         raw = raw_pages[index]
         if not isinstance(raw, dict):
             raise KnowledgeExplanationError(f"讲解大纲第 {index + 1} 页格式不正确，请重新生成")
-        title = _complete_title(raw.get("title"), "本页重点")
-        subtitle = _short(raw.get("subtitle"), 30, f"聚焦{title}")
-        learning_goal = _short(raw.get("learning_goal"), 48, f"理解{title}")
+        page_number = index + 1
+        title = complete_text(
+            raw.get("title"),
+            label=f"第 {page_number} 页标题",
+            max_length=22,
+            fallback="本页重点",
+            check_dangling_words=False,
+        )
+        subtitle = complete_text(
+            raw.get("subtitle"),
+            label=f"第 {page_number} 页副标题",
+            max_length=30,
+            fallback=f"聚焦{title}",
+        )
+        learning_goal = complete_text(
+            raw.get("learning_goal"),
+            label=f"第 {page_number} 页学习目标",
+            max_length=48,
+            fallback=f"理解{title}",
+        )
+        covers = raw.get("covers")
+        if not isinstance(covers, list) or not covers:
+            raise KnowledgeExplanationError(f"第 {page_number} 页没有声明覆盖哪些问题要点")
+        normalized_covers = list(
+            dict.fromkeys(str(item).strip().upper() for item in covers if str(item).strip())
+        )
+        unknown_covers = set(normalized_covers) - requirement_ids
+        if unknown_covers:
+            raise KnowledgeExplanationError(
+                f"第 {page_number} 页引用了未知覆盖项：{', '.join(sorted(unknown_covers))}"
+            )
+        covered_requirement_ids.update(normalized_covers)
         layout = normalize_page_layout(raw.get("layout"), index + 1)
         pages.append(
             {
                 "title": title,
                 "subtitle": subtitle,
                 "learning_goal": learning_goal,
-                "content_brief": _short(
+                "content_brief": complete_text(
                     raw.get("content_brief"),
-                    160,
-                    learning_goal,
+                    label=f"第 {page_number} 页内容边界",
+                    max_length=120,
+                    fallback=learning_goal,
                 ),
-                "visual_focus": _short(
+                "visual_focus": complete_text(
                     raw.get("visual_focus"),
-                    120,
-                    subtitle,
+                    label=f"第 {page_number} 页主视觉",
+                    max_length=100,
+                    fallback=subtitle,
                 ),
+                "covers": normalized_covers,
                 "layout": layout,
             }
         )
+    missing_requirement_ids = requirement_ids - covered_requirement_ids
+    if missing_requirement_ids:
+        raise KnowledgeExplanationError(
+            "讲解大纲没有安排以下问题覆盖项："
+            + ", ".join(sorted(missing_requirement_ids))
+        )
     return {
-        "title": _complete_title(value.get("title"), "知识讲解"),
-        "subtitle": _short(value.get("subtitle"), 42, "从核心问题出发，建立可迁移的理解框架"),
+        "title": complete_text(
+            value.get("title"),
+            label="整组讲解总标题",
+            max_length=24,
+            fallback="知识讲解",
+            check_dangling_words=False,
+        ),
+        "subtitle": complete_text(
+            value.get("subtitle"),
+            label="整组讲解副标题",
+            max_length=42,
+            fallback="紧扣用户问题组织讲解内容",
+        ),
+        "requirements": requirements,
         "pages": pages,
     }
 
@@ -848,11 +1154,20 @@ def normalize_page_detail(
     for index, raw in enumerate(raw_sections[:6]):
         if not isinstance(raw, dict):
             continue
-        body = _short(raw.get("body"), 140, "")
-        if not body:
-            continue
+        section_number = index + 1
+        body = complete_text(
+            raw.get("body"),
+            label=f"“{page['title']}”第 {section_number} 个分区正文",
+            max_length=110,
+        )
         accent = str(raw.get("accent", "blue")).lower()
-        raw_heading = _complete_title(raw.get("heading"), "")
+        raw_heading = complete_text(
+            raw.get("heading"),
+            label=f"“{page['title']}”第 {section_number} 个分区标题",
+            max_length=20,
+            fallback=fallback_headings[index],
+            check_dangling_words=False,
+        )
         heading = re.sub(
             r"^(?:模块|要点|总结|部分)\s*[0-9一二三四五六七八九十]*\s*[:：、.\-]\s*",
             "",
@@ -867,7 +1182,12 @@ def normalize_page_detail(
             {
                 "heading": heading or fallback_headings[index],
                 "body": body,
-                "visual": _short(raw.get("visual"), 160, "围绕正文关系绘制简洁示意图"),
+                "visual": complete_text(
+                    raw.get("visual"),
+                    label=f"“{page['title']}”第 {section_number} 个分区绘图说明",
+                    max_length=140,
+                    fallback="围绕正文关系绘制简洁示意图",
+                ),
                 "visual_type": normalize_visual_type(raw.get("visual_type"), raw),
                 "accent": accent if accent in accents else "blue",
             }
@@ -876,10 +1196,11 @@ def normalize_page_detail(
         raise KnowledgeExplanationError(f"“{page['title']}”的页面文案不完整，请重新生成")
     return {
         "sections": sections,
-        "key_takeaway": _short(
+        "key_takeaway": complete_text(
             value.get("key_takeaway"),
-            80,
-            f"掌握{page['title']}，就能回答：{page['learning_goal']}",
+            label=f"“{page['title']}”关键结论",
+            max_length=64,
+            fallback=f"掌握{page['title']}，就能回答本页聚焦的问题",
         ),
     }
 

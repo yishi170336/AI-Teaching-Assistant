@@ -79,6 +79,11 @@ export type KnowledgeExplanationSection = {
   accent: 'blue' | 'green' | 'orange' | 'red'
 }
 
+export type KnowledgeExplanationRequirement = {
+  id: string
+  content: string
+}
+
 export type KnowledgeExplanationLayout =
   | 'concept-map'
   | 'process-flow'
@@ -94,6 +99,7 @@ export type KnowledgeExplanationPage = {
   learning_goal: string
   content_brief?: string
   visual_focus?: string
+  covers?: string[]
   layout: KnowledgeExplanationLayout
   sections: KnowledgeExplanationSection[]
   key_takeaway: string
@@ -112,6 +118,7 @@ export type KnowledgeExplanation = {
   message: string
   title: string
   subtitle: string
+  requirements?: KnowledgeExplanationRequirement[]
   requested_page_count: number
   page_count: number
   text_model: string

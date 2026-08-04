@@ -10,6 +10,7 @@ import httpx
 from backend.app.schemas import KnowledgeExplanationRequest
 from backend.app.services.knowledge_explanations import (
     PAGE_LAYOUTS,
+    KnowledgeExplanationError,
     KnowledgeExplanationService,
     KnowledgeExplanationStore,
     QwenImageClient,
@@ -27,6 +28,7 @@ class FakeTextClient:
         self.calls = 0
         self.detail_calls = 0
         self.prompt_calls = 0
+        self.review_calls = 0
 
     async def chat(self, *_args, **_kwargs) -> str:
         self.calls += 1
@@ -36,6 +38,9 @@ class FakeTextClient:
                 {
                     "title": "香农定理详解",
                     "subtitle": "从通信约束到信道容量",
+                    "requirements": [
+                        {"id": "R1", "content": "解释香农定理限制通信速率的原因"}
+                    ],
                     "pages": [
                         {
                             "title": "核心定义",
@@ -43,6 +48,7 @@ class FakeTextClient:
                             "learning_goal": "理解信道容量的含义",
                             "content_brief": "解释信道容量与可靠通信速率上限",
                             "visual_focus": "R 与 C 的可行区间对比",
+                            "covers": ["R1"],
                             "layout": "comparison",
                         },
                         {
@@ -51,6 +57,7 @@ class FakeTextClient:
                             "learning_goal": "读懂容量公式中的每个量",
                             "content_brief": "解释容量公式中的带宽和信噪比",
                             "visual_focus": "容量公式及参数变化曲线",
+                            "covers": ["R1"],
                             "layout": "formula-focus",
                         },
                         {
@@ -59,10 +66,17 @@ class FakeTextClient:
                             "learning_goal": "区分理论容量与实际速率",
                             "content_brief": "说明理论极限的条件与实际差距",
                             "visual_focus": "理论上限与实际速率对比",
+                            "covers": ["R1"],
                             "layout": "comparison",
                         },
                     ],
                 },
+                ensure_ascii=False,
+            )
+        if "独立的知识讲解内容审查员" in user_prompt or "独立的单页教学内容审查员" in user_prompt:
+            self.review_calls += 1
+            return json.dumps(
+                {"passed": True, "missing_requirements": [], "issues": []},
                 ensure_ascii=False,
             )
         if "生图提示词工程师" in user_prompt:
@@ -168,9 +182,10 @@ def test_generate_dynamic_explanation_pages_and_persist_images(tmp_path: Path) -
     assert completed["status"] == "completed"
     assert completed["progress"] == 100
     assert completed["page_count"] == 3
-    assert text_client.calls == 7
+    assert text_client.calls == 11
     assert text_client.detail_calls == 3
     assert text_client.prompt_calls == 3
+    assert text_client.review_calls == 4
     assert len(image_client.calls) == 3
     assert all(page["status"] == "ready" for page in completed["pages"])
     raw_pages = store.raw(created["id"])["pages"]
@@ -526,18 +541,22 @@ def test_plan_keeps_content_selected_layouts_even_when_adjacent_pages_repeat() -
         {
             "title": "反馈放大器",
             "subtitle": "从结构到稳定性",
+            "requirements": [
+                {"id": "R1", "content": "解释反馈放大器的结构与稳定性"}
+            ],
             "pages": [
                 {
                     "title": "概念",
                     "content_brief": "只解释反馈的定义与信号回路",
                     "visual_focus": "输入、输出与反馈通路关系图",
+                    "covers": ["R1"],
                     "layout": "concept-map",
                 },
-                {"title": "关系", "layout": "concept-map"},
-                {"title": "对比", "layout": "unknown-layout"},
-                {"title": "推导", "layout": "formula-focus"},
-                {"title": "结构", "layout": "system-diagram"},
-                {"title": "案例", "layout": "case-walkthrough"},
+                {"title": "关系", "covers": ["R1"], "layout": "concept-map"},
+                {"title": "对比", "covers": ["R1"], "layout": "unknown-layout"},
+                {"title": "推导", "covers": ["R1"], "layout": "formula-focus"},
+                {"title": "结构", "covers": ["R1"], "layout": "system-diagram"},
+                {"title": "案例", "covers": ["R1"], "layout": "case-walkthrough"},
             ],
         },
         "解释反馈放大器",
@@ -554,14 +573,26 @@ def test_plan_keeps_content_selected_layouts_even_when_adjacent_pages_repeat() -
 
 def test_plan_prompt_rejects_fixed_concept_to_application_sequence(tmp_path: Path) -> None:
     class CaptureClient:
-        prompt = ""
+        prompts: list[str]
+
+        def __init__(self) -> None:
+            self.prompts = []
 
         async def chat(self, messages, **_kwargs) -> str:
-            self.prompt = messages[-1]["content"]
+            prompt = messages[-1]["content"]
+            self.prompts.append(prompt)
+            if "独立的知识讲解内容审查员" in prompt:
+                return json.dumps(
+                    {"passed": True, "missing_requirements": [], "issues": []},
+                    ensure_ascii=False,
+                )
             return json.dumps(
                 {
                     "title": "反馈判断",
                     "subtitle": "只回答反馈极性的判定方法",
+                    "requirements": [
+                        {"id": "R1", "content": "说明正反馈与负反馈的判断方法"}
+                    ],
                     "pages": [
                         {
                             "title": "沿反馈路径判断极性",
@@ -569,6 +600,7 @@ def test_plan_prompt_rejects_fixed_concept_to_application_sequence(tmp_path: Pat
                             "learning_goal": "能够判断反馈极性",
                             "content_brief": "追踪输出扰动经过反馈网络后对净输入的影响",
                             "visual_focus": "输出到输入端的闭环信号路径",
+                            "covers": ["R1"],
                             "layout": "process-flow",
                         }
                     ],
@@ -585,8 +617,9 @@ def test_plan_prompt_rejects_fixed_concept_to_application_sequence(tmp_path: Pat
         )
     )
 
-    assert "不要默认套用“概念→原理→公式→案例→工程应用→总结”" in client.prompt
-    assert "相邻页可以相同" in client.prompt
+    planning_prompt = client.prompts[0]
+    assert "不要默认套用“概念→原理→公式→案例→工程应用→总结”" in planning_prompt
+    assert "相邻页可以相同" in planning_prompt
     assert plan["pages"][0]["content_brief"].startswith("追踪输出扰动")
 
 
@@ -596,7 +629,12 @@ def test_plan_preserves_complete_titles_instead_of_hard_truncating() -> None:
     plan = normalize_plan(
         {
             "title": lesson_title,
-            "pages": [{"title": page_title, "layout": "system-diagram"}],
+            "requirements": [
+                {"id": "R1", "content": "解释发射极电阻与旁路电容的协同作用"}
+            ],
+            "pages": [
+                {"title": page_title, "covers": ["R1"], "layout": "system-diagram"}
+            ],
         },
         "解释发射极电阻与旁路电容",
         1,
@@ -605,6 +643,206 @@ def test_plan_preserves_complete_titles_instead_of_hard_truncating() -> None:
     assert plan["title"] == lesson_title
     assert plan["pages"][0]["title"] == page_title
     assert not plan["pages"][0]["title"].endswith("工程取")
+
+
+def test_plan_rejects_uncovered_requirements_and_incomplete_semantics() -> None:
+    with pytest.raises(KnowledgeExplanationError, match="R2"):
+        normalize_plan(
+            {
+                "title": "共射放大器分析",
+                "requirements": [
+                    {"id": "R1", "content": "解释直流通路"},
+                    {"id": "R2", "content": "解释交流等效电路"},
+                ],
+                "pages": [
+                    {
+                        "title": "直流工作点",
+                        "covers": ["R1"],
+                        "layout": "system-diagram",
+                    }
+                ],
+            },
+            "结合直流通路和交流等效电路解释共射放大器",
+            1,
+        )
+
+    with pytest.raises(KnowledgeExplanationError, match="语义不完整"):
+        normalize_plan(
+            {
+                "title": "旁路电容作用",
+                "subtitle": "解释Ce在交流通路中的解决之",
+                "requirements": [{"id": "R1", "content": "解释Ce的交流作用"}],
+                "pages": [
+                    {
+                        "title": "交流旁路",
+                        "covers": ["R1"],
+                        "layout": "system-diagram",
+                    }
+                ],
+            },
+            "解释Ce的作用",
+            1,
+        )
+
+    with pytest.raises(KnowledgeExplanationError, match="不能按字符截断"):
+        normalize_plan(
+            {
+                "title": "这是一个明显超过二十四个字符并且必须完整改写而不能硬截断的讲解标题",
+                "requirements": [{"id": "R1", "content": "解释完整标题处理"}],
+                "pages": [
+                    {
+                        "title": "标题处理",
+                        "covers": ["R1"],
+                        "layout": "concept-map",
+                    }
+                ],
+            },
+            "解释标题处理",
+            1,
+        )
+
+
+def test_plan_retries_after_independent_coverage_review(tmp_path: Path) -> None:
+    class CoverageRetryClient:
+        def __init__(self) -> None:
+            self.plan_prompts: list[str] = []
+            self.review_count = 0
+
+        async def chat(self, messages, **_kwargs) -> str:
+            prompt = messages[-1]["content"]
+            if "独立的知识讲解内容审查员" in prompt:
+                self.review_count += 1
+                if self.review_count == 1:
+                    return json.dumps(
+                        {
+                            "passed": False,
+                            "missing_requirements": ["缺少交流等效电路", "缺少频率响应"],
+                            "issues": ["单页只解释了直流负反馈"],
+                        },
+                        ensure_ascii=False,
+                    )
+                return json.dumps(
+                    {"passed": True, "missing_requirements": [], "issues": []},
+                    ensure_ascii=False,
+                )
+
+            self.plan_prompts.append(prompt)
+            if len(self.plan_prompts) == 1:
+                requirements = [{"id": "R1", "content": "解释Re对直流工作点的影响"}]
+                covers = ["R1"]
+                content_brief = "说明Re通过直流负反馈稳定静态工作点"
+            else:
+                requirements = [
+                    {"id": "R1", "content": "解释Re对直流工作点的影响"},
+                    {"id": "R2", "content": "解释Re与Ce在交流等效电路中的作用"},
+                    {"id": "R3", "content": "解释Ce对低频响应的影响"},
+                ]
+                covers = ["R1", "R2", "R3"]
+                content_brief = "对照直流通路、交流等效电路与低频响应，说明Re和Ce的作用"
+            return json.dumps(
+                {
+                    "title": "Re与Ce的协同作用",
+                    "subtitle": "从直流稳定、交流增益和低频响应建立完整联系",
+                    "requirements": requirements,
+                    "pages": [
+                        {
+                            "title": "直流与交流的双重作用",
+                            "subtitle": "同一支路在不同信号条件下承担不同任务",
+                            "learning_goal": "能够从三种分析视角解释Re与Ce",
+                            "content_brief": content_brief,
+                            "visual_focus": "直流通路、交流等效电路和频率响应并列关联图",
+                            "covers": covers,
+                            "layout": "system-diagram",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+
+    client = CoverageRetryClient()
+    plan = asyncio.run(
+        KnowledgeExplanationService(KnowledgeExplanationStore(tmp_path))._create_plan(
+            "结合直流通路、交流等效电路和频率响应，解释Re和Ce的作用。",
+            1,
+            client,
+        )
+    )
+
+    assert [item["id"] for item in plan["requirements"]] == ["R1", "R2", "R3"]
+    assert plan["pages"][0]["covers"] == ["R1", "R2", "R3"]
+    assert len(client.plan_prompts) == 2
+    assert "缺少交流等效电路" in client.plan_prompts[1]
+    assert "缺少频率响应" in client.plan_prompts[1]
+
+
+def test_page_detail_retries_incomplete_visual_instruction(tmp_path: Path) -> None:
+    class DetailRetryClient:
+        def __init__(self) -> None:
+            self.detail_prompts: list[str] = []
+            self.review_count = 0
+
+        async def chat(self, messages, **_kwargs) -> str:
+            prompt = messages[-1]["content"]
+            if "独立的单页教学内容审查员" in prompt:
+                self.review_count += 1
+                return json.dumps(
+                    {"passed": True, "missing_requirements": [], "issues": []},
+                    ensure_ascii=False,
+                )
+            self.detail_prompts.append(prompt)
+            incomplete = len(self.detail_prompts) == 1
+            return json.dumps(
+                {
+                    "sections": [
+                        {
+                            "heading": "直流稳定作用",
+                            "body": "Re产生直流负反馈，使静态工作点对温度变化更稳定。",
+                            "visual": "在发射极电阻Re旁标" if incomplete else "在发射极电阻旁标出Re，并用回路箭头表示直流负反馈方向。",
+                            "visual_type": "circuit",
+                            "accent": "blue",
+                        },
+                        {
+                            "heading": "交流旁路作用",
+                            "body": "Ce在中频近似短路Re，从而减弱交流负反馈并提高增益。",
+                            "visual": "并列绘制无Ce与有Ce的简化交流等效电路，标出信号电流路径。",
+                            "visual_type": "circuit",
+                            "accent": "green",
+                        },
+                    ],
+                    "key_takeaway": "Re稳定直流工作点，Ce按频率改变交流负反馈强度。",
+                },
+                ensure_ascii=False,
+            )
+
+    page = {
+        "index": 1,
+        "title": "Re与Ce的协同作用",
+        "subtitle": "区分直流稳定与交流旁路",
+        "learning_goal": "能够解释Re与Ce在不同通路中的作用",
+        "content_brief": "对照直流通路和交流等效电路说明Re与Ce",
+        "visual_focus": "两种通路的器件与电流路径对照",
+        "covers": ["R1"],
+        "layout": "comparison",
+    }
+    plan = {
+        "title": "共射放大器中的Re与Ce",
+        "requirements": [{"id": "R1", "content": "解释Re与Ce的直流和交流作用"}],
+        "pages": [page],
+    }
+    client = DetailRetryClient()
+    detail = asyncio.run(
+        KnowledgeExplanationService(KnowledgeExplanationStore(tmp_path))._create_page_detail(
+            question="解释Re与Ce的作用",
+            plan=plan,
+            page=page,
+            text_client=client,
+        )
+    )
+
+    assert client.review_count == 1
+    assert len(client.detail_prompts) == 2
+    assert "语义不完整" in client.detail_prompts[1]
+    assert detail["sections"][0]["visual"].endswith("直流负反馈方向。")
 
 
 @pytest.mark.parametrize(
