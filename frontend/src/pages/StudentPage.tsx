@@ -226,17 +226,23 @@ const fallbackModelCatalog: ModelCatalog = {
       id: 'qwen',
       label: '通义千问 API',
       description: '阿里云百炼文本与多模态 OpenAI 兼容接口',
-      models: ['qwen3.7-plus', 'qwen3.7-max', 'qwen-vl-max', 'qwen3-vl-plus', 'qwen3-vl-flash'],
+      models: ['qwen3.7-flash', 'qwen3.7-plus', 'qwen3.7-max'],
       model_options: [
+        { value: 'qwen3.7-flash', label: 'Qwen3.7-Flash' },
         { value: 'qwen3.7-plus', label: 'Qwen3.7-Plus' },
         { value: 'qwen3.7-max', label: 'Qwen3.7-Max' },
-        { value: 'qwen-vl-max', label: 'qwen-vl-max' },
-        { value: 'qwen3-vl-8b-instruct', label: 'qwen3-vl-8b-instruct', disabled: true, description: '当前账号未开放' },
-        { value: 'qwen3-vl-plus', label: 'qwen3-vl-plus' },
-        { value: 'qwen3-vl-flash', label: 'qwen3-vl-flash' },
-        { value: 'qwen3-vl-embedding', label: 'qwen3-vl-embedding', disabled: true, description: '仅用于向量化' },
       ],
-      default_model: 'qwen3-vl-flash',
+      text_model_options: [
+        { value: 'qwen3.7-flash', label: 'Qwen3.7-Flash' },
+        { value: 'qwen3.7-plus', label: 'Qwen3.7-Plus' },
+        { value: 'qwen3.7-max', label: 'Qwen3.7-Max' },
+      ],
+      vision_model_options: [
+        { value: 'qwen3-vl-flash', label: 'Qwen3-VL-Flash' },
+        { value: 'qwen3-vl-plus', label: 'Qwen3-VL-Plus' },
+      ],
+      default_model: 'qwen3.7-plus',
+      default_vision_model: 'qwen3-vl-flash',
       base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       requires_api_key: true,
       configured: false,
@@ -4216,7 +4222,9 @@ function ModelSettingsModal({
 
   const provider = catalog.providers.find((item) => item.id === draft.provider)
     || fallbackModelCatalog.providers[0]
-  const selectableModels = provider.model_options || provider.models.map((model) => ({
+  const selectableModels = (
+    draft.provider === 'qwen' ? provider.text_model_options : provider.model_options
+  ) || provider.model_options || provider.models.map((model) => ({
     value: model,
     label: model,
     disabled: false,
@@ -4224,12 +4232,9 @@ function ModelSettingsModal({
   }))
   const qwenProvider = catalog.providers.find((item) => item.id === 'qwen')
     || fallbackModelCatalog.providers.find((item) => item.id === 'qwen')!
-  const visionModels = qwenProvider.model_options || qwenProvider.models.map((model) => ({
-    value: model,
-    label: model,
-    disabled: false,
-    description: '',
-  }))
+  const visionModels = qwenProvider.vision_model_options
+    || fallbackModelCatalog.providers.find((item) => item.id === 'qwen')!.vision_model_options!
+  const sharesQwenCredentials = draft.provider === 'qwen'
 
   const chooseProvider = (id: ModelProviderId) => {
     const next = catalog.providers.find((item) => item.id === id)
@@ -4255,7 +4260,7 @@ function ModelSettingsModal({
       toast.warning('请填写 API Key，或在后端环境变量中配置')
       return
     }
-    const selectedOption = provider.model_options?.find((option) => option.value === draft.model)
+    const selectedOption = selectableModels.find((option) => option.value === draft.model)
     if (selectedOption?.disabled) {
       toast.warning(selectedOption.description || '该模型不能用于当前对话')
       return
@@ -4264,7 +4269,7 @@ function ModelSettingsModal({
       toast.warning('请填写 Qwen 视觉模型名称')
       return
     }
-    if (!visionDraft.baseUrl.trim()) {
+    if (!sharesQwenCredentials && !visionDraft.baseUrl.trim()) {
       toast.warning('请填写 Qwen 视觉模型 API Base URL')
       return
     }
@@ -4272,10 +4277,10 @@ function ModelSettingsModal({
     setVisionModelConfig({
       ...visionDraft,
       model: visionDraft.model.trim(),
-      baseUrl: visionDraft.baseUrl.trim(),
+      baseUrl: visionDraft.baseUrl.trim() || qwenProvider.base_url,
     })
     onClose()
-    if (!visionDraft.apiKey.trim() && !qwenProvider.configured && draft.provider !== 'qwen') {
+    if (!visionDraft.apiKey.trim() && !qwenProvider.configured && !sharesQwenCredentials) {
       toast.warning(`已切换到 ${draft.model.trim()}；拍照答题仍需配置 Qwen 视觉 API Key`)
     } else {
       toast.success(`已切换到 ${draft.model.trim()}`)
@@ -4302,6 +4307,23 @@ function ModelSettingsModal({
     return <Cloud size={18} />
   }
 
+  const visionModelField = (
+    <div className="model-field">
+      <label>{sharesQwenCredentials ? '视觉模型' : 'Qwen 视觉模型'}</label>
+      <Select
+        value={visionDraft.model}
+        options={visionModels.map((option) => ({
+          value: option.value,
+          label: option.label,
+        }))}
+        onChange={(model) => setVisionDraft((value) => ({ ...value, model }))}
+        style={{ width: '100%' }}
+        showSearch
+        aria-label="选择 Qwen 视觉模型"
+      />
+    </div>
+  )
+
   return (
     <Modal
       open={open}
@@ -4315,7 +4337,7 @@ function ModelSettingsModal({
         <span className="modal-icon"><ServerCog size={22} /></span>
         <div>
           <h2>选择与配置模型</h2>
-          <p>当前模型负责解题与批改；题目图片和手写作答可单独使用 Qwen VL 识别，再交给当前模型处理。</p>
+          <p>配置用于学生交互、图片理解和知识讲解文本生成；知识库与题库使用后端既定模型。</p>
         </div>
       </div>
 
@@ -4341,7 +4363,7 @@ function ModelSettingsModal({
 
       <div className="model-config-panel">
         <div className="model-field">
-          <label>模型名称</label>
+          <label>{sharesQwenCredentials ? '文本模型' : '模型名称'}</label>
           {draft.provider !== 'custom' ? (
             <Select
               value={draft.model}
@@ -4365,6 +4387,19 @@ function ModelSettingsModal({
           )}
           {draft.provider === 'ollama' && provider.status_message && <small className="model-status-hint">{provider.status_message}</small>}
         </div>
+
+        {sharesQwenCredentials && (
+          <div className="vision-config-section shared-api">
+            <div className="vision-config-heading">
+              <span className="modal-icon"><ScanLine size={18} /></span>
+              <div>
+                <strong>图片识别</strong>
+                <small>文本与视觉模型共用下方同一套通义千问 API 配置。</small>
+              </div>
+            </div>
+            {visionModelField}
+          </div>
+        )}
 
         {draft.provider !== 'ollama' && (
           <>
@@ -4400,57 +4435,48 @@ function ModelSettingsModal({
           <span>
             {draft.provider === 'ollama'
               ? '模型在本机运行；题目、检索上下文和回答不会发送到第三方模型服务。'
-              : '使用云端模型时，题目、最近对话及检索上下文会发送到所选 API；配置和 API Key 会保存在此浏览器的本地存储中，不写入项目文件。'}
+              : sharesQwenCredentials
+                ? '文本答疑、图片理解和知识讲解文本会使用这套共享 API；知识库与题库不会读取此配置。API Key 仅保存在当前浏览器。'
+                : '使用云端模型时，题目、最近对话及检索上下文会发送到所选 API；配置和 API Key 会保存在此浏览器的本地存储中，不写入项目文件。'}
           </span>
         </div>
 
-        <div className="vision-config-section">
-          <div className="vision-config-heading">
-            <span className="modal-icon"><ScanLine size={18} /></span>
-            <div>
-              <strong>图片识别</strong>
-              <small>用于拍照答题、图片原题变式和手写作答批改，不改变上方的解题模型。</small>
+        {!sharesQwenCredentials && (
+          <div className="vision-config-section">
+            <div className="vision-config-heading">
+              <span className="modal-icon"><ScanLine size={18} /></span>
+              <div>
+                <strong>图片识别</strong>
+                <small>使用独立 Qwen API 处理拍照答题、图片原题变式、手写批改和知识讲解配图。</small>
+              </div>
+            </div>
+            {visionModelField}
+            <div className="model-field">
+              <label>Qwen API Key</label>
+              <Input.Password
+                value={visionDraft.apiKey}
+                onChange={(event) => setVisionDraft((value) => ({ ...value, apiKey: event.target.value }))}
+                placeholder={qwenProvider.configured ? '后端已配置；留空即可使用' : '拍照答题必填，保存在当前浏览器'}
+                prefix={<KeyRound size={15} />}
+                autoComplete="off"
+              />
+              {activeVision.apiKey && (
+                <button type="button" className="clear-api-key" onClick={clearSavedVisionApiKey}>
+                  清除已保存的 Qwen 视觉 API Key
+                </button>
+              )}
+            </div>
+            <div className="model-field">
+              <label>Qwen API Base URL</label>
+              <Input
+                value={visionDraft.baseUrl}
+                onChange={(event) => setVisionDraft((value) => ({ ...value, baseUrl: event.target.value }))}
+                placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+                prefix={<Cloud size={15} />}
+              />
             </div>
           </div>
-          <div className="model-field">
-            <label>Qwen 视觉模型</label>
-            <Select
-              value={visionDraft.model}
-              options={visionModels.filter((option) => !option.disabled).map((option) => ({
-                value: option.value,
-                label: option.description ? `${option.label} · ${option.description}` : option.label,
-              }))}
-              onChange={(model) => setVisionDraft((value) => ({ ...value, model }))}
-              style={{ width: '100%' }}
-              showSearch
-              aria-label="选择 Qwen 视觉模型"
-            />
-          </div>
-          <div className="model-field">
-            <label>Qwen API Key</label>
-            <Input.Password
-              value={visionDraft.apiKey}
-              onChange={(event) => setVisionDraft((value) => ({ ...value, apiKey: event.target.value }))}
-              placeholder={qwenProvider.configured ? '后端已配置；留空即可使用' : '拍照答题必填，保存在当前浏览器'}
-              prefix={<KeyRound size={15} />}
-              autoComplete="off"
-            />
-            {activeVision.apiKey && (
-              <button type="button" className="clear-api-key" onClick={clearSavedVisionApiKey}>
-                清除已保存的 Qwen 视觉 API Key
-              </button>
-            )}
-          </div>
-          <div className="model-field">
-            <label>Qwen API Base URL</label>
-            <Input
-              value={visionDraft.baseUrl}
-              onChange={(event) => setVisionDraft((value) => ({ ...value, baseUrl: event.target.value }))}
-              placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
-              prefix={<Cloud size={15} />}
-            />
-          </div>
-        </div>
+        )}
       </div>
 
       <div className="model-modal-actions">
@@ -5071,7 +5097,7 @@ function StudentPageContent() {
 
   const uploadRequest: NonNullable<UploadProps['customRequest']> = async (options) => {
     try {
-      const result = await uploadKnowledgeFile(options.file as File, knowledgeBase, modelConfig)
+      const result = await uploadKnowledgeFile(options.file as File, knowledgeBase)
       options.onSuccess?.(result)
       upsertBuildStatus(result.build)
       toast.success(result.message)
@@ -5085,7 +5111,7 @@ function StudentPageContent() {
 
   const rebuildCurrentKnowledgeBase = async () => {
     try {
-      const result = await rebuildKnowledgeBase(knowledgeBase, modelConfig)
+      const result = await rebuildKnowledgeBase(knowledgeBase)
       upsertBuildStatus(result.build)
       toast.success(result.message)
       void refreshStatuses()
@@ -5150,7 +5176,7 @@ function StudentPageContent() {
     const internalId = createKnowledgeBaseInternalId()
     setCreatingKnowledgeBase(true)
     try {
-      const result = await uploadKnowledgeFile(newKbFile, internalId, modelConfig, displayName)
+      const result = await uploadKnowledgeFile(newKbFile, internalId, displayName)
       setKnowledgeBase(internalId)
       upsertBuildStatus(result.build)
       setNewKbFile(null)

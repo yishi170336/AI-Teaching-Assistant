@@ -3,39 +3,30 @@ from __future__ import annotations
 from typing import Any
 
 
-QWEN_MODEL_OPTIONS = [
-    {"value": "qwen3.7-flash", "label": "Qwen3.7-Flash ⚡"},
+QWEN_TEXT_MODEL_OPTIONS = [
+    {"value": "qwen3.7-flash", "label": "Qwen3.7-Flash"},
     {"value": "qwen3.7-plus", "label": "Qwen3.7-Plus"},
     {"value": "qwen3.7-max", "label": "Qwen3.7-Max"},
-    {"value": "qwen-vl-max", "label": "qwen-vl-max"},
-    {
-        "value": "qwen3-vl-8b-instruct",
-        "label": "qwen3-vl-8b-instruct",
-        "disabled": True,
-        "description": "当前百炼账号未开放此模型 ID",
-    },
-    {"value": "qwen3-vl-plus", "label": "qwen3-vl-plus"},
-    {"value": "qwen3-vl-flash", "label": "qwen3-vl-flash"},
-    {
-        "value": "qwen3-vl-embedding",
-        "label": "qwen3-vl-embedding",
-        "disabled": True,
-        "description": "仅用于知识库多模态向量化，不支持 Chat Completions",
-    },
 ]
 
-QWEN_MODELS = [
+QWEN_VISION_MODEL_OPTIONS = [
+    {"value": "qwen3-vl-flash", "label": "Qwen3-VL-Flash"},
+    {"value": "qwen3-vl-plus", "label": "Qwen3-VL-Plus"},
+]
+
+QWEN_TEXT_MODELS = [
     str(option["value"])
-    for option in QWEN_MODEL_OPTIONS
-    if not option.get("disabled")
+    for option in QWEN_TEXT_MODEL_OPTIONS
 ]
 
-QWEN_CHAT_DISABLED_REASONS = {
-    str(option["value"]): str(option["description"])
-    for option in QWEN_MODEL_OPTIONS
-    if option.get("disabled")
-}
+QWEN_VISION_MODELS = [
+    str(option["value"])
+    for option in QWEN_VISION_MODEL_OPTIONS
+]
 
+QWEN_CHAT_DISABLED_REASONS: dict[str, str] = {}
+
+QWEN_TEXT_FALLBACK_MODEL = "qwen3.7-plus"
 QWEN_VL_FALLBACK_MODEL = "qwen3-vl-flash"
 QWEN_VL_FALLBACK_ALIASES = {
     "qwen3-vl-8b-instruct",

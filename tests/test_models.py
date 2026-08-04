@@ -8,10 +8,12 @@ from pydantic import ValidationError
 
 import backend.app.main as main_module
 from backend.app.agents.workflow import CircuitTutorEngine
-from backend.app.schemas import ChatRequest
+from backend.app.schemas import ChatRequest, KnowledgeBaseRebuildRequest
 from backend.app.services.ollama_client import OllamaClient
 from backend.app.services.openai_compatible_client import OpenAICompatibleClient
 from backend.app.services.model_catalog import (
+    QWEN_TEXT_MODELS,
+    QWEN_VISION_MODELS,
     canonical_model_id,
     chat_model_unavailable_reason,
     choose_default_model,
@@ -125,6 +127,36 @@ def test_photo_answer_can_use_browser_qwen_vision_config_with_deepseek_answer(mo
     asyncio.run(client.close())
 
 
+def test_qwen_text_and_vision_share_browser_credentials(monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        SimpleNamespace(
+            qwen_api_key="server-qwen-key",
+            qwen_base_url="https://dashscope.example/v1",
+            qwen_vision_model="server-vision-model",
+        ),
+    )
+    payload = ChatRequest(
+        session_id="student-demo",
+        message="分析题图",
+        scene="image_answer",
+        model_provider="qwen",
+        model="qwen3.7-plus",
+        api_key="browser-qwen-key",
+        base_url="https://workspace.example/v1",
+        vision_model="qwen3-vl-plus",
+    )
+    selected_client = SimpleNamespace(provider="qwen", model="qwen3.7-plus")
+    client, should_close = main_module.select_vision_client(payload, selected_client)
+    assert should_close is True
+    assert client.provider == "qwen"
+    assert client.model == "qwen3-vl-plus"
+    assert client.base_url == "https://workspace.example/v1"
+    assert client._client.headers["Authorization"] == "Bearer browser-qwen-key"
+    asyncio.run(client.close())
+
+
 def test_photo_answer_rejects_text_only_deepseek_without_qwen_vision_key(monkeypatch):
     monkeypatch.setattr(
         main_module,
@@ -158,11 +190,7 @@ def test_knowledge_build_uses_specialist_without_changing_chat_model(monkeypatch
         ),
     )
 
-    config = main_module.knowledge_build_model_config(
-        "deepseek",
-        "deepseek-key",
-        "https://deepseek.example/v1",
-    )
+    config = main_module.knowledge_build_model_config()
 
     assert config.provider == "qwen"
     assert config.model == "qwen3-vl-flash"
@@ -170,7 +198,7 @@ def test_knowledge_build_uses_specialist_without_changing_chat_model(monkeypatch
     assert config.base_url == "https://dashscope.example/v1"
 
 
-def test_knowledge_build_can_reuse_explicit_qwen_credentials(monkeypatch):
+def test_knowledge_build_ignores_legacy_browser_model_credentials(monkeypatch):
     monkeypatch.setattr(
         main_module,
         "settings",
@@ -180,15 +208,56 @@ def test_knowledge_build_can_reuse_explicit_qwen_credentials(monkeypatch):
         ),
     )
 
-    config = main_module.knowledge_build_model_config(
-        "qwen",
-        "browser-qwen-key",
-        "https://workspace.example/v1",
+    payload = KnowledgeBaseRebuildRequest(
+        knowledge_base="default",
+        model_provider="qwen",
+        model="qwen3.7-max",
+        api_key="browser-qwen-key",
+        base_url="https://workspace.example/v1",
     )
+    config = main_module.knowledge_build_model_config()
 
+    assert payload.model_dump() == {"knowledge_base": "default", "chapter_limit": None}
     assert config.model == "qwen3-vl-flash"
-    assert config.api_key == "browser-qwen-key"
-    assert config.base_url == "https://workspace.example/v1"
+    assert config.api_key == "server-qwen-key"
+    assert config.base_url == "https://dashscope.example/v1"
+
+
+def test_qwen_catalog_separates_text_and_vision_models():
+    assert QWEN_TEXT_MODELS == [
+        "qwen3.7-flash",
+        "qwen3.7-plus",
+        "qwen3.7-max",
+    ]
+    assert QWEN_VISION_MODELS == ["qwen3-vl-flash", "qwen3-vl-plus"]
+
+
+def test_models_endpoint_exposes_separate_qwen_option_groups(monkeypatch):
+    async def fake_health():
+        return {"ok": False, "models": [], "model_available": False}
+
+    monkeypatch.setattr(main_module.ollama, "health", fake_health)
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        SimpleNamespace(
+            ollama_model="qwen3.5:2b",
+            ollama_base_url="http://127.0.0.1:11434",
+            qwen_chat_model="qwen3-vl-flash",
+            qwen_api_key="server-qwen-key",
+            qwen_base_url="https://dashscope.example/v1",
+            deepseek_model="deepseek-v4-flash",
+            deepseek_api_key="",
+            deepseek_base_url="https://deepseek.example/v1",
+        ),
+    )
+    catalog = asyncio.run(main_module.available_models())
+    qwen = next(item for item in catalog["providers"] if item["id"] == "qwen")
+
+    assert [item["value"] for item in qwen["text_model_options"]] == QWEN_TEXT_MODELS
+    assert [item["value"] for item in qwen["vision_model_options"]] == QWEN_VISION_MODELS
+    assert qwen["default_model"] == "qwen3.7-plus"
+    assert qwen["default_vision_model"] == "qwen3-vl-flash"
 
 
 def test_custom_provider_requires_key_and_base_url():

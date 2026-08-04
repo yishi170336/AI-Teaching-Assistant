@@ -92,8 +92,10 @@ from backend.app.services.knowledge_explanations import (
     qwen_image_endpoint,
 )
 from backend.app.services.model_catalog import (
-    QWEN_MODELS,
-    QWEN_MODEL_OPTIONS,
+    QWEN_TEXT_MODELS,
+    QWEN_TEXT_MODEL_OPTIONS,
+    QWEN_TEXT_FALLBACK_MODEL,
+    QWEN_VISION_MODEL_OPTIONS,
     QWEN_VL_FALLBACK_MODEL,
     canonical_model_id,
     chat_model_unavailable_reason,
@@ -630,35 +632,19 @@ async def knowledge_base_source(knowledge_base: str, source: str) -> FileRespons
     )
 
 
-def knowledge_build_model_config(
-    requested_provider: str,
-    requested_api_key: str,
-    requested_base_url: str,
-) -> BuildModelConfig:
+def knowledge_build_model_config() -> BuildModelConfig:
     """Keep knowledge-base specialist models separate from the chat selection."""
-
-    use_browser_qwen_config = requested_provider == "qwen" and bool(requested_api_key.strip())
-    if use_browser_qwen_config:
-        api_key = requested_api_key.strip()
-        base_url = requested_base_url.strip() or settings.qwen_base_url
-    else:
-        api_key = settings.qwen_api_key
-        base_url = settings.qwen_base_url
     return BuildModelConfig(
         provider="qwen",
         model=QWEN_VL_FALLBACK_MODEL,
-        api_key=api_key,
-        base_url=base_url,
+        api_key=settings.qwen_api_key,
+        base_url=settings.qwen_base_url,
     )
 
 
 @app.post("/api/kb/rebuild")
 async def rebuild_knowledge_base(payload: KnowledgeBaseRebuildRequest) -> dict[str, Any]:
-    config = knowledge_build_model_config(
-        payload.model_provider,
-        payload.api_key,
-        payload.base_url,
-    )
+    config = knowledge_build_model_config()
     try:
         build_state = knowledge_bases.start_build(
             payload.knowledge_base,
@@ -750,10 +736,15 @@ async def available_models() -> dict[str, Any]:
     local_models = model_health.get("models", [])
     if settings.ollama_model not in local_models:
         local_models = [settings.ollama_model, *local_models]
+    qwen_default_model = (
+        settings.qwen_chat_model
+        if settings.qwen_chat_model in QWEN_TEXT_MODELS
+        else QWEN_TEXT_FALLBACK_MODEL
+    )
     default_provider, default_model = choose_default_model(
         model_health,
         ollama_model=settings.ollama_model,
-        qwen_model=settings.qwen_chat_model,
+        qwen_model=qwen_default_model,
         deepseek_model=settings.deepseek_model,
         qwen_configured=bool(settings.qwen_api_key),
         deepseek_configured=bool(settings.deepseek_api_key),
@@ -787,9 +778,12 @@ async def available_models() -> dict[str, Any]:
                 "id": "qwen",
                 "label": "通义千问 API",
                 "description": "阿里云百炼文本与多模态 OpenAI 兼容接口",
-                "models": list(dict.fromkeys([*QWEN_MODELS, settings.qwen_vision_model])),
-                "model_options": QWEN_MODEL_OPTIONS,
-                "default_model": settings.qwen_chat_model,
+                "models": QWEN_TEXT_MODELS,
+                "model_options": QWEN_TEXT_MODEL_OPTIONS,
+                "text_model_options": QWEN_TEXT_MODEL_OPTIONS,
+                "vision_model_options": QWEN_VISION_MODEL_OPTIONS,
+                "default_model": qwen_default_model,
+                "default_vision_model": QWEN_VL_FALLBACK_MODEL,
                 "base_url": settings.qwen_base_url,
                 "requires_api_key": True,
                 "configured": bool(settings.qwen_api_key),
@@ -2349,10 +2343,6 @@ async def upload(
     knowledge_base: str = Form("default"),
     display_name: str = Form(""),
     rebuild: bool = Form(True),
-    model_provider: str = Form("deepseek"),
-    model: str = Form(""),
-    api_key: str = Form(""),
-    base_url: str = Form(""),
 ) -> dict[str, Any]:
     try:
         knowledge_base = knowledge_bases.validate_id(knowledge_base)
@@ -2384,11 +2374,7 @@ async def upload(
     indexable = suffix in {".pdf", ".md", ".txt", ".docx"}
     build_state: dict[str, Any] | None = None
     if rebuild and indexable:
-        build_model = knowledge_build_model_config(
-            model_provider,
-            api_key,
-            base_url,
-        )
+        build_model = knowledge_build_model_config()
         try:
             build_state = knowledge_bases.start_build(
                 knowledge_base,

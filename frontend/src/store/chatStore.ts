@@ -47,6 +47,8 @@ const defaultKnowledgeBaseKey = 'circuitmind-default-knowledge-base'
 export const CHAT_MODEL_PROVIDER: ModelProviderId = 'qwen'
 export const CHAT_MODEL = 'qwen3.7-plus'
 const QWEN_VL_FALLBACK_MODEL = 'qwen3-vl-flash'
+const QWEN_TEXT_MODELS = ['qwen3.7-flash', 'qwen3.7-plus', 'qwen3.7-max'] as const
+const QWEN_VISION_MODELS = ['qwen3-vl-flash', 'qwen3-vl-plus'] as const
 
 const defaultModelConfig: ModelConfig = {
   provider: CHAT_MODEL_PROVIDER,
@@ -73,11 +75,21 @@ function getSessionId() {
 function canonicalModel(provider: ModelProviderId, model: string) {
   const normalized = model.trim()
   if (provider !== 'qwen') return normalized
-  const canonical = normalized.toLowerCase()
-  if (canonical === 'qwen3-vl-embedding' || canonical === 'qwen3-vl-8b-instruct') {
-    return QWEN_VL_FALLBACK_MODEL
-  }
-  return canonical
+  return normalized.toLowerCase()
+}
+
+function normalizedQwenTextModel(model: string) {
+  const canonical = canonicalModel('qwen', model)
+  return QWEN_TEXT_MODELS.some((item) => item === canonical)
+    ? canonical
+    : CHAT_MODEL
+}
+
+function normalizedQwenVisionModel(model: string) {
+  const canonical = canonicalModel('qwen', model)
+  return QWEN_VISION_MODELS.some((item) => item === canonical)
+    ? canonical
+    : QWEN_VL_FALLBACK_MODEL
 }
 
 function normalizedModelConfig(value: Partial<ModelConfig>): ModelConfig {
@@ -87,7 +99,9 @@ function normalizedModelConfig(value: Partial<ModelConfig>): ModelConfig {
   }
   return {
     provider: value.provider,
-    model: canonicalModel(value.provider, value.model || defaultModelConfig.model),
+    model: value.provider === 'qwen'
+      ? normalizedQwenTextModel(value.model || defaultModelConfig.model)
+      : canonicalModel(value.provider, value.model || defaultModelConfig.model),
     apiKey: typeof value.apiKey === 'string' ? value.apiKey : '',
     baseUrl: typeof value.baseUrl === 'string' ? value.baseUrl.trim() : '',
   }
@@ -118,7 +132,7 @@ function getVisionModelConfig(): VisionModelConfig {
     const stored = JSON.parse(localStorage.getItem(visionModelConfigKey) || '{}')
     const config = {
       model: typeof stored.model === 'string' && stored.model.trim()
-        ? canonicalModel('qwen', stored.model)
+        ? normalizedQwenVisionModel(stored.model)
         : defaultVisionModelConfig.model,
       apiKey: typeof stored.apiKey === 'string' ? stored.apiKey : '',
       baseUrl: typeof stored.baseUrl === 'string' && stored.baseUrl.trim()
@@ -279,7 +293,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
   setVisionModelConfig: (visionModelConfig) => {
     const normalized = {
-      model: canonicalModel('qwen', visionModelConfig.model || defaultVisionModelConfig.model),
+      model: normalizedQwenVisionModel(visionModelConfig.model || defaultVisionModelConfig.model),
       apiKey: visionModelConfig.apiKey,
       baseUrl: visionModelConfig.baseUrl.trim() || defaultVisionModelConfig.baseUrl,
     }
@@ -430,6 +444,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const requestScene = get().scene
     const selectedModel = get().modelConfig
     const selectedVisionModel = get().visionModelConfig
+    const sharesQwenCredentials = selectedModel.provider === 'qwen'
     const assistantMessage: ChatMessage = {
       id: assistantId,
       role: 'assistant',
@@ -469,8 +484,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           api_key: selectedModel.apiKey,
           base_url: selectedModel.baseUrl,
           vision_model: selectedVisionModel.model,
-          vision_api_key: selectedVisionModel.apiKey,
-          vision_base_url: selectedVisionModel.baseUrl,
+          vision_api_key: sharesQwenCredentials ? '' : selectedVisionModel.apiKey,
+          vision_base_url: sharesQwenCredentials ? '' : selectedVisionModel.baseUrl,
         },
         {
           onStatus: (data) => set({ stage: data.message, stageAgent: data.agent }),

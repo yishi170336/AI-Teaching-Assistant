@@ -62,6 +62,13 @@ export type VisionModelConfig = {
   baseUrl: string
 }
 
+export type ModelOption = {
+  value: string
+  label: string
+  disabled?: boolean
+  description?: string
+}
+
 export type KnowledgeExplanationStatus = 'planning' | 'generating' | 'completed' | 'cancelled' | 'error'
 
 export type KnowledgeExplanationSection = {
@@ -113,12 +120,10 @@ export type ModelProviderInfo = {
   requires_api_key: boolean
   configured: boolean
   status_message?: string
-  model_options?: Array<{
-    value: string
-    label: string
-    disabled?: boolean
-    description?: string
-  }>
+  model_options?: ModelOption[]
+  text_model_options?: ModelOption[]
+  vision_model_options?: ModelOption[]
+  default_vision_model?: string
 }
 
 export type ModelCatalog = {
@@ -1321,6 +1326,7 @@ export async function createKnowledgeExplanation(fields: {
   modelConfig: ModelConfig
   visionModelConfig: VisionModelConfig
 }): Promise<KnowledgeExplanation> {
+  const sharesQwenCredentials = fields.modelConfig.provider === 'qwen'
   const response = await fetch('/api/knowledge-explanations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1333,8 +1339,8 @@ export async function createKnowledgeExplanation(fields: {
       model: fields.modelConfig.model,
       api_key: fields.modelConfig.apiKey,
       base_url: fields.modelConfig.baseUrl,
-      image_api_key: fields.visionModelConfig.apiKey,
-      image_base_url: fields.visionModelConfig.baseUrl,
+      image_api_key: sharesQwenCredentials ? '' : fields.visionModelConfig.apiKey,
+      image_base_url: sharesQwenCredentials ? '' : fields.visionModelConfig.baseUrl,
     }),
   })
   const result = await response.json().catch(() => ({}))
@@ -1638,7 +1644,6 @@ export async function generateLearningPlanPpt(
 export async function uploadKnowledgeFile(
   file: File,
   knowledgeBase: string,
-  modelConfig: ModelConfig,
   displayName?: string,
 ) {
   const data = new FormData()
@@ -1646,10 +1651,6 @@ export async function uploadKnowledgeFile(
   data.append('knowledge_base', knowledgeBase)
   if (displayName?.trim()) data.append('display_name', displayName.trim())
   data.append('rebuild', 'true')
-  data.append('model_provider', modelConfig.provider)
-  data.append('model', modelConfig.model)
-  data.append('api_key', modelConfig.apiKey)
-  data.append('base_url', modelConfig.baseUrl)
   const response = await fetch('/api/upload', { method: 'POST', body: data })
   const result = await response.json()
   if (!response.ok) throw new Error(result.detail || result.error || '上传失败')
@@ -1658,17 +1659,12 @@ export async function uploadKnowledgeFile(
 
 export async function rebuildKnowledgeBase(
   knowledgeBase: string,
-  modelConfig: ModelConfig,
 ) {
   const response = await fetch('/api/kb/rebuild', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       knowledge_base: knowledgeBase,
-      model_provider: modelConfig.provider,
-      model: modelConfig.model,
-      api_key: modelConfig.apiKey,
-      base_url: modelConfig.baseUrl,
       chapter_limit: null,
     }),
   })

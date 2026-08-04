@@ -124,17 +124,19 @@ powershell -ExecutionPolicy Bypass -File scripts/start.ps1
 
 ## 模型切换与 API 配置
 
-点击学生端右上角的模型名称可选择本地 Ollama、DeepSeek、通义千问或自定义 OpenAI 兼容 API。当前选择同时用于文本答题和附件理解，最终答案始终由该模型生成。
+点击学生端右上角的模型名称可选择本地 Ollama、DeepSeek、通义千问或自定义 OpenAI 兼容 API。通义千问可分别选择 `qwen3.7-flash`、`qwen3.7-plus`、`qwen3.7-max` 文本模型和 `qwen3-vl-flash`、`qwen3-vl-plus` 视觉模型，两个模型共用一套 API Key 与 Base URL。选择其他文本提供商时，图片理解继续使用独立配置的 Qwen 视觉模型。
 
 - 检索阶段可以临时调用文本或多模态 Embedding、BM25、知识图谱和重排器；这些专用模型只产生检索依据，不会替换当前回答模型。
-- `qwen3-vl-embedding` 仅用于知识库多模态向量化，不能作为聊天模型，因此在模型列表中保持禁用。
-- 上传或重建知识库仍固定使用 `qwen3-vl-flash` 做视觉/OCR 分析，并按需调用 `qwen3-vl-embedding`；完成后不会改变页面的回答模型配置。
+- 页面模型配置只影响普通答疑、拍照答题、同类题生成、交互式批改和知识讲解文本生成。
+- `qwen3-vl-embedding` 仅用于知识库多模态向量化，不会出现在交互模型列表中。
+- 上传或重建知识库固定使用后端配置的 `qwen3-vl-flash` 做视觉/OCR 分析，并按需调用 `qwen3-vl-embedding`；浏览器模型和 API Key 不会发送给建库任务。
+- 题库建立、作业识别与批改继续使用 `QWEN_HOMEWORK_EXTRACTION_MODEL`、`QWEN_HOMEWORK_GRADING_MODEL` 和 `QWEN_HOMEWORK_REVIEW_MODEL`。
 
 页面输入的模型配置和 API Key 会写入当前浏览器的 `localStorage`，不会写入项目文件；配置弹窗提供清除入口。公用电脑不建议保存云端密钥。也可以在 `.env` 配置对应服务的 API Key 和 Base URL。使用云端模型时，题目、最近对话、检索上下文及附件视觉内容会发送到所选 API。
 
 ### 知识讲解与 Qwen Image
 
-知识讲解使用当前回答模型完成大纲分析和逐页文案，再通过 DashScope 原生接口调用 Qwen Image 2.0。浏览器单独配置的 Qwen 图片识别 API Key 可以直接复用；未填写时使用后端 `QWEN_API_KEY`。可通过 `QWEN_IMAGE_MODEL`、`QWEN_IMAGE_ENDPOINT`、`QWEN_IMAGE_SIZE` 和 `QWEN_IMAGE_TIMEOUT_SECONDS` 调整图像模型、地域端点、分辨率及超时。生成结果会立即下载到 `data/knowledge_explanations/`，不依赖仅保留 24 小时的临时 OSS URL。
+知识讲解使用当前回答模型完成大纲分析和逐页文案，再按页面选择调用 Qwen Image 2.0 或 Qwen Image 2.0 Pro。当前文本提供商为通义千问时，生图复用共享 Qwen API；使用其他文本提供商时，生图复用独立 Qwen 视觉配置。未填写浏览器密钥时使用后端 `QWEN_API_KEY`。可通过 `QWEN_IMAGE_MODEL`、`QWEN_IMAGE_ENDPOINT`、`QWEN_IMAGE_SIZE` 和 `QWEN_IMAGE_TIMEOUT_SECONDS` 调整默认图像模型、地域端点、分辨率及超时。生成结果会立即下载到 `data/knowledge_explanations/`，不依赖仅保留 24 小时的临时 OSS URL。
 
 ## 环境重建
 
@@ -241,8 +243,10 @@ docker compose up -d qdrant redis
 
 - `file`：上传文件。
 - `knowledge_base`：默认 `default`。
+- `display_name`：可选的知识库显示名称。
 - `rebuild`：默认 `true`。
-- `model_provider`、`model`、`api_key`、`base_url`：保留用于兼容现有客户端；建库视觉处理固定使用 `qwen3-vl-flash`，只有请求本身为 Qwen 且提供了浏览器 API Key 时才复用该 Qwen 凭据，否则使用后端 Qwen 配置。
+
+建库模型和凭据只读取后端配置。旧客户端额外提交的 `model_provider`、`model`、`api_key`、`base_url` 字段会被忽略。
 
 ### 其他
 
