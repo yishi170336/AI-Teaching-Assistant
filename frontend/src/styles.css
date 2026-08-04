@@ -1697,6 +1697,7 @@ button { color: inherit; }
 .explanation-head-meta { display: flex; align-items: center; gap: 8px; }
 .explanation-head-meta .ant-tag { display: inline-flex; align-items: center; gap: 5px; margin: 0; border-radius: 999px; font-size: 10px; }
 .explanation-head-meta > span { color: #50708f; font-size: 10px; font-weight: 800; white-space: nowrap; }
+.explanation-delete-current { height: 27px; padding-inline: 7px; font-size: 10px; }
 .explanation-progress-strip { display: grid; grid-template-columns: minmax(150px, 240px) minmax(0, 1fr) auto; align-items: center; gap: 12px; margin-bottom: 15px; padding: 8px 12px; color: #496b89; background: #f0f6fc; border: 1px solid #d9e7f4; border-radius: 10px; }
 .explanation-progress-strip.error { color: #a6534b; background: #fff4f2; border-color: #f2d3ce; }
 .explanation-progress-strip.cancelled { color: #746c62; background: #f7f5f2; border-color: #e5dfd7; }
@@ -1720,6 +1721,8 @@ button { color: inherit; }
 .placeholder-blueprint { position: absolute; right: 10%; bottom: 13%; color: #b9cede; opacity: .48; }
 .explanation-page-placeholder strong { position: relative; color: #345c80; font-size: 12px; }
 .explanation-page-placeholder small { position: relative; max-width: 480px; color: #7b96ad; font-size: 9px; line-height: 1.6; }
+.explanation-canvas.cancelled .explanation-page-placeholder { color: #8a8278; background: #f4f2ef; }
+.explanation-canvas.error .explanation-page-placeholder { color: #b45a50; background: #fff4f2; }
 
 .explanation-outline-panel { display: flex; min-height: 100%; flex-direction: column; padding: 13px; background: linear-gradient(160deg, #f7faff, #f1f6fb); border: 1px solid #d9e6f1; border-radius: 14px; }
 .explanation-outline-panel > header { display: flex; flex-direction: column; gap: 2px; padding: 2px 3px 10px; }
@@ -1732,6 +1735,8 @@ button { color: inherit; }
 .outline-number { display: grid; flex: 0 0 23px; width: 23px; height: 23px; color: #47749c; background: #e4eef7; border-radius: 7px; font-size: 8px; font-weight: 900; place-items: center; }
 .outline-number.ready { color: #fff; background: #218a6c; }
 .outline-number.writing, .outline-number.drawing { color: #fff; background: #1a68ba; }
+.outline-number.cancelled { color: #fff; background: #8a8278; }
+.outline-number.error { color: #fff; background: #b85b4d; }
 .explanation-outline-list button > span:last-child { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
 .explanation-outline-list strong { overflow: hidden; color: #315675; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .explanation-outline-list small { display: -webkit-box; overflow: hidden; color: #8498a9; font-size: 7px; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
@@ -1763,15 +1768,18 @@ button { color: inherit; }
 .explanation-history > header strong { color: #365668; font-size: 11px; }
 .explanation-history > header > span { color: #8b9ba4; font-size: 8px; }
 .explanation-history-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
-.explanation-history-grid > button { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 9px; text-align: left; cursor: pointer; background: #f9fbfc; border: 1px solid #e1e9ed; border-radius: 10px; }
-.explanation-history-grid > button:hover { background: #f1f7fb; border-color: #bcd4e2; }
+.explanation-history-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; background: #f9fbfc; border: 1px solid #e1e9ed; border-radius: 10px; }
+.explanation-history-item:hover { background: #f1f7fb; border-color: #bcd4e2; }
+.explanation-history-open { display: grid; min-width: 0; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 9px; text-align: left; cursor: pointer; background: transparent; border: 0; }
+.explanation-history-delete { margin-right: 4px; }
 .history-lesson-icon { display: grid; width: 32px; height: 32px; color: #3376a6; background: #e8f2f8; border-radius: 9px; place-items: center; }
 .history-lesson-icon.completed { color: #1b7b61; background: #e6f5ef; }
 .history-lesson-icon.error { color: #b85b4d; background: #fff0ed; }
-.explanation-history-grid button > span:nth-child(2) { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.history-lesson-icon.cancelled { color: #7b746b; background: #f0ede9; }
+.explanation-history-open > span:nth-child(2) { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
 .explanation-history-grid strong { overflow: hidden; color: #405e6e; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .explanation-history-grid small { color: #91a0a8; font-size: 7px; }
-.explanation-history-grid button > svg { color: #9aadb7; }
+.explanation-history-open > svg { color: #9aadb7; }
 
 .composer-mode-mobile { display: none; }
 .photo-submit-hint { padding: 0 4px 4px; color: #8a6d4b; font-size: 11px; }

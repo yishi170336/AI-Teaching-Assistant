@@ -19,6 +19,22 @@ from backend.app.config import settings
 
 ACTIVE_STATUSES = {"planning", "generating"}
 TERMINAL_STATUSES = {"completed", "cancelled", "error"}
+PAGE_LAYOUTS = (
+    "concept-map",
+    "process-flow",
+    "comparison",
+    "formula-focus",
+    "system-diagram",
+    "case-walkthrough",
+)
+PAGE_LAYOUT_INSTRUCTIONS = {
+    "concept-map": "以一个核心概念为视觉锚点，用分支、连线和邻近注释表达概念之间的关系。",
+    "process-flow": "采用清晰的方向性信息流，用步骤节点、因果箭头或状态变化表现过程。",
+    "comparison": "采用左右或上下对照结构，突出共同条件、关键差异和判断结论。",
+    "formula-focus": "以关键公式、曲线或坐标图为主视觉，变量解释和推导关系环绕主视觉展开。",
+    "system-diagram": "用占据主要画面的结构图、剖面图或系统框图承载知识，文字作为精确标注。",
+    "case-walkthrough": "从具体情境、例题或工程现象切入，按问题、分析、结果组织视觉叙事。",
+}
 
 
 class KnowledgeExplanationError(RuntimeError):
@@ -27,6 +43,10 @@ class KnowledgeExplanationError(RuntimeError):
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def qwen_image_model_label(model: str) -> str:
+    return "Qwen Image 2.0 Pro" if model.strip().endswith("-pro") else "Qwen Image 2.0"
 
 
 def qwen_image_endpoint(base_url: str) -> str:
@@ -111,7 +131,7 @@ class QwenImageClient:
             "parameters": {
                 "negative_prompt": (
                     "低分辨率，文字模糊，错别字，乱码，伪文字，公式错误，文字重叠，"
-                    "内容被裁切，重复模块，错误编号，多余卡片，空白卡片，擅自添加教学目标，"
+                    "内容被裁切，重复内容，错误编号，多余卡片，空白卡片，擅自添加教学目标，"
                     "拥挤杂乱，过度留白，低对比度，3D写实人物，水印，品牌标志，二维码"
                 ),
                 "prompt_extend": False,
@@ -266,6 +286,31 @@ class KnowledgeExplanationStore:
             self._write(record)
         return self.public_record(record)
 
+    def mark_terminal(
+        self,
+        task_id: str,
+        *,
+        status: str,
+        message: str,
+        error: str = "",
+    ) -> dict[str, Any]:
+        if status not in {"cancelled", "error"}:
+            raise ValueError("讲解任务终止状态不合法")
+        page_message = "生成已取消" if status == "cancelled" else "本页未能生成"
+        with self._lock:
+            record = self._read(task_id)
+            self._mark_unfinished_pages(record, status=status, message=page_message)
+            record.update(
+                {
+                    "status": status,
+                    "message": message,
+                    "error": error,
+                    "updated_at": _utc_now(),
+                }
+            )
+            self._write(record)
+        return self.public_record(record)
+
     def save_page_image(self, task_id: str, page_index: int, image_bytes: bytes) -> str:
         task_dir = self._task_dir(task_id)
         task_dir.mkdir(parents=True, exist_ok=True)
@@ -300,6 +345,11 @@ class KnowledgeExplanationStore:
                     continue
                 if record.get("status") not in ACTIVE_STATUSES:
                     continue
+                self._mark_unfinished_pages(
+                    record,
+                    status="error",
+                    message="服务重启，本页未能生成",
+                )
                 record.update(
                     {
                         "status": "error",
@@ -325,6 +375,9 @@ class KnowledgeExplanationStore:
         student_id = quote(str(record.get("student_id", "")), safe="")
         for page in record.get("pages") or []:
             page_index = int(page.get("index", 0) or 0)
+            page.setdefault(
+                "layout", PAGE_LAYOUTS[(max(page_index, 1) - 1) % len(PAGE_LAYOUTS)]
+            )
             if page.get("image_file") and page_index:
                 page["image_url"] = (
                     f"/api/knowledge-explanations/{task_id}/pages/{page_index}"
@@ -333,6 +386,18 @@ class KnowledgeExplanationStore:
             else:
                 page["image_url"] = ""
         return record
+
+    @staticmethod
+    def _mark_unfinished_pages(
+        record: dict[str, Any], *, status: str, message: str
+    ) -> None:
+        pages = record.get("pages") or []
+        for page in pages:
+            if page.get("status") == "ready":
+                continue
+            page["status"] = status
+            page["message"] = message
+        record["pages"] = pages
 
     def _read(self, task_id: str) -> dict[str, Any]:
         path = self._manifest_path(task_id)
@@ -383,6 +448,7 @@ class KnowledgeExplanationService:
                 "title": item["title"],
                 "subtitle": item["subtitle"],
                 "learning_goal": item["learning_goal"],
+                "layout": item["layout"],
                 "sections": [],
                 "key_takeaway": "",
                 "status": "pending",
@@ -402,6 +468,7 @@ class KnowledgeExplanationService:
             message=f"大纲已完成，开始生成第 1/{len(pages)} 页…",
         )
         seed = int(hashlib.sha256(question.encode("utf-8")).hexdigest()[:8], 16)
+        image_model_label = qwen_image_model_label(image_client.model)
         for page in pages:
             page_index = int(page["index"])
             base_progress = 10 + int((page_index - 1) * 88 / len(pages))
@@ -428,12 +495,12 @@ class KnowledgeExplanationService:
                 sections=detail["sections"],
                 key_takeaway=detail["key_takeaway"],
                 status="drawing",
-                message="Qwen Image 2.0 正在绘制…",
+                message=f"{image_model_label} 正在绘制…",
             )
             self.store.update(
                 task_id,
                 progress=min(96, base_progress + 4),
-                message=f"Qwen Image 2.0 正在生成第 {page_index}/{len(pages)} 页…",
+                message=f"{image_model_label} 正在生成第 {page_index}/{len(pages)} 页…",
             )
             prompt = build_page_prompt(
                 lesson_title=plan["title"],
@@ -480,17 +547,18 @@ class KnowledgeExplanationService:
 
 要求：
 1. {count_instruction}
-2. 模块必须针对这个问题动态划分，形成从直觉/背景到核心原理，再到推导、例子、应用或误区的学习闭环；不要机械套模板。
+2. 页面必须针对这个问题动态划分，形成从直觉/背景到核心原理，再到推导、例子、应用或误区的学习闭环；不要机械套模板。
 3. 每页只承担一个清晰教学任务，标题短而准确，适合 16:9 紧凑信息图。
-4. 最后一页必须完成总结、适用边界或迁移应用，但名称仍要贴合具体主题。
-5. 只输出 JSON，不要 Markdown。
+4. 最后一页负责收束关键联系、适用边界或迁移应用，标题必须表达具体知识主题，不得直接命名为“总结”“回顾”“最后一页”。
+5. 每页从 concept-map、process-flow、comparison、formula-focus、system-diagram、case-walkthrough 中选择最适合内容的 layout，相邻页不得重复。
+6. 只输出 JSON，不要 Markdown。
 
 JSON 结构：
 {{
   "title": "整组讲解总标题，不超过24字",
   "subtitle": "一句话说明学习主线，不超过42字",
   "pages": [
-    {{"title": "本页标题，不超过18字", "subtitle": "本页副标题，不超过30字", "learning_goal": "学完本页能回答什么，不超过48字"}}
+    {{"title": "本页标题，不超过18字", "subtitle": "本页副标题，不超过30字", "learning_goal": "学完本页能回答什么，不超过48字", "layout": "六种 layout 之一"}}
   ]
 }}
 """.strip()
@@ -523,16 +591,18 @@ JSON 结构：
 本页标题：{page['title']}
 本页副标题：{page['subtitle']}
 本页目标：{page['learning_goal']}
+本页版式：{page['layout']}（{PAGE_LAYOUT_INSTRUCTIONS[page['layout']]}）
 
-请给出 3 到 5 个紧凑内容模块。模块类型应随知识点变化，可使用概念、公式、图解、对比、步骤、例题、工程意义、误区等；不要重复前后页内容。
+请给出 3 到 5 个紧凑知识点。知识点类型应随内容变化，可使用概念、公式、图解、对比、步骤、例题、工程意义、误区等；不要重复前后页内容。
 每个正文最多 58 个汉字，优先使用准确术语、必要公式和单位；公式写成普通可读文本或 LaTeX，不要编造数值和结论。
-visual 要具体描述适合本模块的简洁图示，例如坐标曲线、流程箭头、结构剖面、对比表或图标，不要只写“配图”。
+heading 必须是与主题直接相关的自然标题，不得使用“模块1”“要点2”“总结3”等通用编号。
+visual 要具体描述适合本知识点的简洁图示，例如坐标曲线、流程箭头、结构剖面、对比表或图标，不要只写“配图”。
 只输出 JSON，不要 Markdown：
 {{
   "sections": [
-    {{"heading": "模块标题，不超过12字", "body": "1至2句准确讲解", "visual": "图示内容，不超过36字", "accent": "blue|green|orange|red"}}
+    {{"heading": "知识点标题，不超过12字", "body": "1至2句准确讲解", "visual": "图示内容，不超过36字", "accent": "blue|green|orange|red"}}
   ],
-  "key_takeaway": "页底一句话总结，不超过52字"
+  "key_takeaway": "本页最重要的一句话结论，不超过52字"
 }}
 """.strip()
         raw = await text_client.chat(
@@ -569,6 +639,16 @@ def _short(value: Any, limit: int, fallback: str) -> str:
     return (normalized or fallback)[:limit]
 
 
+def normalize_page_layout(value: Any, page_index: int, previous: str = "") -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate not in PAGE_LAYOUTS:
+        candidate = PAGE_LAYOUTS[(page_index - 1) % len(PAGE_LAYOUTS)]
+    if candidate == previous:
+        start = PAGE_LAYOUTS.index(candidate)
+        candidate = PAGE_LAYOUTS[(start + 1) % len(PAGE_LAYOUTS)]
+    return candidate
+
+
 def normalize_plan(
     value: dict[str, Any], question: str, requested_page_count: int
 ) -> dict[str, Any]:
@@ -583,20 +663,24 @@ def normalize_plan(
         ("典型情境演示", "用具体情境检验理解", "能把原理用于一个代表性例子"),
         ("易错点与边界", "区分相近概念和适用条件", "能避开常见误解并判断适用范围"),
         ("应用与迁移", "把知识连接到真实问题", "能迁移到新的问题或工程情境"),
-        ("总结与自检", "收束整条学习主线", "能用自己的话复述并完成自检"),
+        ("关键联系与自检", "收束整条学习主线", "能用自己的话复述并完成自检"),
         ("进阶思考", "从结论继续向外延伸", "能提出一个合理的进阶问题"),
     ]
     pages: list[dict[str, str]] = []
+    previous_layout = ""
     for index in range(target):
         raw = raw_pages[index] if index < len(raw_pages) and isinstance(raw_pages[index], dict) else {}
         default = defaults[min(index, len(defaults) - 1)]
+        layout = normalize_page_layout(raw.get("layout"), index + 1, previous_layout)
         pages.append(
             {
                 "title": _short(raw.get("title"), 18, default[0]),
                 "subtitle": _short(raw.get("subtitle"), 30, default[1]),
                 "learning_goal": _short(raw.get("learning_goal"), 48, default[2]),
+                "layout": layout,
             }
         )
+        previous_layout = layout
     topic = _short(question, 24, "知识讲解")
     return {
         "title": _short(value.get("title"), 24, f"{topic}详解"),
@@ -612,6 +696,7 @@ def normalize_page_detail(
     if not isinstance(raw_sections, list):
         raw_sections = []
     accents = {"blue", "green", "orange", "red"}
+    fallback_headings = ("核心概念", "关键关系", "直观图解", "应用判断", "边界条件")
     sections: list[dict[str, str]] = []
     for index, raw in enumerate(raw_sections[:5]):
         if not isinstance(raw, dict):
@@ -620,9 +705,20 @@ def normalize_page_detail(
         if not body:
             continue
         accent = str(raw.get("accent", "blue")).lower()
+        raw_heading = _short(raw.get("heading"), 12, "")
+        heading = re.sub(
+            r"^(?:模块|要点|总结|部分)\s*[0-9一二三四五六七八九十]*\s*[:：、.\-]\s*",
+            "",
+            raw_heading,
+        ).strip()
+        if re.fullmatch(
+            r"(?:模块|要点|总结|部分)\s*[0-9一二三四五六七八九十]*",
+            heading,
+        ):
+            heading = ""
         sections.append(
             {
-                "heading": _short(raw.get("heading"), 12, f"要点 {index + 1}"),
+                "heading": heading or fallback_headings[index],
                 "body": body,
                 "visual": _short(raw.get("visual"), 48, "简洁概念关系图"),
                 "accent": accent if accent in accents else "blue",
@@ -650,42 +746,50 @@ def build_page_prompt(
     chinese_ordinals = "一二三四五六七八九十"
     page_index = int(page["index"])
     ordinal = chinese_ordinals[page_index - 1] if 1 <= page_index <= 10 else str(page_index)
-    visible_modules = "\n".join(
-        (
-            f"模块{index}：标题“{section['heading']}”；正文“{section['body']}”。"
-        )
-        for index, section in enumerate(page["sections"], start=1)
+    title = (
+        f"{lesson_title}：{page['title']}"
+        if page_count == 1
+        else f"{lesson_title}（{ordinal}）：{page['title']}"
     )
-    visual_modules = "\n".join(
+    visible_content = "\n".join(
         (
-            f"模块{index}配图：{section['visual']}；{section['accent']}标题条。"
+            f"- 小标题“{section['heading']}”；正文“{section['body']}”。"
         )
-        for index, section in enumerate(page["sections"], start=1)
+        for section in page["sections"]
     )
-    module_count = len(page["sections"])
+    visual_notes = "\n".join(
+        f"- 围绕“{section['heading']}”绘制：{section['visual']}；以 {section['accent']} 作少量强调。"
+        for section in page["sections"]
+    )
+    layout = normalize_page_layout(page.get("layout"), page_index)
+    layout_instruction = PAGE_LAYOUT_INSTRUCTIONS[layout]
     return f"""
 【01 最终成品】
 横向 16:9 中文理工科知识信息图，单页教学幻灯片；紧凑、清晰、图文并茂，不是网页截图。
 
-【02 可见信息与层级】
+【02 可见文案白名单】
 以下是画面中唯一允许出现的文案白名单，其他简报说明不得入图。须逐字准确，不得改写、增删、重复或造字。
 
-一级信息：左上角页码“{page_index}/{page_count}”；顶部居中主标题“{lesson_title}（{ordinal}）：{page['title']}”。
-二级信息：主标题正下方副标题“{page['subtitle']}”。
-三级信息：中部必须恰好放置 {module_count} 张内容卡片，每张卡片只出现一次且编号连续：
-{visible_modules}
-四级信息：底部通栏总结“{page['key_takeaway']}”。
+页码：“{page_index}/{page_count}”
+主标题：“{title}”
+副标题：“{page['subtitle']}”
+知识内容：
+{visible_content}
+关键结论文字：“{page['key_takeaway']}”
 
-位置：标题区顶部 14%，卡片区中部 72%，深蓝总结条底部 10%。不得增加“教学目标”“总结”“10%”等标签或额外卡片。
+上面的项目符号和“页码、主标题、副标题、知识内容、关键结论文字”等提示词只是结构说明，不得画入页面。不得添加“模块1”“要点2”“总结3”“第几部分”等通用编号或标签。每段白名单文字只出现一次。
 
 【03 语言和文字优先级】
-只用简体中文，准确性高于装饰。优先保证主标题、页码、编号、公式和总结，再保证卡片文字。中文用清晰无衬线体；公式保留符号、上下标与括号。正文不小于视觉 18px。图内仅写明示变量、坐标和数值，不生成伪文字。
+只用简体中文，准确性高于装饰。优先保证主标题、页码、公式和结论，再保证知识内容。中文用清晰无衬线体；公式保留符号、上下标与括号。正文不小于视觉 18px。图内仅写明示变量、坐标和数值，不生成伪文字。
 
-【04 视觉方向与必须保留的细节】
-白到浅蓝灰背景，海军蓝主标题、钴蓝分区标题、细蓝边圆角卡片、12 栏网格。{module_count} 个模块排成 2 至 3 列并对齐；少量红、绿、橙强调。
+【04 本页内容自适应版式】
+采用 {layout} 版式：{layout_instruction}
 
-每张卡片须有标题、正文及相邻二维矢量图；图约 35%，文字约 65%。绘图说明不得整句入图：
-{visual_modules}
+不要把所有内容强制做成等宽卡片。允许主图占据视觉中心，也允许文字沿流程、关系、对照或标注自然分布；结论用自然强调区、批注或视觉收束呈现，不固定为底部通栏。绘图说明不得整句入图：
+{visual_notes}
+
+【05 整组视觉一致性】
+保持白到浅蓝灰底色、海军蓝主标题与清晰细线图形；少量使用蓝、绿、橙、红作语义强调。页码位置、字体体系和线条风格保持统一，但主图位置、信息流向、分区比例和强调方式必须服从本页内容，不机械复用上一页构图。
 
 背景仅可有淡线稿。不要照片、人物、3D、品牌、水印、二维码或版权信息；不得裁字、压字。
 """.strip()

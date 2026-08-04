@@ -1528,7 +1528,7 @@ async def _run_knowledge_explanation(
         )
     except asyncio.CancelledError:
         with suppress(FileNotFoundError):
-            knowledge_explanation_store.update(
+            knowledge_explanation_store.mark_terminal(
                 task_id,
                 status="cancelled",
                 message="生成已取消，已完成的页面仍可查看",
@@ -1537,7 +1537,7 @@ async def _run_knowledge_explanation(
     except Exception as exc:
         logger.exception("Knowledge explanation generation failed for %s", task_id)
         with suppress(FileNotFoundError):
-            knowledge_explanation_store.update(
+            knowledge_explanation_store.mark_terminal(
                 task_id,
                 status="error",
                 message="知识讲解生成失败",
@@ -1642,14 +1642,39 @@ async def cancel_knowledge_explanation(
         raise HTTPException(status_code=404, detail="知识讲解任务不存在") from exc
     task = knowledge_explanation_tasks.get(task_id)
     if task is not None and not task.done():
-        knowledge_explanation_store.update(
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+    elif explanation.get("status") in {"planning", "generating"}:
+        knowledge_explanation_store.mark_terminal(
             task_id,
             status="cancelled",
-            message="正在取消生成…",
+            message="生成已取消，已完成的页面仍可查看",
         )
-        task.cancel()
-        explanation = knowledge_explanation_store.get(task_id, student_id)
+    explanation = knowledge_explanation_store.get(task_id, student_id)
     return {"ok": True, "explanation": explanation}
+
+
+@app.delete("/api/knowledge-explanations/{task_id}")
+async def delete_knowledge_explanation(
+    task_id: str, student_id: str = "learner-demo"
+) -> dict[str, Any]:
+    try:
+        knowledge_explanation_store.get(task_id, student_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="知识讲解任务不存在") from exc
+
+    task = knowledge_explanation_tasks.get(task_id)
+    if task is not None and not task.done():
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+    knowledge_explanation_tasks.pop(task_id, None)
+    try:
+        knowledge_explanation_store.delete(task_id, student_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="知识讲解任务不存在") from exc
+    return {"ok": True, "task_id": task_id}
 
 
 @app.get("/api/knowledge-explanations/{task_id}/pages/{page_index}")

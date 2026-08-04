@@ -100,6 +100,7 @@ import {
   createKnowledgeExplanation,
   createMistakeCandidate,
   createMistakeCategory,
+  deleteKnowledgeExplanation,
   deleteKnowledgeBase,
   deleteMistake,
   deleteMistakeAnnotation,
@@ -811,11 +812,13 @@ function ChatComposer({
   onPdfUpload,
   externalBusy = false,
   onExternalStop,
+  explanationImageModel = 'qwen-image-2.0',
 }: {
   onSend: (value: string) => void
   onPdfUpload: (file: File) => void
   externalBusy?: boolean
   onExternalStop?: () => void
+  explanationImageModel?: string
 }) {
   const { message: toast } = AntApp.useApp()
   const [value, setValue] = useState('')
@@ -925,7 +928,7 @@ function ChatComposer({
               ]}
             />
           </div>
-          <span className="composer-tip">{mode === 'explain' ? 'Qwen Image 2.0 · 逐页生成' : 'Shift + Enter 换行'}</span>
+          <span className="composer-tip">{mode === 'explain' ? `${knowledgeImageModelLabel(explanationImageModel)} · 逐页生成` : 'Shift + Enter 换行'}</span>
         </div>
         {activeFocus && mode !== 'explain' && mode !== 'plan' && (
           <div className="conversation-focus-bar">
@@ -3936,6 +3939,56 @@ function explanationTime(value: string) {
   })
 }
 
+function explanationPageDisplayStatus(
+  page: KnowledgeExplanation['pages'][number],
+  explanationStatus: KnowledgeExplanation['status'],
+) {
+  if (page.status === 'ready') return 'ready'
+  if (explanationStatus === 'cancelled') return 'cancelled'
+  if (explanationStatus === 'error') return 'error'
+  return page.status
+}
+
+function KnowledgeExplanationHistoryItem({
+  item,
+  deleting,
+  onSelect,
+  onDelete,
+}: {
+  item: KnowledgeExplanation
+  deleting: boolean
+  onSelect: (value: KnowledgeExplanation) => void
+  onDelete: (value: KnowledgeExplanation) => Promise<void>
+}) {
+  const active = item.status === 'planning' || item.status === 'generating'
+  return (
+    <div className="explanation-history-item">
+      <button className="explanation-history-open" type="button" onClick={() => onSelect(item)}>
+        <span className={`history-lesson-icon ${item.status}`}><Presentation size={18} /></span>
+        <span><strong><InlineMath content={item.title || item.question} /></strong><small>{item.page_count || '—'} 页 · {explanationTime(item.created_at)}</small></span>
+        <ChevronRight size={15} />
+      </button>
+      <Popconfirm
+        title={active ? '停止并删除这组讲解？' : '删除这组讲解？'}
+        description={active ? '正在进行的生成会先停止，已生成页面和记录将永久删除。' : '讲解记录和全部生成页面将永久删除。'}
+        okText={active ? '停止并删除' : '删除'}
+        cancelText="取消"
+        okButtonProps={{ danger: true }}
+        onConfirm={() => onDelete(item)}
+      >
+        <Button
+          className="explanation-history-delete"
+          type="text"
+          danger
+          loading={deleting}
+          icon={<Trash2 size={13} />}
+          aria-label={`删除知识讲解 ${item.title || item.question}`}
+        />
+      </Popconfirm>
+    </div>
+  )
+}
+
 function KnowledgeExplanationView({
   explanation,
   history,
@@ -3944,6 +3997,8 @@ function KnowledgeExplanationView({
   onPageCountChange,
   onImageModelChange,
   onSelect,
+  onDelete,
+  deletingId,
 }: {
   explanation?: KnowledgeExplanation
   history: KnowledgeExplanation[]
@@ -3952,6 +4007,8 @@ function KnowledgeExplanationView({
   onPageCountChange: (value: number | null) => void
   onImageModelChange: (value: KnowledgeImageModel) => void
   onSelect: (value: KnowledgeExplanation) => void
+  onDelete: (value: KnowledgeExplanation) => Promise<void>
+  deletingId: string
 }) {
   const [selectedPage, setSelectedPage] = useState(1)
   const [pageCountMode, setPageCountMode] = useState<number | 'custom'>(
@@ -3966,6 +4023,15 @@ function KnowledgeExplanationView({
   const activePage = pages.find((page) => page.index === selectedPage) || pages[0]
   const readyCount = pages.filter((page) => page.status === 'ready').length
   const isActive = explanation?.status === 'planning' || explanation?.status === 'generating'
+  const activePageStatus = activePage && explanation
+    ? explanationPageDisplayStatus(activePage, explanation.status)
+    : 'pending'
+  const activePageBusy = isActive && (activePageStatus === 'drawing' || activePageStatus === 'writing')
+  const activePageMessage = activePageStatus === 'cancelled'
+    ? '生成已取消'
+    : activePageStatus === 'error'
+      ? '本页未能生成'
+      : activePage?.message || '正在准备页面结构…'
   const customPageCountInvalid = customPageCount !== null
     && (customPageCount < 1 || customPageCount > 8)
 
@@ -4059,11 +4125,13 @@ function KnowledgeExplanationView({
             <header><div><Clock3 size={15} /><strong>最近生成</strong></div><span>{history.length} 组讲解</span></header>
             <div className="explanation-history-grid">
               {history.map((item) => (
-                <button key={item.id} type="button" onClick={() => onSelect(item)}>
-                  <span className={`history-lesson-icon ${item.status}`}><Presentation size={18} /></span>
-                  <span><strong><InlineMath content={item.title || item.question} /></strong><small>{item.page_count || '—'} 页 · {explanationTime(item.created_at)}</small></span>
-                  <ChevronRight size={15} />
-                </button>
+                <KnowledgeExplanationHistoryItem
+                  key={item.id}
+                  item={item}
+                  deleting={deletingId === item.id}
+                  onSelect={onSelect}
+                  onDelete={onDelete}
+                />
               ))}
             </div>
           </section>
@@ -4087,6 +4155,22 @@ function KnowledgeExplanationView({
               {explanationStatusLabels[explanation.status]}
             </Tag>
             <span>{readyCount}/{explanation.page_count || '—'} 页</span>
+            <Popconfirm
+              title={isActive ? '停止并删除这组讲解？' : '删除这组讲解？'}
+              description={isActive ? '正在进行的生成会先停止，已生成页面和记录将永久删除。' : '讲解记录和全部生成页面将永久删除。'}
+              okText={isActive ? '停止并删除' : '删除'}
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+              onConfirm={() => onDelete(explanation)}
+            >
+              <Button
+                className="explanation-delete-current"
+                type="text"
+                danger
+                loading={deletingId === explanation.id}
+                icon={<Trash2 size={14} />}
+              >删除</Button>
+            </Popconfirm>
           </div>
         </header>
 
@@ -4110,7 +4194,7 @@ function KnowledgeExplanationView({
                   </a>
                 )}
               </div>
-              <div className={`explanation-canvas ${activePage?.status || 'pending'}`}>
+              <div className={`explanation-canvas ${activePageStatus}`}>
                 {activePage?.image_url ? (
                   <AntImage
                     src={activePage.image_url}
@@ -4120,8 +4204,14 @@ function KnowledgeExplanationView({
                 ) : (
                   <div className="explanation-page-placeholder">
                     <span className="placeholder-blueprint"><Presentation size={34} /></span>
-                    {activePage?.status === 'drawing' || activePage?.status === 'writing' ? <LoaderCircle className="spin" size={21} /> : <Layers3 size={21} />}
-                    <strong>{activePage?.message || '正在准备页面结构…'}</strong>
+                    {activePageBusy
+                      ? <LoaderCircle className="spin" size={21} />
+                      : activePageStatus === 'cancelled'
+                        ? <X size={21} />
+                        : activePageStatus === 'error'
+                          ? <AlertTriangle size={21} />
+                          : <Layers3 size={21} />}
+                    <strong>{activePageMessage}</strong>
                     <small>{activePage?.learning_goal ? <InlineMath content={activePage.learning_goal} /> : null}</small>
                   </div>
                 )}
@@ -4131,19 +4221,31 @@ function KnowledgeExplanationView({
             <aside className="explanation-outline-panel">
               <header><span>LESSON OUTLINE</span><strong>动态讲解大纲</strong></header>
               <div className="explanation-outline-list">
-                {pages.map((page) => (
-                  <button
-                    type="button"
-                    key={page.index}
-                    className={page.index === activePage?.index ? 'active' : ''}
-                    onClick={() => setSelectedPage(page.index)}
-                  >
-                    <span className={`outline-number ${page.status}`}>
-                      {page.status === 'ready' ? <Check size={13} /> : page.status === 'drawing' || page.status === 'writing' ? <LoaderCircle className="spin" size={13} /> : page.index}
-                    </span>
-                    <span><strong><InlineMath content={page.title} /></strong><small><InlineMath content={page.subtitle} /></small></span>
-                  </button>
-                ))}
+                {pages.map((page) => {
+                  const displayStatus = explanationPageDisplayStatus(page, explanation.status)
+                  const pageBusy = isActive && (displayStatus === 'drawing' || displayStatus === 'writing')
+                  return (
+                    <button
+                      type="button"
+                      key={page.index}
+                      className={page.index === activePage?.index ? 'active' : ''}
+                      onClick={() => setSelectedPage(page.index)}
+                    >
+                      <span className={`outline-number ${displayStatus}`}>
+                        {displayStatus === 'ready'
+                          ? <Check size={13} />
+                          : pageBusy
+                            ? <LoaderCircle className="spin" size={13} />
+                            : displayStatus === 'cancelled'
+                              ? <X size={13} />
+                              : displayStatus === 'error'
+                                ? <AlertTriangle size={13} />
+                                : page.index}
+                      </span>
+                      <span><strong><InlineMath content={page.title} /></strong><small><InlineMath content={page.subtitle} /></small></span>
+                    </button>
+                  )
+                })}
               </div>
               <div className="explanation-goal-card">
                 <BrainCircuit size={17} />
@@ -4167,7 +4269,7 @@ function KnowledgeExplanationView({
           <div className="explanation-thumbnail-rail" aria-label="讲解页缩略图">
             {pages.map((page) => (
               <button key={page.index} type="button" className={page.index === activePage?.index ? 'active' : ''} onClick={() => setSelectedPage(page.index)}>
-                <span className={`thumbnail-image ${page.status}`}>
+                <span className={`thumbnail-image ${explanationPageDisplayStatus(page, explanation.status)}`}>
                   {page.image_url ? <img src={page.image_url} alt="" /> : <Presentation size={20} />}
                   <b>{page.index}</b>
                 </span>
@@ -4183,11 +4285,13 @@ function KnowledgeExplanationView({
           <header><div><Clock3 size={15} /><strong>其他讲解</strong></div><span>点击切换</span></header>
           <div className="explanation-history-grid">
             {history.filter((item) => item.id !== explanation.id).slice(0, 4).map((item) => (
-              <button key={item.id} type="button" onClick={() => onSelect(item)}>
-                <span className={`history-lesson-icon ${item.status}`}><Presentation size={18} /></span>
-                <span><strong><InlineMath content={item.title || item.question} /></strong><small>{item.page_count || '—'} 页 · {explanationTime(item.created_at)}</small></span>
-                <ChevronRight size={15} />
-              </button>
+              <KnowledgeExplanationHistoryItem
+                key={item.id}
+                item={item}
+                deleting={deletingId === item.id}
+                onSelect={onSelect}
+                onDelete={onDelete}
+              />
             ))}
           </div>
         </section>
@@ -4500,6 +4604,7 @@ function StudentPageContent() {
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog>(fallbackModelCatalog)
   const [explanationHistory, setExplanationHistory] = useState<KnowledgeExplanation[]>([])
   const [activeExplanation, setActiveExplanation] = useState<KnowledgeExplanation>()
+  const [deletingExplanationId, setDeletingExplanationId] = useState('')
   const [explanationPageCount, setExplanationPageCount] = useState<number | null>(0)
   const [explanationImageModel, setExplanationImageModel] = useState<KnowledgeImageModel>('qwen-image-2.0')
   const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraph>()
@@ -4798,6 +4903,21 @@ function StudentPageContent() {
       setExplanationHistory((current) => [explanation, ...current.filter((item) => item.id !== explanation.id)])
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '知识讲解取消失败')
+    }
+  }
+
+  const removeKnowledgeExplanation = async (explanation: KnowledgeExplanation) => {
+    if (deletingExplanationId) return
+    setDeletingExplanationId(explanation.id)
+    try {
+      await deleteKnowledgeExplanation(explanation.id, studentId)
+      setExplanationHistory((current) => current.filter((item) => item.id !== explanation.id))
+      setActiveExplanation((current) => current?.id === explanation.id ? undefined : current)
+      toast.success('知识讲解已删除')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '知识讲解删除失败')
+    } finally {
+      setDeletingExplanationId('')
     }
   }
 
@@ -5284,6 +5404,8 @@ function StudentPageContent() {
                     onPageCountChange={setExplanationPageCount}
                     onImageModelChange={setExplanationImageModel}
                     onSelect={setActiveExplanation}
+                    onDelete={removeKnowledgeExplanation}
+                    deletingId={deletingExplanationId}
                   />
                 ) : messages.length === 0 ? (
                   <Welcome
@@ -5311,6 +5433,7 @@ function StudentPageContent() {
                 onPdfUpload={(file) => void uploadPhotoPdf(file)}
                 externalBusy={explanationBusy}
                 onExternalStop={() => void stopKnowledgeExplanation()}
+                explanationImageModel={explanationImageModel}
               />
             </div>
             {mode !== 'explain' && <KnowledgePanel statuses={statuses} onCreate={() => setKbModalOpen(true)} />}

@@ -78,14 +78,23 @@ export type KnowledgeExplanationSection = {
   accent: 'blue' | 'green' | 'orange' | 'red'
 }
 
+export type KnowledgeExplanationLayout =
+  | 'concept-map'
+  | 'process-flow'
+  | 'comparison'
+  | 'formula-focus'
+  | 'system-diagram'
+  | 'case-walkthrough'
+
 export type KnowledgeExplanationPage = {
   index: number
   title: string
   subtitle: string
   learning_goal: string
+  layout: KnowledgeExplanationLayout
   sections: KnowledgeExplanationSection[]
   key_takeaway: string
-  status: 'pending' | 'writing' | 'drawing' | 'ready'
+  status: 'pending' | 'writing' | 'drawing' | 'ready' | 'cancelled' | 'error'
   message: string
   image_file: string
   image_url: string
@@ -1384,6 +1393,19 @@ export async function cancelKnowledgeExplanation(
   const result = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(apiErrorMessage(result, '知识讲解取消失败'))
   return result.explanation
+}
+
+export async function deleteKnowledgeExplanation(
+  taskId: string,
+  studentId: string,
+): Promise<void> {
+  const query = new URLSearchParams({ student_id: studentId })
+  const response = await fetch(
+    `/api/knowledge-explanations/${encodeURIComponent(taskId)}?${query.toString()}`,
+    { method: 'DELETE' },
+  )
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(apiErrorMessage(result, '知识讲解删除失败'))
 }
 
 export async function cancelQuestionBank(bankId: string, studentId = ''): Promise<QuestionBank> {

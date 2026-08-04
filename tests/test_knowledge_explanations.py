@@ -9,10 +9,14 @@ import httpx
 
 from backend.app.schemas import KnowledgeExplanationRequest
 from backend.app.services.knowledge_explanations import (
+    PAGE_LAYOUTS,
     KnowledgeExplanationService,
     KnowledgeExplanationStore,
     QwenImageClient,
     build_page_prompt,
+    normalize_page_detail,
+    normalize_plan,
+    qwen_image_model_label,
     qwen_image_endpoint,
 )
 
@@ -89,6 +93,14 @@ class FakeImageClient:
         return b"\x89PNG\r\n\x1a\n" + bytes([len(self.calls)])
 
 
+class FailingProImageClient:
+    model = "qwen-image-2.0-pro"
+
+    async def generate(self, _prompt: str, *, seed: int, size: str = "") -> bytes:
+        del seed, size
+        raise RuntimeError("test image failure")
+
+
 def test_generate_dynamic_explanation_pages_and_persist_images(tmp_path: Path) -> None:
     store = KnowledgeExplanationStore(tmp_path)
     service = KnowledgeExplanationService(store)
@@ -136,6 +148,129 @@ def test_store_hides_another_students_explanation(tmp_path: Path) -> None:
         store.get(created["id"], "student-2")
 
 
+def test_store_marks_only_unfinished_pages_cancelled(tmp_path: Path) -> None:
+    store = KnowledgeExplanationStore(tmp_path)
+    created = store.create(
+        student_id="student-1",
+        question="解释反馈放大器",
+        requested_page_count=3,
+        text_model="qwen3.7-plus",
+        image_model="qwen-image-2.0-pro",
+    )
+    store.update(
+        created["id"],
+        status="generating",
+        pages=[
+            {"index": 1, "status": "ready", "message": "已生成", "image_file": "page-01.png"},
+            {"index": 2, "status": "drawing", "message": "正在绘制", "image_file": ""},
+            {"index": 3, "status": "pending", "message": "等待生成", "image_file": ""},
+        ],
+    )
+
+    cancelled = store.mark_terminal(
+        created["id"],
+        status="cancelled",
+        message="生成已取消，已完成的页面仍可查看",
+    )
+
+    assert cancelled["status"] == "cancelled"
+    assert [page["status"] for page in cancelled["pages"]] == [
+        "ready",
+        "cancelled",
+        "cancelled",
+    ]
+    assert cancelled["pages"][1]["message"] == "生成已取消"
+
+
+def test_recover_interrupted_marks_unfinished_pages_error(tmp_path: Path) -> None:
+    store = KnowledgeExplanationStore(tmp_path)
+    created = store.create(
+        student_id="student-1",
+        question="解释反馈放大器",
+        requested_page_count=2,
+        text_model="qwen3.7-plus",
+        image_model="qwen-image-2.0",
+    )
+    store.update(
+        created["id"],
+        status="generating",
+        pages=[
+            {"index": 1, "status": "ready", "message": "已生成", "image_file": "page-01.png"},
+            {"index": 2, "status": "writing", "message": "正在组织", "image_file": ""},
+        ],
+    )
+
+    store.recover_interrupted()
+    recovered = store.get(created["id"], "student-1")
+
+    assert recovered["status"] == "error"
+    assert [page["status"] for page in recovered["pages"]] == ["ready", "error"]
+
+
+def test_store_deletes_manifest_and_images_with_owner_check(tmp_path: Path) -> None:
+    store = KnowledgeExplanationStore(tmp_path)
+    created = store.create(
+        student_id="student-1",
+        question="解释反馈放大器",
+        requested_page_count=1,
+        text_model="qwen3.7-plus",
+        image_model="qwen-image-2.0",
+    )
+    store.save_page_image(created["id"], 1, b"\x89PNG\r\n\x1a\nimage")
+
+    with pytest.raises(FileNotFoundError):
+        store.delete(created["id"], "student-2")
+    assert store.get(created["id"], "student-1")["id"] == created["id"]
+
+    store.delete(created["id"], "student-1")
+    with pytest.raises(FileNotFoundError):
+        store.get(created["id"], "student-1")
+
+
+def test_delete_endpoint_cancels_active_task_before_removing_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi import HTTPException
+    from backend.app import main as main_module
+
+    async def exercise() -> None:
+        store = KnowledgeExplanationStore(tmp_path)
+        created = store.create(
+            student_id="student-1",
+            question="解释反馈放大器",
+            requested_page_count=1,
+            text_model="qwen3.7-plus",
+            image_model="qwen-image-2.0",
+        )
+        cancelled = asyncio.Event()
+
+        async def worker() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        task = asyncio.create_task(worker())
+        await asyncio.sleep(0)
+        monkeypatch.setattr(main_module, "knowledge_explanation_store", store)
+        monkeypatch.setattr(main_module, "knowledge_explanation_tasks", {created["id"]: task})
+
+        with pytest.raises(HTTPException) as exc_info:
+            await main_module.delete_knowledge_explanation(created["id"], "student-2")
+        assert exc_info.value.status_code == 404
+        assert not task.done()
+
+        result = await main_module.delete_knowledge_explanation(created["id"], "student-1")
+        assert result == {"ok": True, "task_id": created["id"]}
+        assert cancelled.is_set()
+        assert task.cancelled()
+        with pytest.raises(FileNotFoundError):
+            store.get(created["id"], "student-1")
+
+    asyncio.run(exercise())
+
+
 def test_qwen_compatible_url_is_converted_to_native_image_endpoint() -> None:
     assert qwen_image_endpoint(
         "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -157,7 +292,7 @@ def test_qwen_image_client_uses_native_payload_and_does_not_leak_key_to_oss() ->
             assert payload["parameters"]["prompt_extend"] is False
             assert payload["parameters"]["watermark"] is False
             assert payload["parameters"]["size"] == "2688*1536"
-            assert "重复模块" in payload["parameters"]["negative_prompt"]
+            assert "重复内容" in payload["parameters"]["negative_prompt"]
             assert "擅自添加教学目标" in payload["parameters"]["negative_prompt"]
             return httpx.Response(
                 200,
@@ -208,6 +343,7 @@ def test_page_prompt_preserves_exact_copy_and_compact_visual_rules() -> None:
             "title": "核心公式",
             "subtitle": "容量与带宽、信噪比的关系",
             "learning_goal": "能解释公式中每个量",
+            "layout": "formula-focus",
             "sections": [
                 {
                     "heading": "容量公式",
@@ -221,17 +357,113 @@ def test_page_prompt_preserves_exact_copy_and_compact_visual_rules() -> None:
     )
 
     assert "2/6" in prompt
+    assert "香农定理详解（二）：核心公式" in prompt
     assert "C = B log₂(1 + S/N)" in prompt
-    assert "12 栏网格" in prompt
+    assert "以关键公式、曲线或坐标图为主视觉" in prompt
     assert "【01 最终成品】" in prompt
-    assert "【02 可见信息与层级】" in prompt
+    assert "【02 可见文案白名单】" in prompt
     assert "【03 语言和文字优先级】" in prompt
-    assert "【04 视觉方向与必须保留的细节】" in prompt
-    assert "必须恰好放置 1 张内容卡片" in prompt
+    assert "【04 本页内容自适应版式】" in prompt
     assert "唯一允许出现的文案白名单" in prompt
     assert "不得改写、增删、重复" in prompt
+    assert "固定为底部通栏" in prompt
+    assert "12 栏网格" not in prompt
+    assert "必须恰好放置" not in prompt
     assert "能解释公式中每个量" not in prompt
     assert "从通信约束到信道容量" not in prompt
+
+
+def test_single_page_prompt_omits_chinese_ordinal() -> None:
+    prompt = build_page_prompt(
+        lesson_title="香农定理详解",
+        lesson_subtitle="建立通信极限的直觉",
+        page_count=1,
+        page={
+            "index": 1,
+            "title": "噪声信道为何有极限",
+            "subtitle": "从带宽和信噪比理解容量",
+            "learning_goal": "理解容量上限",
+            "layout": "concept-map",
+            "sections": [
+                {"heading": "容量边界", "body": "可靠速率存在上限。", "visual": "容量关系图", "accent": "blue"}
+            ],
+            "key_takeaway": "带宽和信噪比共同决定信道容量。",
+        },
+    )
+
+    assert "香农定理详解：噪声信道为何有极限" in prompt
+    assert "香农定理详解（一）" not in prompt
+
+
+def test_plan_normalizes_layouts_and_avoids_adjacent_duplicates() -> None:
+    plan = normalize_plan(
+        {
+            "title": "反馈放大器",
+            "subtitle": "从结构到稳定性",
+            "pages": [
+                {"title": "概念", "layout": "concept-map"},
+                {"title": "关系", "layout": "concept-map"},
+                {"title": "对比", "layout": "unknown-layout"},
+                {"title": "推导", "layout": "formula-focus"},
+                {"title": "结构", "layout": "system-diagram"},
+                {"title": "案例", "layout": "case-walkthrough"},
+            ],
+        },
+        "解释反馈放大器",
+        6,
+    )
+    layouts = [page["layout"] for page in plan["pages"]]
+
+    assert set(layouts) == set(PAGE_LAYOUTS)
+    assert all(current != previous for previous, current in zip(layouts, layouts[1:]))
+
+
+def test_page_detail_removes_mechanical_numbered_headings() -> None:
+    detail = normalize_page_detail(
+        {
+            "sections": [
+                {"heading": "模块1：基极电流", "body": "小电流控制大电流。"},
+                {"heading": "要点2-工作点", "body": "偏置决定静态工作点。"},
+                {"heading": "总结4", "body": "工作点应位于放大区。"},
+            ],
+            "key_takeaway": "偏置让晶体管稳定工作在线性区。",
+        },
+        {"title": "放大机制", "learning_goal": "理解偏置"},
+    )
+
+    assert [section["heading"] for section in detail["sections"]] == [
+        "基极电流",
+        "工作点",
+        "直观图解",
+    ]
+
+
+def test_pro_model_label_and_generation_status_use_selected_model(tmp_path: Path) -> None:
+    assert qwen_image_model_label("qwen-image-2.0") == "Qwen Image 2.0"
+    assert qwen_image_model_label("qwen-image-2.0-pro") == "Qwen Image 2.0 Pro"
+    store = KnowledgeExplanationStore(tmp_path)
+    created = store.create(
+        student_id="student-1",
+        question="解释香农定理",
+        requested_page_count=1,
+        text_model="qwen3.7-plus",
+        image_model="qwen-image-2.0-pro",
+    )
+
+    with pytest.raises(RuntimeError, match="test image failure"):
+        asyncio.run(
+            KnowledgeExplanationService(store).generate(
+                created["id"],
+                question=created["question"],
+                requested_page_count=1,
+                text_client=FakeTextClient(),
+                image_client=FailingProImageClient(),  # type: ignore[arg-type]
+            )
+        )
+
+    interrupted = store.raw(created["id"])
+    assert interrupted["message"] == "Qwen Image 2.0 Pro 正在生成第 1/1 页…"
+    assert interrupted["pages"][0]["message"] == "Qwen Image 2.0 Pro 正在绘制…"
 
 
 def test_explanation_request_rejects_non_qwen_image_model() -> None:
