@@ -25,9 +25,12 @@ from backend.app.services.knowledge_explanations import (
 class FakeTextClient:
     def __init__(self) -> None:
         self.calls = 0
+        self.detail_calls = 0
+        self.prompt_calls = 0
 
     async def chat(self, *_args, **_kwargs) -> str:
         self.calls += 1
+        user_prompt = str(_args[0][-1]["content"])
         if self.calls == 1:
             return json.dumps(
                 {
@@ -38,22 +41,59 @@ class FakeTextClient:
                             "title": "核心定义",
                             "subtitle": "可靠速率为什么有上限",
                             "learning_goal": "理解信道容量的含义",
+                            "content_brief": "解释信道容量与可靠通信速率上限",
+                            "visual_focus": "R 与 C 的可行区间对比",
+                            "layout": "comparison",
                         },
                         {
                             "title": "核心公式",
                             "subtitle": "带宽与信噪比如何共同作用",
                             "learning_goal": "读懂容量公式中的每个量",
+                            "content_brief": "解释容量公式中的带宽和信噪比",
+                            "visual_focus": "容量公式及参数变化曲线",
+                            "layout": "formula-focus",
                         },
                         {
                             "title": "工程边界",
                             "subtitle": "理论极限与真实系统",
                             "learning_goal": "区分理论容量与实际速率",
+                            "content_brief": "说明理论极限的条件与实际差距",
+                            "visual_focus": "理论上限与实际速率对比",
+                            "layout": "comparison",
                         },
                     ],
                 },
                 ensure_ascii=False,
             )
-        page_number = self.calls - 1
+        if "生图提示词工程师" in user_prompt:
+            self.prompt_calls += 1
+            payload_text = user_prompt.split("本页确定内容：\n", 1)[1].split(
+                "\n\n输出要求：", 1
+            )[0]
+            payload = json.loads(payload_text)
+            section_blocks = "\n".join(
+                f"#### （{index}）{section['heading']}\n- 文字：{section['body']}\n- 示意图：{section['visual']}"
+                for index, section in enumerate(payload["sections"], start=1)
+            )
+            return f"""生成一张「通信领域知识讲解」风格的横向 16:9 信息图，主题为《{payload['display_title']}》，副标题为“{payload['subtitle']}”。整体蓝白配色，逻辑清晰。
+
+### 1. 顶部区域
+- 页码：{payload['page_number']}。
+- 主标题：{payload['display_title']}。
+- 副标题：{payload['subtitle']}。
+
+### 2. 主体内容
+{section_blocks}
+
+### 3. 结论区
+- 结论：{payload['key_takeaway']}
+
+### 风格要求
+- 使用蓝白主色、扁平化矢量图形、清晰无衬线字体和均匀留白。
+- 主体布局严格跟随知识关系，不使用无关装饰，不改写任何正文和公式。
+- 所有图形、坐标、变量、箭头和文字一一对应，确保教学信息准确清晰。"""
+        self.detail_calls += 1
+        page_number = self.detail_calls
         return json.dumps(
             {
                 "sections": [
@@ -128,9 +168,18 @@ def test_generate_dynamic_explanation_pages_and_persist_images(tmp_path: Path) -
     assert completed["status"] == "completed"
     assert completed["progress"] == 100
     assert completed["page_count"] == 3
-    assert text_client.calls == 4
+    assert text_client.calls == 7
+    assert text_client.detail_calls == 3
+    assert text_client.prompt_calls == 3
     assert len(image_client.calls) == 3
     assert all(page["status"] == "ready" for page in completed["pages"])
+    raw_pages = store.raw(created["id"])["pages"]
+    assert all(page["image_prompt"] for page in raw_pages)
+    assert all("通信领域知识讲解" in page["image_prompt"] for page in raw_pages)
+    assert [call[0] for call in image_client.calls] == [
+        page["image_prompt"] for page in raw_pages
+    ]
+    assert all("image_prompt" not in page for page in completed["pages"])
     assert all(page["image_url"].startswith("/api/knowledge-explanations/") for page in completed["pages"])
     assert store.page_file(created["id"], 1, "student-1").read_bytes().startswith(b"\x89PNG")
 
@@ -361,17 +410,18 @@ def test_page_prompt_preserves_exact_copy_and_compact_visual_rules() -> None:
     assert "香农定理详解（二）：核心公式" in prompt
     assert "C = B log₂(1 + S/N)" in prompt
     assert "以关键公式、曲线或坐标图为主视觉" in prompt
-    assert "【01 最终成品】" in prompt
-    assert "【02 可见文案白名单】" in prompt
-    assert "【03 语言和文字优先级】" in prompt
-    assert "【04 本页内容自适应版式】" in prompt
-    assert "唯一允许出现的文案白名单" in prompt
-    assert "不得改写、增删、重复" in prompt
-    assert "固定为底部通栏" in prompt
+    assert "生成一张「专业知识讲解」风格的横向 16:9 中文信息图" in prompt
+    assert "### 1. 顶部区域" in prompt
+    assert "### 2. 主体内容" in prompt
+    assert "#### （1）容量公式" in prompt
+    assert "### 3. 结论区" in prompt
+    assert "### 风格要求" in prompt
+    assert "### 内容准确性要求" in prompt
+    assert "逐字准确" in prompt
+    assert "不强制底部通栏" in prompt
     assert "12 栏网格" not in prompt
     assert "必须恰好放置" not in prompt
     assert "能解释公式中每个量" not in prompt
-    assert "从通信约束到信道容量" not in prompt
 
 
 def test_single_page_prompt_omits_chinese_ordinal() -> None:
@@ -396,13 +446,93 @@ def test_single_page_prompt_omits_chinese_ordinal() -> None:
     assert "香农定理详解（一）" not in prompt
 
 
-def test_plan_normalizes_layouts_and_avoids_adjacent_duplicates() -> None:
+def test_text_model_drafted_prompt_is_used_as_image_prompt_body() -> None:
+    page = {
+        "index": 1,
+        "title": "可靠通信边界",
+        "subtitle": "比较 R 与 C 的大小关系",
+        "layout": "comparison",
+        "sections": [
+            {
+                "heading": "R不超过C",
+                "body": "当 R≤C 时，存在编码方案使误码率趋近于零。",
+                "visual": "绿色可行区与对勾",
+                "visual_type": "general",
+                "accent": "green",
+            }
+        ],
+        "key_takeaway": "信道容量 C 是可靠通信速率的理论上限。",
+    }
+    drafted = """生成一张「通信领域知识讲解」风格的横向 16:9 信息图，主题为《香农定理详解：可靠通信边界》，副标题为“比较 R 与 C 的大小关系”。这是文本模型编排标记，整体采用蓝白配色并用绿色表示可行区域。
+
+### 1. 顶部区域
+- 显示主标题“香农定理详解：可靠通信边界”和副标题“比较 R 与 C 的大小关系”，左上角放置页码。
+
+### 2. 主体内容
+#### （1）R不超过C
+- 正文逐字显示“当 R≤C 时，存在编码方案使误码率趋近于零。”。
+- 绘制从 R 到 C 的绿色数轴区间、方向箭头和清晰对勾，所有图形与正文就近对应。
+
+### 3. 结论区
+- 突出显示“信道容量 C 是可靠通信速率的理论上限。”，使用深蓝色强调框并保持足够留白。
+
+### 风格要求
+- 蓝白主色、绿色语义强调、扁平化二维矢量图形、清晰无衬线字体。
+- 标题、正文、注释层级明确，图文对齐，分区间距均匀，不添加与通信主题无关的装饰。
+- 所有指定文字逐字准确，符号 R、C 与不等号清晰，不重复正文，不生成伪文字。"""
+
+    prompt = build_page_prompt(
+        lesson_title="香农定理详解",
+        lesson_subtitle="解释可靠通信速率上限",
+        page_count=1,
+        page=page,
+        drafted_prompt=drafted,
+    )
+
+    assert "这是文本模型编排标记" in prompt
+    assert "### 内容准确性要求" in prompt
+    assert "### 专业图示准确性" in prompt
+
+
+def test_incomplete_text_model_prompt_falls_back_to_structured_prompt() -> None:
+    prompt = build_page_prompt(
+        lesson_title="香农定理详解",
+        lesson_subtitle="解释可靠通信速率上限",
+        page_count=1,
+        page={
+            "index": 1,
+            "title": "可靠通信边界",
+            "subtitle": "比较 R 与 C 的大小关系",
+            "layout": "comparison",
+            "sections": [
+                {
+                    "heading": "R不超过C",
+                    "body": "当 R≤C 时可以逼近可靠通信。",
+                    "visual": "绿色可行区",
+                    "accent": "green",
+                }
+            ],
+            "key_takeaway": "C 是可靠通信速率上限。",
+        },
+        drafted_prompt="画一张香农定理图片",
+    )
+
+    assert "生成一张「专业知识讲解」" in prompt
+    assert "#### （1）R不超过C" in prompt
+
+
+def test_plan_keeps_content_selected_layouts_even_when_adjacent_pages_repeat() -> None:
     plan = normalize_plan(
         {
             "title": "反馈放大器",
             "subtitle": "从结构到稳定性",
             "pages": [
-                {"title": "概念", "layout": "concept-map"},
+                {
+                    "title": "概念",
+                    "content_brief": "只解释反馈的定义与信号回路",
+                    "visual_focus": "输入、输出与反馈通路关系图",
+                    "layout": "concept-map",
+                },
                 {"title": "关系", "layout": "concept-map"},
                 {"title": "对比", "layout": "unknown-layout"},
                 {"title": "推导", "layout": "formula-focus"},
@@ -415,8 +545,49 @@ def test_plan_normalizes_layouts_and_avoids_adjacent_duplicates() -> None:
     )
     layouts = [page["layout"] for page in plan["pages"]]
 
-    assert set(layouts) == set(PAGE_LAYOUTS)
-    assert all(current != previous for previous, current in zip(layouts, layouts[1:]))
+    assert layouts[:2] == ["concept-map", "concept-map"]
+    assert layouts[2] == PAGE_LAYOUTS[2]
+    assert layouts[3:] == ["formula-focus", "system-diagram", "case-walkthrough"]
+    assert plan["pages"][0]["content_brief"] == "只解释反馈的定义与信号回路"
+    assert plan["pages"][0]["visual_focus"] == "输入、输出与反馈通路关系图"
+
+
+def test_plan_prompt_rejects_fixed_concept_to_application_sequence(tmp_path: Path) -> None:
+    class CaptureClient:
+        prompt = ""
+
+        async def chat(self, messages, **_kwargs) -> str:
+            self.prompt = messages[-1]["content"]
+            return json.dumps(
+                {
+                    "title": "反馈判断",
+                    "subtitle": "只回答反馈极性的判定方法",
+                    "pages": [
+                        {
+                            "title": "沿反馈路径判断极性",
+                            "subtitle": "从输出变化追踪到输入端",
+                            "learning_goal": "能够判断反馈极性",
+                            "content_brief": "追踪输出扰动经过反馈网络后对净输入的影响",
+                            "visual_focus": "输出到输入端的闭环信号路径",
+                            "layout": "process-flow",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+
+    client = CaptureClient()
+    plan = asyncio.run(
+        KnowledgeExplanationService(KnowledgeExplanationStore(tmp_path))._create_plan(
+            "怎样判断一个放大电路是正反馈还是负反馈？",
+            1,
+            client,
+        )
+    )
+
+    assert "不要默认套用“概念→原理→公式→案例→工程应用→总结”" in client.prompt
+    assert "相邻页可以相同" in client.prompt
+    assert plan["pages"][0]["content_brief"].startswith("追踪输出扰动")
 
 
 def test_plan_preserves_complete_titles_instead_of_hard_truncating() -> None:
@@ -471,7 +642,7 @@ def test_page_prompt_adds_only_relevant_specialized_visual_rule(
         },
     )
 
-    assert "【05 专业图示准确性】" in prompt
+    assert "### 专业图示准确性" in prompt
     assert expected_rule in prompt
     assert unexpected_rule not in prompt
 
@@ -525,8 +696,23 @@ def test_page_detail_removes_mechanical_numbered_headings() -> None:
     assert [section["heading"] for section in detail["sections"]] == [
         "基极电流",
         "工作点",
-        "直观图解",
+        "图示说明",
     ]
+
+
+def test_page_detail_allows_two_sections_when_content_only_needs_two() -> None:
+    detail = normalize_page_detail(
+        {
+            "sections": [
+                {"heading": "条件", "body": "R≤C 时存在可靠编码。"},
+                {"heading": "边界", "body": "R>C 时误码率不能任意小。"},
+            ],
+            "key_takeaway": "内容分区数量由问题决定。",
+        },
+        {"title": "可靠通信", "learning_goal": "区分两种情况"},
+    )
+
+    assert len(detail["sections"]) == 2
 
 
 def test_pro_model_label_and_generation_status_use_selected_model(tmp_path: Path) -> None:

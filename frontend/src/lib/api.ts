@@ -92,6 +92,8 @@ export type KnowledgeExplanationPage = {
   title: string
   subtitle: string
   learning_goal: string
+  content_brief?: string
+  visual_focus?: string
   layout: KnowledgeExplanationLayout
   sections: KnowledgeExplanationSection[]
   key_takeaway: string

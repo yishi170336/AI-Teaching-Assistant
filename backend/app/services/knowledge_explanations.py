@@ -395,6 +395,9 @@ class KnowledgeExplanationStore:
         task_id = quote(str(record.get("id", "")), safe="")
         student_id = quote(str(record.get("student_id", "")), safe="")
         for page in record.get("pages") or []:
+            # The full prompt remains in the manifest for generation audits, but
+            # returning it with every polling/history response would be wasteful.
+            page.pop("image_prompt", None)
             page_index = int(page.get("index", 0) or 0)
             page.setdefault(
                 "layout", PAGE_LAYOUTS[(max(page_index, 1) - 1) % len(PAGE_LAYOUTS)]
@@ -460,7 +463,7 @@ class KnowledgeExplanationService:
             task_id,
             status="planning",
             progress=4,
-            message="正在根据问题难度划分讲解模块…",
+            message="正在理解问题并规划讲解内容…",
         )
         plan = await self._create_plan(question, requested_page_count, text_client)
         pages = [
@@ -469,9 +472,12 @@ class KnowledgeExplanationService:
                 "title": item["title"],
                 "subtitle": item["subtitle"],
                 "learning_goal": item["learning_goal"],
+                "content_brief": item["content_brief"],
+                "visual_focus": item["visual_focus"],
                 "layout": item["layout"],
                 "sections": [],
                 "key_takeaway": "",
+                "image_prompt": "",
                 "status": "pending",
                 "message": "等待生成",
                 "image_file": "",
@@ -515,6 +521,30 @@ class KnowledgeExplanationService:
                 page_index,
                 sections=detail["sections"],
                 key_takeaway=detail["key_takeaway"],
+                message="正在编写本页专属生图提示词…",
+            )
+            self.store.update(
+                task_id,
+                progress=min(96, base_progress + 2),
+                message=f"正在生成第 {page_index}/{len(pages)} 页专属提示词…",
+            )
+            drafted_prompt = await self._create_image_prompt(
+                question=question,
+                plan=plan,
+                page={**page, **detail},
+                text_client=text_client,
+            )
+            prompt = build_page_prompt(
+                lesson_title=plan["title"],
+                lesson_subtitle=plan["subtitle"],
+                page_count=len(pages),
+                page={**page, **detail},
+                drafted_prompt=drafted_prompt,
+            )
+            self.store.update_page(
+                task_id,
+                page_index,
+                image_prompt=prompt,
                 status="drawing",
                 message=f"{image_model_label} 正在绘制…",
             )
@@ -522,12 +552,6 @@ class KnowledgeExplanationService:
                 task_id,
                 progress=min(96, base_progress + 4),
                 message=f"{image_model_label} 正在生成第 {page_index}/{len(pages)} 页…",
-            )
-            prompt = build_page_prompt(
-                lesson_title=plan["title"],
-                lesson_subtitle=plan["subtitle"],
-                page_count=len(pages),
-                page={**page, **detail},
             )
             image_bytes = await image_client.generate(
                 prompt,
@@ -559,27 +583,28 @@ class KnowledgeExplanationService:
         count_instruction = (
             f"必须恰好规划 {requested_page_count} 页。"
             if requested_page_count
-            else "请按问题复杂度自行规划 4 到 7 页；简单概念用 4 页，含推导、例题或应用时用 5 到 7 页。"
+            else "请按回答这个问题实际需要的内容自行规划 4 到 7 页；以讲清问题所需的最少页数为准，不为凑页数填充无关内容。"
         )
         prompt = f"""
-你是一名擅长知识可视化的课程设计师。请把用户的问题规划成一组连续的中文知识讲解信息图。
+你是一名擅长知识可视化的课程内容设计师。请先理解用户真正想弄清的问题，再规划一组连续的中文知识讲解信息图。
 
 用户问题：{question}
 
 要求：
 1. {count_instruction}
-2. 页面必须针对这个问题动态划分，形成从直觉/背景到核心原理，再到推导、例子、应用或误区的学习闭环；不要机械套模板。
-3. 每页只承担一个清晰教学任务，标题短而准确，适合 16:9 紧凑信息图。总标题和页面标题必须是完整短语或完整句子；若需要缩短，应完整改写，不得截断词尾或保留半句话。
-4. 最后一页负责收束关键联系、适用边界或迁移应用，标题必须表达具体知识主题，不得直接命名为“总结”“回顾”“最后一页”。
-5. 每页从 concept-map、process-flow、comparison、formula-focus、system-diagram、case-walkthrough 中选择最适合内容的 layout，相邻页不得重复。
-6. 只输出 JSON，不要 Markdown。
+2. 讲解内容、先后顺序和每页任务完全依据用户问题与知识依赖决定。不要默认套用“概念→原理→公式→案例→工程应用→总结”，也不要为了结构完整加入问题不需要的背景、应用、误区或例题。
+3. 先找出回答问题不可缺少的知识关系，再把它们组合为页面；允许多页连续推导、连续对比或连续解释同一机制，只要这是最清楚的讲法。
+4. 每页只承担一个明确任务。content_brief 要写清本页必须讲到的具体结论、条件、公式或关系；visual_focus 要写清最能帮助理解的主视觉，而不是泛泛写“配图”。
+5. 标题短而准确，适合 16:9 紧凑信息图。总标题和页面标题必须是完整短语或完整句子；若需要缩短，应完整改写，不得截断词尾或保留半句话。页面标题只写本页具体主题，不重复总标题、不自行添加“（一）”等页序。
+6. 从 concept-map、process-flow、comparison、formula-focus、system-diagram、case-walkthrough 中选择真正适合本页内容的 layout；相邻页可以相同，不为追求变化而牺牲内容表达。
+7. 只输出 JSON，不要 Markdown。
 
 JSON 结构：
 {{
   "title": "整组讲解总标题，建议不超过24字且语义完整",
-  "subtitle": "一句话说明学习主线，不超过42字",
+  "subtitle": "一句话说明这组页面如何回答用户问题，不超过42字",
   "pages": [
-    {{"title": "本页标题，建议不超过18字且语义完整", "subtitle": "本页副标题，不超过30字", "learning_goal": "学完本页能回答什么，不超过48字", "layout": "六种 layout 之一"}}
+    {{"title": "本页标题，建议不超过18字且语义完整", "subtitle": "本页副标题，不超过30字", "learning_goal": "学完本页能回答什么，不超过48字", "content_brief": "本页必须覆盖的具体内容、条件与结论，不超过120字", "visual_focus": "本页最重要的主视觉及其信息关系，不超过80字", "layout": "六种 layout 之一"}}
   ]
 }}
 """.strip()
@@ -600,7 +625,7 @@ JSON 结构：
         text_client: Any,
     ) -> dict[str, Any]:
         outline = "；".join(
-            f"{index + 1}.{item['title']}"
+            f"{index + 1}.{item['title']}（{item['content_brief']}）"
             for index, item in enumerate(plan["pages"])
         )
         prompt = f"""
@@ -612,17 +637,19 @@ JSON 结构：
 本页标题：{page['title']}
 本页副标题：{page['subtitle']}
 本页目标：{page['learning_goal']}
+本页内容边界：{page['content_brief']}
+本页主视觉：{page['visual_focus']}
 本页版式：{page['layout']}（{PAGE_LAYOUT_INSTRUCTIONS[page['layout']]}）
 
-请给出 3 到 5 个紧凑知识点。知识点类型应随内容变化，可使用概念、公式、图解、对比、步骤、例题、工程意义、误区等；不要重复前后页内容。
-每个正文最多 58 个汉字，优先使用准确术语、必要公式和单位；公式写成普通可读文本或 LaTeX，不要编造数值和结论。
+严格在本页内容边界内规划 2 到 6 个内容分区，数量由内容决定，不得为凑版式拆分或补充无关模块。分区可以是推导步骤、对比对象、机制环节、条件、图解、案例数据或结论，不能默认套用概念、原理、应用的固定顺序。
+每个正文最多 90 个汉字，优先使用准确术语、必要公式、条件和单位；公式写成普通可读文本或 LaTeX，不要编造数值和结论。
 heading 必须是与主题直接相关的自然标题，不得使用“模块1”“要点2”“总结3”等通用编号。
-visual 要具体描述适合本知识点的简洁图示，例如坐标曲线、流程箭头、结构剖面、对比表或图标，不要只写“配图”。
+visual 要像给制图人员的指令一样具体，写明对象、空间关系、箭头、标签、坐标轴、公式或强调位置，不要只写“配图”。
 visual_type 必须选择 general、circuit、curve、formula-derivation 之一。绘制电路时，visual 必须写清器件、节点、连接、极性和箭头方向，信息不足则选择功能框图；绘制曲线时，必须写清横纵轴物理量、单位、趋势和正文明确给出的关键点；绘制公式推导时，必须写清起始关系、中间等价变形和结果，正文没有中间步骤时不得补造。
 只输出 JSON，不要 Markdown：
 {{
   "sections": [
-    {{"heading": "知识点标题，不超过12字", "body": "1至2句准确讲解", "visual": "图示内容，不超过48字", "visual_type": "general|circuit|curve|formula-derivation", "accent": "blue|green|orange|red"}}
+    {{"heading": "知识点标题，不超过16字", "body": "1至2句准确讲解", "visual": "可直接执行的详细制图说明，不超过100字", "visual_type": "general|circuit|curve|formula-derivation", "accent": "blue|green|orange|red"}}
   ],
   "key_takeaway": "本页最重要的一句话结论，不超过52字"
 }}
@@ -634,6 +661,59 @@ visual_type 必须选择 general、circuit、curve、formula-derivation 之一�
             reasoning_budget=640,
         )
         return normalize_page_detail(_json_object(raw), page)
+
+    async def _create_image_prompt(
+        self,
+        *,
+        question: str,
+        plan: dict[str, Any],
+        page: dict[str, Any],
+        text_client: Any,
+    ) -> str:
+        page_count = len(plan["pages"])
+        display_title = page_display_title(
+            plan["title"], page["title"], int(page["index"]), page_count
+        )
+        page_payload = {
+            "page_number": f"{page['index']}/{page_count}",
+            "display_title": display_title,
+            "subtitle": page["subtitle"],
+            "content_brief": page["content_brief"],
+            "visual_focus": page["visual_focus"],
+            "layout": page["layout"],
+            "layout_instruction": PAGE_LAYOUT_INSTRUCTIONS[page["layout"]],
+            "sections": page["sections"],
+            "key_takeaway": page["key_takeaway"],
+        }
+        prompt = f"""
+你是一名中文教育信息图生图提示词工程师。请把已经确定的单页讲解内容编译成一份可直接交给生图模型的完整中文提示词。你只负责安排画面，不得重新规划、增删或改写教学内容。
+
+用户原问题：{question}
+整组讲解主线：{plan['subtitle']}
+本页确定内容：
+{json.dumps(page_payload, ensure_ascii=False, indent=2)}
+
+输出要求：
+1. 只输出最终生图提示词，不要解释、不要 JSON、不要代码围栏。
+2. 第一段采用“生成一张「所属领域知识讲解」风格的横向 16:9 信息图，主题为《……》，副标题为‘……’”的形式，并说明主辅色、专业气质和本页布局。
+3. 必须依次使用以下 Markdown 结构，内容具体程度参照专业信息图制作说明：
+   ### 1. 顶部区域
+   明确页码、主标题、副标题、与主题相关但不喧宾夺主的装饰元素。
+   ### 2. 主体内容
+   按本页 sections 的实际数量逐区写成“#### （1）真实知识点标题”。每一区都要分别写清位置与占比、可见标题、可见正文、图形对象、箭头/连线/坐标/公式、颜色强调。布局由内容决定，不固定为上三下二或等宽卡片。
+   ### 3. 结论区
+   写清 key_takeaway 的呈现方式；如果更适合批注、中心结论或侧边强调，可据本页布局安排，不强制底部通栏。
+   ### 风格要求
+   明确色彩、字体层级、间距、扁平化矢量质感和可读性。
+4. display_title、subtitle、每个 section 的 heading/body 以及 key_takeaway 必须逐字出现在提示词中；visual 只能被展开为更具体的绘图说明，不能改变其中的知识关系。
+5. 学习目标、content_brief、visual_focus、layout 名称和本段元指令不得成为画面文字。不得使用“模块1”“总结4”等机械标签；需要编号时，编号必须与真实知识点标题组合。
+6. 电路、曲线和公式推导必须严格服从本页已经给出的对象、拓扑、坐标、变量与数学关系；信息不足时要求画简化示意，不得让生图模型自行补造。
+""".strip()
+        return await text_client.chat(
+            [{"role": "user", "content": prompt}],
+            temperature=0.1,
+            reasoning_budget=768,
+        )
 
 
 def _json_object(raw: str) -> dict[str, Any]:
@@ -702,12 +782,10 @@ def normalize_visual_type(value: Any, section: dict[str, Any]) -> str:
 
 
 def normalize_page_layout(value: Any, page_index: int, previous: str = "") -> str:
+    del previous  # Kept in the signature for callers that still pass legacy data.
     candidate = str(value or "").strip().lower()
     if candidate not in PAGE_LAYOUTS:
         candidate = PAGE_LAYOUTS[(page_index - 1) % len(PAGE_LAYOUTS)]
-    if candidate == previous:
-        start = PAGE_LAYOUTS.index(candidate)
-        candidate = PAGE_LAYOUTS[(start + 1) % len(PAGE_LAYOUTS)]
     return candidate
 
 
@@ -717,32 +795,40 @@ def normalize_plan(
     raw_pages = value.get("pages")
     if not isinstance(raw_pages, list):
         raw_pages = []
-    target = requested_page_count or max(4, min(7, len(raw_pages) or 5))
-    defaults = [
-        ("问题与核心概念", "先明确问题在问什么", "能说清关键对象、条件和目标"),
-        ("原理如何运作", "建立直观机制图景", "能用因果链解释核心机制"),
-        ("关键关系与推导", "把直觉连接到准确表达", "能读懂关键公式、关系或步骤"),
-        ("典型情境演示", "用具体情境检验理解", "能把原理用于一个代表性例子"),
-        ("易错点与边界", "区分相近概念和适用条件", "能避开常见误解并判断适用范围"),
-        ("应用与迁移", "把知识连接到真实问题", "能迁移到新的问题或工程情境"),
-        ("关键联系与自检", "收束整条学习主线", "能用自己的话复述并完成自检"),
-        ("进阶思考", "从结论继续向外延伸", "能提出一个合理的进阶问题"),
-    ]
+    if not raw_pages:
+        raise KnowledgeExplanationError("讲解大纲没有返回任何页面，请重新生成")
+    target = requested_page_count or max(4, min(7, len(raw_pages)))
+    if len(raw_pages) < target:
+        raise KnowledgeExplanationError(
+            f"讲解大纲只返回 {len(raw_pages)} 页，少于要求的 {target} 页，请重新生成"
+        )
     pages: list[dict[str, str]] = []
-    previous_layout = ""
     for index in range(target):
-        raw = raw_pages[index] if index < len(raw_pages) and isinstance(raw_pages[index], dict) else {}
-        default = defaults[min(index, len(defaults) - 1)]
-        layout = normalize_page_layout(raw.get("layout"), index + 1, previous_layout)
+        raw = raw_pages[index]
+        if not isinstance(raw, dict):
+            raise KnowledgeExplanationError(f"讲解大纲第 {index + 1} 页格式不正确，请重新生成")
+        title = _complete_title(raw.get("title"), "本页重点")
+        subtitle = _short(raw.get("subtitle"), 30, f"聚焦{title}")
+        learning_goal = _short(raw.get("learning_goal"), 48, f"理解{title}")
+        layout = normalize_page_layout(raw.get("layout"), index + 1)
         pages.append(
             {
-                "title": _complete_title(raw.get("title"), default[0]),
-                "subtitle": _short(raw.get("subtitle"), 30, default[1]),
-                "learning_goal": _short(raw.get("learning_goal"), 48, default[2]),
+                "title": title,
+                "subtitle": subtitle,
+                "learning_goal": learning_goal,
+                "content_brief": _short(
+                    raw.get("content_brief"),
+                    160,
+                    learning_goal,
+                ),
+                "visual_focus": _short(
+                    raw.get("visual_focus"),
+                    120,
+                    subtitle,
+                ),
                 "layout": layout,
             }
         )
-        previous_layout = layout
     return {
         "title": _complete_title(value.get("title"), "知识讲解"),
         "subtitle": _short(value.get("subtitle"), 42, "从核心问题出发，建立可迁移的理解框架"),
@@ -757,12 +843,12 @@ def normalize_page_detail(
     if not isinstance(raw_sections, list):
         raw_sections = []
     accents = {"blue", "green", "orange", "red"}
-    fallback_headings = ("核心概念", "关键关系", "直观图解", "应用判断", "边界条件")
+    fallback_headings = ("关键内容", "必要关系", "图示说明", "条件判断", "结果解释", "补充说明")
     sections: list[dict[str, str]] = []
-    for index, raw in enumerate(raw_sections[:5]):
+    for index, raw in enumerate(raw_sections[:6]):
         if not isinstance(raw, dict):
             continue
-        body = _short(raw.get("body"), 90, "")
+        body = _short(raw.get("body"), 140, "")
         if not body:
             continue
         accent = str(raw.get("accent", "blue")).lower()
@@ -781,21 +867,57 @@ def normalize_page_detail(
             {
                 "heading": heading or fallback_headings[index],
                 "body": body,
-                "visual": _short(raw.get("visual"), 48, "简洁概念关系图"),
+                "visual": _short(raw.get("visual"), 160, "围绕正文关系绘制简洁示意图"),
                 "visual_type": normalize_visual_type(raw.get("visual_type"), raw),
                 "accent": accent if accent in accents else "blue",
             }
         )
-    if len(sections) < 3:
+    if len(sections) < 2:
         raise KnowledgeExplanationError(f"“{page['title']}”的页面文案不完整，请重新生成")
     return {
         "sections": sections,
         "key_takeaway": _short(
             value.get("key_takeaway"),
-            64,
+            80,
             f"掌握{page['title']}，就能回答：{page['learning_goal']}",
         ),
     }
+
+
+def page_display_title(
+    lesson_title: str, page_title: str, page_index: int, page_count: int
+) -> str:
+    chinese_ordinals = "一二三四五六七八九十"
+    ordinal = chinese_ordinals[page_index - 1] if 1 <= page_index <= 10 else str(page_index)
+    return (
+        f"{lesson_title}：{page_title}"
+        if page_count == 1
+        else f"{lesson_title}（{ordinal}）：{page_title}"
+    )
+
+
+def _clean_drafted_prompt(value: Any) -> str:
+    prompt = str(value or "").strip()
+    if prompt.startswith("```"):
+        prompt = re.sub(r"^```(?:markdown|md|text)?\s*|\s*```$", "", prompt, flags=re.IGNORECASE)
+    return prompt.strip()
+
+
+def _drafted_prompt_is_complete(
+    prompt: str, *, title: str, page: dict[str, Any]
+) -> bool:
+    if not 400 <= len(prompt) <= 16_000:
+        return False
+    required_structure = (
+        "### 1. 顶部区域",
+        "### 2. 主体内容",
+        "### 3. 结论区",
+        "### 风格要求",
+    )
+    required_copy = [title, str(page["subtitle"]), str(page["key_takeaway"])]
+    for section in page["sections"]:
+        required_copy.extend((str(section["heading"]), str(section["body"])))
+    return all(item in prompt for item in (*required_structure, *required_copy))
 
 
 def build_page_prompt(
@@ -804,24 +926,19 @@ def build_page_prompt(
     lesson_subtitle: str,
     page_count: int,
     page: dict[str, Any],
+    drafted_prompt: str = "",
 ) -> str:
-    chinese_ordinals = "一二三四五六七八九十"
     page_index = int(page["index"])
-    ordinal = chinese_ordinals[page_index - 1] if 1 <= page_index <= 10 else str(page_index)
-    title = (
-        f"{lesson_title}：{page['title']}"
-        if page_count == 1
-        else f"{lesson_title}（{ordinal}）：{page['title']}"
-    )
-    visible_content = "\n".join(
-        (
-            f"- 小标题“{section['heading']}”；正文“{section['body']}”。"
-        )
-        for section in page["sections"]
-    )
+    title = page_display_title(lesson_title, str(page["title"]), page_index, page_count)
     visual_types: list[str] = []
-    visual_note_lines: list[str] = []
-    for section in page["sections"]:
+    section_blocks: list[str] = []
+    accent_labels = {
+        "blue": "蓝色",
+        "green": "绿色",
+        "orange": "橙色",
+        "red": "红色",
+    }
+    for section_index, section in enumerate(page["sections"], start=1):
         visual_type = normalize_visual_type(section.get("visual_type"), section)
         section_visual_types = [
             visual_type,
@@ -830,49 +947,63 @@ def build_page_prompt(
         for detected_type in section_visual_types:
             if detected_type not in visual_types:
                 visual_types.append(detected_type)
-        visual_note_lines.append(
-            f"- 围绕“{section['heading']}”绘制：{section['visual']}；"
-            f"图示类型为 {visual_type}；以 {section['accent']} 作少量强调。"
+        accent = accent_labels.get(str(section.get("accent")), "蓝色")
+        section_blocks.append(
+            f"""#### （{section_index}）{section['heading']}
+- 位置与形式：依据整页信息关系分配空间，不使用机械等宽卡片；本区以{accent}作少量语义强调。
+- 标题：清晰显示「{section['heading']}」。
+- 文字：逐字显示「{section['body']}」。
+- 示意图：{section['visual']}
+- 图文关系：图形与对应文字就近对齐，用必要的箭头、连线或标注明确阅读方向。"""
         )
-    visual_notes = "\n".join(visual_note_lines)
     specialized_rules = "\n".join(
         f"- {SPECIALIZED_VISUAL_INSTRUCTIONS[visual_type]}"
         for visual_type in visual_types
         if visual_type in SPECIALIZED_VISUAL_INSTRUCTIONS
-    ) or "- 本页不含需要额外约束的电路、曲线或公式推导；所有图示仍须忠实于白名单文案。"
+    ) or "- 本页没有电路、曲线或公式推导专项图示；所有图形仍须忠实表达提示词中的知识关系。"
     layout = normalize_page_layout(page.get("layout"), page_index)
     layout_instruction = PAGE_LAYOUT_INSTRUCTIONS[layout]
-    return f"""
-【01 最终成品】
-横向 16:9 中文理工科知识信息图，单页教学幻灯片；紧凑、清晰、图文并茂，不是网页截图。
+    fallback_prompt = f"""
+生成一张「专业知识讲解」风格的横向 16:9 中文信息图，主题为《{title}》，副标题为“{page['subtitle']}”。整体采用蓝白为主色调，按本页知识关系使用绿、橙、红作少量强调；风格简洁专业、逻辑分层清楚，重点突出本页主视觉。版式要求：{layout_instruction}
 
-【02 可见文案白名单】
-以下是画面中唯一允许出现的文案白名单，其他简报说明不得入图。须逐字准确，不得改写、增删、重复或造字。
+### 1. 顶部区域
+- 左上角：蓝色圆角页码标签，白色文字「{page_index}/{page_count}」。
+- 主标题：深蓝色粗体大字「{title}」。
+- 副标题：浅蓝灰色常规字体「{page['subtitle']}」。
+- 装饰元素：只使用与本页主题直接相关的浅蓝色扁平矢量线稿，不添加无关器件、公式或文字。
 
-页码：“{page_index}/{page_count}”
-主标题：“{title}”
-副标题：“{page['subtitle']}”
-知识内容：
-{visible_content}
-关键结论文字：“{page['key_takeaway']}”
+### 2. 主体内容
+- 整体布局：{layout_instruction} 根据本页 {len(page['sections'])} 个真实知识分区安排主次与阅读路径，不固定为上三下二，不强制等宽卡片。
 
-上面的项目符号和“页码、主标题、副标题、知识内容、关键结论文字”等提示词只是结构说明，不得画入页面。不得添加“模块1”“要点2”“总结3”“第几部分”等通用编号或标签。每段白名单文字只出现一次。
+{chr(10).join(section_blocks)}
 
-【03 语言和文字优先级】
-只用简体中文，准确性高于装饰。优先保证主标题、页码、公式和结论，再保证知识内容。中文用清晰无衬线体；公式保留符号、上下标与括号。正文不小于视觉 18px。图内仅写明示变量、坐标和数值，不生成伪文字。
+### 3. 结论区
+- 用与当前版式协调的强调区、批注或视觉收束呈现结论，不强制底部通栏。
+- 结论文字逐字显示：「{page['key_takeaway']}」。
 
-【04 本页内容自适应版式】
-采用 {layout} 版式：{layout_instruction}
+### 风格要求
+- 色彩：白到浅蓝灰背景，深蓝标题，蓝色为主强调色；绿、橙、红只承担明确语义。
+- 排版：标题、正文、注释层级分明，分区间留白均匀，图标、公式和文字严格对齐。
+- 质感：扁平化二维矢量设计，无复杂阴影、无写实 3D；突出教学信息可读性。
+- 整组一致性：围绕“{lesson_subtitle}”保持页码、字体与线条体系一致，但本句不是画面文字。
+""".strip()
+    candidate = _clean_drafted_prompt(drafted_prompt)
+    prompt = (
+        candidate
+        if _drafted_prompt_is_complete(candidate, title=title, page=page)
+        else fallback_prompt
+    )
+    return f"""{prompt}
 
-不要把所有内容强制做成等宽卡片。允许主图占据视觉中心，也允许文字沿流程、关系、对照或标注自然分布；结论用自然强调区、批注或视觉收束呈现，不固定为底部通栏。绘图说明不得整句入图：
-{visual_notes}
+### 内容准确性要求
+- 页面可见文字只能来自本提示词明确给出的页码、标题、副标题、分区标题、正文、图内标签和结论；结构说明本身不得画入页面。
+- 所有指定文字逐字准确，只出现一次，不改写、不漏字、不造字；不得添加“模块1”“要点2”“总结3”等机械标签。
+- 只使用简体中文和提示词明确给出的标准变量、单位、坐标与数值。优先保证标题、公式、坐标轴和结论可读，不生成伪文字。
 
-【05 专业图示准确性】
-以下规则只作用于本页实际包含的图示类型，并且优先级高于装饰效果：
+### 专业图示准确性
 {specialized_rules}
 
-【06 整组视觉一致性】
-保持白到浅蓝灰底色、海军蓝主标题与清晰细线图形；少量使用蓝、绿、橙、红作语义强调。页码位置、字体体系和线条风格保持统一，但主图位置、信息流向、分区比例和强调方式必须服从本页内容，不机械复用上一页构图。
-
-背景仅可有淡线稿。不要照片、人物、3D、品牌、水印、二维码或版权信息；不得裁字、压字。
+### 最终输出限制
+- 横向 16:9 单页教学信息图，不是网页截图。不得裁字、压字、文字重叠或重复内容。
+- 不要照片、人物、写实 3D、品牌、水印、二维码或版权信息；背景装饰不能干扰正文。
 """.strip()

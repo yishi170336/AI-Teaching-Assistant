@@ -136,7 +136,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start.ps1
 
 ### 知识讲解与 Qwen Image
 
-知识讲解使用当前回答模型完成大纲分析和逐页文案，再按页面选择调用 Qwen Image 2.0 或 Qwen Image 2.0 Pro。当前文本提供商为通义千问时，生图复用共享 Qwen API；使用其他文本提供商时，生图复用独立 Qwen 视觉配置。未填写浏览器密钥时使用后端 `QWEN_API_KEY`。可通过 `QWEN_IMAGE_MODEL`、`QWEN_IMAGE_ENDPOINT`、`QWEN_IMAGE_SIZE` 和 `QWEN_IMAGE_TIMEOUT_SECONDS` 调整默认图像模型、地域端点、分辨率及超时。生成结果会立即下载到 `data/knowledge_explanations/`，不依赖仅保留 24 小时的临时 OSS URL。
+知识讲解使用当前回答模型按用户问题自由规划整组内容，不预设“概念—原理—应用”等固定顺序；随后逐页生成精确文案，并把每页内容编译成包含顶部、主体分区、结论区和风格要求的专属生图提示词，最后调用 Qwen Image 2.0 或 Qwen Image 2.0 Pro。每页最终提示词会随任务清单保存，便于核对规划与成图。当前文本提供商为通义千问时，生图复用共享 Qwen API；使用其他文本提供商时，生图复用独立 Qwen 视觉配置。未填写浏览器密钥时使用后端 `QWEN_API_KEY`。可通过 `QWEN_IMAGE_MODEL`、`QWEN_IMAGE_ENDPOINT`、`QWEN_IMAGE_SIZE` 和 `QWEN_IMAGE_TIMEOUT_SECONDS` 调整默认图像模型、地域端点、分辨率及超时。生成结果会立即下载到 `data/knowledge_explanations/`，不依赖仅保留 24 小时的临时 OSS URL。
 
 ## 环境重建
 
