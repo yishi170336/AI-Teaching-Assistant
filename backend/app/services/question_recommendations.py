@@ -474,12 +474,22 @@ class QuestionRecommendationService:
     def _apply_agent_requirements(
         requirements: dict[str, Any], agent_analysis: dict[str, Any]
     ) -> dict[str, Any]:
-        """Let model-understood explicit constraints override keyword guesses."""
+        """Make model-understood semantics primary while preserving hard constraints."""
 
+        updated = dict(requirements)
+        for field in (
+            "knowledge_points", "skills", "components", "methods",
+            "circuit_functions", "tasks",
+        ):
+            semantic_values = _clean_list(agent_analysis.get(field), 12)
+            if semantic_values:
+                # These are semantic retrieval requirements, not hard exclusion
+                # gates. They replace sparse keyword extraction from a deictic
+                # request such as "按这个去题库找一道".
+                updated[field] = semantic_values
         constraints = agent_analysis.get("explicit_constraints")
         if not isinstance(constraints, dict):
-            return requirements
-        updated = dict(requirements)
+            return updated
         for field in ("question_type", "difficulty", "chapter"):
             if constraints.get(field):
                 updated[field] = constraints[field]
@@ -844,13 +854,22 @@ class QuestionRecommendationService:
             evidence.append("难度符合要求")
         if profile.get("chapter"):
             evidence.append("原书章节：" + str(profile["chapter"]))
+        intent_label = str(
+            requirements.get("agent_analysis", {}).get("intent_summary", "")
+        ).strip() or query.strip().splitlines()[0][:80]
+        coverage = (
+            "实际共同知识点为" + "、".join(matched)
+            if matched
+            else "当前只能确认它是完整上下文语义检索中的最高分候选"
+        )
         deterministic_reason = (
             (
-                f"这道题完整满足“{query.strip()[:80]}”的已识别条件，"
+                f"这道题完整满足“{intent_label[:80]}”的已识别条件，"
                 if match_status == "exact"
-                else f"题库中没有完全满足全部条件的可用题目，本题是当前最接近“{query.strip()[:80]}”的候选，"
+                else f"题库中没有完全满足全部条件的可用题目，本题是当前最接近“{intent_label[:80]}”的候选，"
             )
-            + f"实际覆盖{'、'.join(matched) if matched else '当前题库中的核心电路知识'}。"
+            + coverage
+            + "。"
         )
         return {
             "question_ref": {

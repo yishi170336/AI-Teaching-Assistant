@@ -2526,6 +2526,12 @@ class CircuitTutorEngine:
         agent_analysis: dict[str, Any] = {}
         source_context = state.get("attachment_context", "").strip()
         source_blueprint = state.get("attachment_blueprint", {})
+        raw_reference = state.get("reference_answer", {})
+        source_reference = {
+            "answer": str(raw_reference.get("answer", ""))[:2400],
+            "answer_subquestions": raw_reference.get("answer_subquestions", [])[:8],
+            "rubric": str(raw_reference.get("rubric", ""))[:1200],
+        } if isinstance(raw_reference, dict) and raw_reference else {}
         if is_continuation and isinstance(inherited.get("agent_analysis"), dict):
             agent_analysis = dict(inherited["agent_analysis"])
         else:
@@ -2540,11 +2546,13 @@ class CircuitTutorEngine:
                 "soft_preferences（软偏好数组）、avoid（应避免的题目特征数组）、"
                 "explicit_constraints（对象，含 question_type、difficulty、chapter、requires_figure；"
                 "只有学生明确提出时填写，否则对应值为空）。"
-                "不要生成题目，不要读取或推测参考答案；未明确的信息保持为空数组。\n"
+                "不要生成题目。若提供了当前原题的题库参考答案，只能用它确认原题实际采用的知识、方法和推理任务，"
+                "不得复制答案、泄露结果或把答案内容当成候选题条件；未明确的信息保持为空数组。\n"
                 f"统一会话上下文：{state.get('conversation_context', '')[:6000]}\n"
                 f"学生请求：{state['message'][:1600]}\n"
                 f"学生当前指向的原题：{source_context[:5000] or '无明确原题'}\n"
                 f"原题识别结构：{json.dumps(source_blueprint, ensure_ascii=False)[:2600]}\n"
+                f"原题参考答案语义锚点：{json.dumps(source_reference, ensure_ascii=False)[:3600] if source_reference else '无'}\n"
                 f"仅在“再来一道”时继承的上一轮条件：{json.dumps(active_inherited or {}, ensure_ascii=False)[:1800]}"
             )
             try:
@@ -2601,6 +2609,11 @@ class CircuitTutorEngine:
                 state["message"],
                 f"参考原题：{source_context[:5000]}" if source_context else "",
                 f"原题结构：{recognition_retrieval_text(source_blueprint)[:2200]}" if source_blueprint else "",
+                (
+                    "主 Agent 理解的训练语义："
+                    + json.dumps(agent_analysis, ensure_ascii=False)[:3600]
+                    if agent_analysis else ""
+                ),
             )
             if item
         )
@@ -2683,6 +2696,7 @@ class CircuitTutorEngine:
         preferred_question_id = ""
         agent_reason = ""
         agent_evidence: list[str] = []
+        agent_fit_dimensions: list[str] = []
         if shortlist:
             await _emit(
                 state,
@@ -2695,7 +2709,9 @@ class CircuitTutorEngine:
                 "请阅读每道题的题干和小问，判断它是否真的要求学生完成目标推理，而不是因为标签碰巧相同就推荐。"
                 "标签、题型和难度只是可能不完整的检索线索，不能据此排除候选；"
                 "必须优先比较电路对象、信号路径、核心物理过程和学生实际要完成的推理。"
-                "即使没有完全同构题，也要选出迁移价值最高的一道，并在 tradeoffs 中诚实说明差异。"
+                "优先选择与目标在核心电路对象、物理过程、分析方法或实际解题任务中存在实质对应的候选；"
+                "仅仅都属于电路课程、都是计算题或难度相近不算强相关。若没有实质相关候选，仍保留其中迁移价值最高的"
+                "一道，但 reason 和 tradeoffs 必须明确说明相关性较弱以及具体差异，不得包装成完全匹配。"
                 "比较知识点是否为主任务、题目结构、计算链长度、概念陷阱、图形依赖和难度是否合适。"
                 "只能从候选 question_id 中选择。只输出合法 JSON："
                 "question_id、reason（面向学生的具体推荐理由，最多120字）、"
@@ -2725,11 +2741,72 @@ class CircuitTutorEngine:
                     agent_analysis["tradeoffs"] = _string_list(
                         reranked.get("tradeoffs"), 5
                     )
-                    agent_analysis["fit_dimensions"] = _string_list(
+                    agent_fit_dimensions = _string_list(
                         reranked.get("fit_dimensions"), 8
+                    )
+                    agent_analysis["fit_dimensions"] = agent_fit_dimensions
+            except Exception:
+                pass
+        reliable_agent_selection = bool(
+            preferred_question_id
+            and agent_reason
+            and agent_evidence
+            and agent_fit_dimensions
+        )
+        if shortlist and not reliable_agent_selection:
+            await _emit(
+                state,
+                "recommend-repair-rank",
+                "正在补全最接近候选的推荐依据与差异说明",
+                "题库推荐 Agent",
+            )
+            repair_prompt = (
+                "你是题库推荐结果修复 Agent。上一轮重排结果缺少题号、理由、题干证据或匹配维度。"
+                "必须从给定候选中保留一道最接近训练目标的题；先比较真实题干，再输出合法 JSON："
+                "question_id、reason、evidence（2-5条）、tradeoffs（至少1条，完全匹配时可为空）、"
+                "fit_dimensions（至少1条）。若相关性很弱，必须在 reason 和 tradeoffs 中直说弱在哪里，"
+                "不得声称完全匹配，也不得选择候选之外的题号。\n"
+                f"训练语义：{json.dumps(agent_analysis, ensure_ascii=False)[:3000]}\n"
+                f"当前原题：{source_context[:5000] or '无明确原题'}\n"
+                f"候选题：{json.dumps(shortlist, ensure_ascii=False)[:14000]}"
+            )
+            try:
+                repaired = _json_object(await client.chat(
+                    [{"role": "user", "content": repair_prompt}],
+                    temperature=0.0,
+                    json_mode=True,
+                    reasoning_budget=320,
+                ))
+                allowed_ids = {str(item.get("question_id", "")) for item in shortlist}
+                repaired_id = str(repaired.get("question_id", "")).strip()
+                repaired_reason = str(repaired.get("reason", "")).strip()
+                repaired_evidence = _string_list(repaired.get("evidence"), 5)
+                repaired_fit = _string_list(repaired.get("fit_dimensions"), 8)
+                if repaired_id in allowed_ids and repaired_reason and repaired_evidence and repaired_fit:
+                    preferred_question_id = repaired_id
+                    agent_reason = repaired_reason
+                    agent_evidence = repaired_evidence
+                    agent_fit_dimensions = repaired_fit
+                    agent_analysis["fit_dimensions"] = repaired_fit
+                    agent_analysis["tradeoffs"] = _string_list(
+                        repaired.get("tradeoffs"), 5
                     )
             except Exception:
                 pass
+        if shortlist and not (
+            preferred_question_id and agent_reason and agent_evidence and agent_fit_dimensions
+        ):
+            # An ID without an auditable reason/evidence package is not a valid
+            # Agent choice. Fall back to the context-enriched semantic ranking,
+            # while still returning its closest candidate as requested.
+            preferred_question_id = ""
+            agent_reason = ""
+            agent_evidence = []
+            agent_fit_dimensions = []
+            agent_analysis["tradeoffs"] = list(dict.fromkeys([
+                *_string_list(agent_analysis.get("tradeoffs"), 5),
+                "Agent 重排依据不完整，已保留完整上下文语义检索得分最高的候选",
+            ]))[:5]
         recommendation = await asyncio.to_thread(
             self.recommendation_service.recommend,
             query=retrieval_query,

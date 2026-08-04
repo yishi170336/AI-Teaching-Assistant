@@ -186,6 +186,54 @@ def test_cross_topic_query_returns_closest_candidate_with_relaxation_disclosed(t
     assert result["question_ref"]["question_id"]
 
 
+def test_model_semantics_become_primary_retrieval_requirements():
+    requirements = {
+        "knowledge_points": [],
+        "skills": [],
+        "components": [],
+        "methods": [],
+        "circuit_functions": [],
+        "tasks": [],
+        "question_type": "",
+        "difficulty": "",
+    }
+    analysis = {
+        "knowledge_points": ["稳压二极管", "动态电阻"],
+        "components": ["稳压二极管", "限流电阻"],
+        "methods": ["小信号等效", "分压分析"],
+        "circuit_functions": ["稳压"],
+        "tasks": ["输出电压变化量计算"],
+        "skills": ["模型选择"],
+    }
+
+    updated = QuestionRecommendationService._apply_agent_requirements(
+        requirements, analysis
+    )
+
+    assert updated["knowledge_points"] == ["稳压二极管", "动态电阻"]
+    assert updated["components"] == ["稳压二极管", "限流电阻"]
+    assert updated["methods"] == ["小信号等效", "分压分析"]
+    assert updated["tasks"] == ["输出电压变化量计算"]
+
+
+def test_fallback_reason_uses_model_intent_instead_of_vague_user_words(tmp_path):
+    service = QuestionRecommendationService(_store(tmp_path), tmp_path / "recommend")
+    result = service.recommend(
+        query="按这个去题库找一道",
+        constraint_query="按这个去题库找一道",
+        student_id="student-semantic-reason",
+        agent_analysis={
+            "intent_summary": "练习二极管限幅与导通状态判断",
+            "knowledge_points": ["二极管", "限幅电路"],
+            "components": ["二极管"],
+            "tasks": ["工作状态判断"],
+        },
+    )
+
+    assert "练习二极管限幅与导通状态判断" in result["reason"]
+    assert result["requirements"]["knowledge_points"] == ["二极管", "限幅电路"]
+
+
 def test_source_question_type_does_not_become_a_hard_user_filter(tmp_path):
     service = QuestionRecommendationService(_store(tmp_path), tmp_path / "recommend")
     result = service.recommend(

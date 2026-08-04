@@ -262,6 +262,28 @@ def test_current_question_knowledge_cannot_route_to_global_course_overview():
     assert "整门课程概览" in routed["supervisor_decision"]["reason"]
 
 
+def test_model_scope_handles_paraphrased_question_analysis_without_keyword_rule():
+    engine = object.__new__(CircuitTutorEngine)
+    routed = asyncio.run(engine._supervise({
+        "message": "围绕它我最该掌握哪一部分，分析时抓住什么？",
+        "semantic_request": {
+            "source": "model",
+            "operation": "knowledge_query",
+            "scope": "current",
+            "target_focus_ids": ["focus-paraphrase"],
+            "reason": "用户在追问当前题的核心学习目标",
+        },
+        "conversation_focus": {
+            "id": "focus-paraphrase",
+            "kind": "question_bank",
+            "summary": "稳压管动态电阻题",
+        },
+    }))
+
+    assert routed["answer_task"] == "question_knowledge"
+    assert routed["supervisor_decision"]["context_policy"] == "bound_question"
+
+
 def test_general_answer_skips_course_retrieval_and_bound_question():
     engine = object.__new__(CircuitTutorEngine)
     rewritten = asyncio.run(engine._rewrite_query({
@@ -1941,6 +1963,150 @@ def test_recommend_agent_understands_intent_and_reranks_question_stems():
     assert service.recommend_kwargs["preferred_question_id"] == "q2"
     assert service.recommend_kwargs["agent_analysis"]["reasoning_focus"] == "先判断导通条件"
     assert result["recommendation"]["selection_method"] == "agent_rerank"
+
+
+def test_recommend_agent_preserves_context_and_repairs_incomplete_rerank():
+    class RecommendationLLM:
+        model = "context-recommender"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, messages, **_kwargs):
+            self.calls += 1
+            prompt = messages[0]["content"]
+            if self.calls == 1:
+                assert "稳压管动态电阻影响输出变化" in prompt
+                assert "Vo≈4.02V" in prompt
+                return (
+                    '{"intent_summary":"练习稳压二极管动态电阻与输出变化量",'
+                    '"knowledge_points":["稳压二极管","动态电阻"],'
+                    '"components":["稳压二极管","限流电阻"],'
+                    '"methods":["小信号等效","分压分析"],'
+                    '"circuit_functions":["稳压"],'
+                    '"tasks":["输出电压变化量计算"],'
+                    '"skills":["模型选择"],"reasoning_focus":"由输入变化推导输出变化",'
+                    '"soft_preferences":[],"avoid":[]}'
+                )
+            if self.calls == 2:
+                # Simulate the production failure: the first rerank response is
+                # structurally incomplete even though it read the candidates.
+                return '{"question_id":"q-zener"}'
+            assert "推荐结果修复 Agent" in prompt
+            assert '"question_id": "q-zener"' in prompt
+            return (
+                '{"question_id":"q-zener",'
+                '"reason":"同样需要用动态电阻模型分析稳压输出随输入的变化。",'
+                '"evidence":["题干给出稳压管动态电阻","要求计算输出电压变化量"],'
+                '"tradeoffs":["候选输入增量不同"],'
+                '"fit_dimensions":["器件模型","分析方法","解题任务"]}'
+            )
+
+    class RecommendationService:
+        def __init__(self):
+            self.shortlist_kwargs = {}
+            self.recommend_kwargs = {}
+
+        def shortlist(self, **kwargs):
+            self.shortlist_kwargs = kwargs
+            return [{
+                "question_id": "q-zener",
+                "prompt": "稳压管动态电阻为 rz，输入变化时求输出电压变化量。",
+                "knowledge_points": ["稳压二极管", "动态电阻"],
+                "components": ["稳压二极管", "限流电阻"],
+                "methods": ["小信号等效", "分压分析"],
+                "tasks": ["输出电压变化量计算"],
+            }]
+
+        def recommend(self, **kwargs):
+            self.recommend_kwargs = kwargs
+            return {
+                "question_ref": {
+                    "kind": "question_bank",
+                    "question_bank_id": "book",
+                    "question_id": kwargs["preferred_question_id"],
+                },
+                "selection_method": "agent_rerank",
+                "agent_analysis": kwargs["agent_analysis"],
+            }
+
+    engine = object.__new__(CircuitTutorEngine)
+    service = RecommendationService()
+    llm = RecommendationLLM()
+    engine.recommendation_service = service
+    result = asyncio.run(engine._run_recommend_agent({
+        "message": "用题库检索这里面的内容，推荐一道题",
+        "student_id": "student-context",
+        "history": [],
+        "llm": llm,
+        "conversation_context": "上一轮正在分析例1.3.3的稳压管动态电阻影响输出变化。",
+        "attachment_context": "例1.3.3：稳压二极管 Vz=4V、rz=50Ω，分析输入变化时的输出。",
+        "attachment_blueprint": {
+            "knowledge_points": ["稳压二极管", "动态电阻"],
+            "component_types": ["稳压二极管", "限流电阻"],
+            "unknowns": ["输出电压变化量计算"],
+        },
+        "reference_answer": {"answer": "ΔVo=rz/(R+rz)·ΔV1，Vo≈4.02V"},
+    }))
+
+    assert llm.calls == 3
+    assert "主 Agent 理解的训练语义" in service.shortlist_kwargs["query"]
+    assert "稳压二极管动态电阻与输出变化量" in service.shortlist_kwargs["query"]
+    assert service.recommend_kwargs["preferred_question_id"] == "q-zener"
+    assert service.recommend_kwargs["agent_analysis"]["tradeoffs"] == ["候选输入增量不同"]
+    assert result["recommendation"]["question_ref"]["question_id"] == "q-zener"
+
+
+def test_recommend_agent_keeps_closest_candidate_when_rerank_stays_incomplete():
+    class IncompleteLLM:
+        model = "incomplete-recommender"
+
+        async def chat(self, messages, **_kwargs):
+            if "理解学生真正想练什么" in messages[0]["content"]:
+                return (
+                    '{"intent_summary":"继续练习当前题的方法",'
+                    '"knowledge_points":["稳压二极管"],"components":["稳压二极管"],'
+                    '"methods":["分压分析"],"tasks":["输出变化量计算"]}'
+                )
+            return '{}'
+
+    class FallbackService:
+        def __init__(self):
+            self.recommend_kwargs = None
+
+        def shortlist(self, **_kwargs):
+            return [{
+                "question_id": "q-closest",
+                "prompt": "分析稳压电路的输出变化。",
+            }]
+
+        def recommend(self, **kwargs):
+            self.recommend_kwargs = kwargs
+            return {
+                "question_ref": {
+                    "kind": "question_bank",
+                    "question_bank_id": "book",
+                    "question_id": "q-closest",
+                },
+                "selection_method": "deterministic_fallback",
+            }
+
+    engine = object.__new__(CircuitTutorEngine)
+    service = FallbackService()
+    engine.recommendation_service = service
+    result = asyncio.run(engine._run_recommend_agent({
+        "message": "按这里面的内容从题库找一道",
+        "student_id": "student-fallback",
+        "history": [],
+        "llm": IncompleteLLM(),
+        "conversation_context": "当前讨论稳压二极管动态电阻。",
+        "attachment_context": "稳压管输入变化与输出变化量分析题。",
+    }))
+
+    assert service.recommend_kwargs is not None
+    assert service.recommend_kwargs["preferred_question_id"] == ""
+    assert "重排依据不完整" in service.recommend_kwargs["agent_analysis"]["tradeoffs"][0]
+    assert result["recommendation"]["question_ref"]["question_id"] == "q-closest"
 
 
 def test_recommend_again_excludes_current_bound_question_from_agent_candidates():
