@@ -50,6 +50,33 @@ def explicitly_requests_question_bank_retrieval(message: str) -> bool:
     )
 
 
+def explicitly_requests_current_question_knowledge(message: str) -> bool:
+    """Detect an explicit request to analyze the currently referenced question.
+
+    Semantic interpretation remains model-led.  This narrow check only prevents
+    an explicit deictic reference such as "这道题" from being discarded as a
+    global course-overview request.
+    """
+    normalized = re.sub(r"\s+", "", str(message))
+    question_references = (
+        "这道题", "这个题", "这题", "本题", "当前题", "该题",
+        "上面的题", "上面这道题", "上述题目",
+    )
+    knowledge_requests = (
+        "知识点", "考察什么", "考查什么", "考什么", "重点", "难点",
+        "涉及什么", "用到什么", "主要内容", "学习什么",
+        "包含什么知识", "包含哪些知识", "有什么知识",
+    )
+    multi_question_references = (
+        "这两题", "两道题", "这些题", "几道题", "上一题", "前面第", "第几题",
+    )
+    return (
+        any(marker in normalized for marker in question_references)
+        and any(marker in normalized for marker in knowledge_requests)
+        and not any(marker in normalized for marker in multi_question_references)
+    )
+
+
 def estimate_tokens(text: str) -> int:
     """Conservatively estimate mixed Chinese/ASCII prompt tokens."""
     if not text:
@@ -422,6 +449,8 @@ async def resolve_semantic_request(
         '"confidence":0.0,"needs_clarification":false,"reason":"简短理由"}。'
         "规则：课程范围内的概念、原理、应用问题使用 knowledge_query；完全不属于当前课程的通用问题使用 general_answer。"
         "二者若不依赖某题，scope=global 或 none，不得强绑当前题；"
+        "询问‘这道题/本题/上面的题考什么、包含哪些知识点、什么最重要’时，仍使用 knowledge_query，"
+        "但 scope 必须为 current 并选择当前焦点；这是分析指定题目，不是概括整门课程。"
         "总结/比较多道题时选择所有相关 ID；要求解释某题答案的某一步时 operation=explain_answer 并填写 target_step；"
         "同类生成、从题库检索相似题、查询题库数量/范围等元数据必须区分；"
         "只要学生明确说从/去/在题库中推荐、检索、查找或选择题目，就必须使用 retrieve_similar，"
@@ -458,6 +487,12 @@ async def resolve_semantic_request(
     scope = str(value.get("scope", "ambiguous")).strip()
     if operation not in _SEMANTIC_OPERATIONS:
         operation = "unknown"
+    if active_id and explicitly_requests_current_question_knowledge(message):
+        operation = "knowledge_query"
+        scope = "current"
+        value["target_focus_ids"] = [active_id]
+        value["needs_clarification"] = False
+        value["reason"] = "学生明确询问当前题目的考点与知识点；已保持当前题目焦点"
     if operation == "generate_similar" and explicitly_requests_question_bank_retrieval(message):
         operation = "retrieve_similar"
         value["reason"] = (

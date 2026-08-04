@@ -31,6 +31,7 @@ from langgraph.graph import END, StateGraph
 
 from backend.app.agents.context import (
     ConversationContextBuilder,
+    explicitly_requests_current_question_knowledge,
     explicitly_requests_question_bank_retrieval,
 )
 from backend.app.config import settings
@@ -2009,6 +2010,9 @@ class CircuitTutorEngine:
         fallback_task = (
             "conversation_meta"
             if _is_conversation_meta_question(state.get("message", ""))
+            else "question_knowledge"
+            if state.get("conversation_focus")
+            and explicitly_requests_current_question_knowledge(state.get("message", ""))
             else "explain_bound_answer"
             if state.get("reference_answer")
             and _is_answer_explanation_request(state.get("message", ""))
@@ -2027,13 +2031,14 @@ class CircuitTutorEngine:
             "你是教学系统的主 Agent。一级路由已经确定为答疑；现在请结合绑定题目、已有答案和会话上下文，"
             "判断学生真正需要哪一种答疑任务。不要只按关键词匹配，也不要执行解题。"
             "只输出合法 JSON："
-            '{"answer_task":"solve_question|explain_bound_answer|verify_bound_answer|clarify_question|annotation_followup|conversation_meta|knowledge_query|summarize_questions|compare_questions|general_answer",'
+            '{"answer_task":"solve_question|explain_bound_answer|verify_bound_answer|clarify_question|annotation_followup|conversation_meta|question_knowledge|knowledge_query|summarize_questions|compare_questions|general_answer",'
             '"reason":"基于上下文的简短理由"}。'
             "solve_question=要求重新求解当前题目；explain_bound_answer=看不懂已有答案、追问公式或步骤；"
             "verify_bound_answer=质疑、核对或纠正已有答案；clarify_question=询问题意、图像、符号或条件；"
             "annotation_followup=学生选中了回答中的局部文字并针对该处追问；"
             "conversation_meta=询问上一题是什么、两道题的联系/区别等会话与题目元信息，不要求解题；"
-            "knowledge_query=询问概念、知识点、原理或应用，不要求求解当前题；"
+            "question_knowledge=询问当前绑定题目考什么、包含哪些知识点或哪些内容重要；"
+            "knowledge_query=不依赖当前题目的课程概念、原理或应用问答；"
             "summarize_questions=总结一道或多道题的知识、方法和易错点；"
             "compare_questions=比较多道题的知识、结构或方法；"
             "general_answer=与当前绑定题目无关的一般知识问答。"
@@ -2059,12 +2064,19 @@ class CircuitTutorEngine:
                 "clarify_question",
                 "annotation_followup",
                 "conversation_meta",
+                "question_knowledge",
                 "knowledge_query",
                 "summarize_questions",
                 "compare_questions",
                 "general_answer",
             }
             if task in allowed:
+                if (
+                    task == "knowledge_query"
+                    and state.get("conversation_focus")
+                    and explicitly_requests_current_question_knowledge(state.get("message", ""))
+                ):
+                    task = "question_knowledge"
                 if task == "explain_bound_answer" and not state.get("reference_answer"):
                     task = "clarify_question"
                 reason = str(result.get("reason", "主 Agent 结合当前题目与历史完成语义判断"))[:160]
@@ -2091,6 +2103,16 @@ class CircuitTutorEngine:
             operation = str(semantic.get("operation", "unknown"))
             reason = str(semantic.get("reason", "主 Agent 已完成语义任务解析"))[:160]
             if (
+                state.get("conversation_focus")
+                and explicitly_requests_current_question_knowledge(state.get("message", ""))
+            ):
+                operation = "knowledge_query"
+                semantic["scope"] = "current"
+                focus_id = str(state.get("conversation_focus", {}).get("id", ""))
+                semantic["target_focus_ids"] = [focus_id] if focus_id else []
+                semantic["needs_clarification"] = False
+                reason = "学生明确询问当前题目的考点与知识点；禁止改写为整门课程概览"
+            if (
                 operation == "generate_similar"
                 and explicitly_requests_question_bank_retrieval(state.get("message", ""))
             ):
@@ -2115,6 +2137,10 @@ class CircuitTutorEngine:
             }
             if operation in semantic_routes:
                 intent, answer_task = semantic_routes[operation]
+                if operation == "knowledge_query" and str(semantic.get("scope", "")) in {
+                    "current", "specific",
+                }:
+                    answer_task = "question_knowledge"
                 if operation in {"solve", "explain_answer", "verify_answer"}:
                     # Solution review is destructive to a knowledge-overview
                     # response: a false positive can replace a useful answer
@@ -2170,7 +2196,7 @@ class CircuitTutorEngine:
         router_prompt = (
             "你是学生学习请求的主 Agent。只输出合法 JSON："
             "{\"intent\":\"answer|quiz|plan|recommend\","
-            "\"answer_task\":\"solve_question|explain_bound_answer|verify_bound_answer|clarify_question|annotation_followup|conversation_meta|knowledge_query|summarize_questions|compare_questions|general_answer\","
+            "\"answer_task\":\"solve_question|explain_bound_answer|verify_bound_answer|clarify_question|annotation_followup|conversation_meta|question_knowledge|knowledge_query|summarize_questions|compare_questions|general_answer\","
             "\"reason\":\"简短理由\"}。"
             "answer=概念解释、解题、追问；quiz=要求生成练习题或同类题；"
             "recommend=明确要求从现有题库检索或推荐一道原书题；"
@@ -2193,9 +2219,16 @@ class CircuitTutorEngine:
                 candidate_task = str(routed_result.get("answer_task", "")).strip()
                 if routed == "answer" and candidate_task in {
                     "solve_question", "verify_bound_answer", "clarify_question", "annotation_followup",
-                    "conversation_meta", "knowledge_query", "summarize_questions", "compare_questions",
+                    "conversation_meta", "question_knowledge", "knowledge_query",
+                    "summarize_questions", "compare_questions",
                 }:
                     answer_task = candidate_task
+                    if (
+                        answer_task == "knowledge_query"
+                        and state.get("conversation_focus")
+                        and explicitly_requests_current_question_knowledge(state.get("message", ""))
+                    ):
+                        answer_task = "question_knowledge"
                 elif routed == "answer" and candidate_task == "general_answer":
                     answer_task = "general_answer"
                 elif (
@@ -2266,7 +2299,10 @@ class CircuitTutorEngine:
                 "bound_question_and_reference_answer"
                 if answer_task in {"explain_bound_answer", "verify_bound_answer"}
                 else "bound_question"
-                if answer_task in {"solve_question", "clarify_question", "annotation_followup", "conversation_meta"}
+                if answer_task in {
+                    "solve_question", "clarify_question", "annotation_followup",
+                    "conversation_meta", "question_knowledge",
+                }
                 else "selected_questions_and_global_summary"
                 if answer_task in {"summarize_questions", "compare_questions"}
                 else "global_knowledge_without_forced_focus"
@@ -2994,8 +3030,20 @@ class CircuitTutorEngine:
                 "不得输出解题步骤或最终数值答案。只依据提供的焦点链和近期对话；若不足以识别两道题，"
                 "明确说还缺哪一道题的信息，不得猜测。回答简洁，使用自然中文，不需要课程资料引用。"
             )
+        question_knowledge = state.get("answer_task") == "question_knowledge"
         knowledge_query = state.get("answer_task") == "knowledge_query"
-        if knowledge_query:
+        if question_knowledge:
+            system = (
+                "你是题库题目知识点分析助教。本轮分析对象只能是服务器绑定的当前原题，题库参考答案用于确认"
+                "这道题实际采用的模型、公式、判断规则和结论边界。先用一句话说明题目真正考查什么，再列出"
+                "3—6个知识点；每个知识点都必须指出它对应题干、题图或参考答案中的哪一项，以及为什么对本题重要。"
+                "‘重要’只表示对这道题的重要程度，不得扩写为整门课程的知识体系、后续章节或工程应用。"
+                "不得改变题图拓扑、器件极性、符号含义、给定参数或参考答案结论；不得另起解法、重新猜题或"
+                "主动纠正参考答案。只有学生明确要求核对或纠错时，才进入核验任务。若现有题图或答案不足以"
+                "确认某个知识点，明确说明缺少什么，不得补造。课程检索资料只能解释参考答案已经使用的概念，"
+                "不能引入与本题无关的器件、放大电路或章节。回答使用自然中文，正文通常控制在500—800字。"
+            )
+        elif knowledge_query:
             system = (
                 "你是大学电路课程知识答疑助教。本轮先回答学生实际提出的概念、原理、应用或知识点问题，"
                 "不要因为会话里存在一道当前题就擅自把问题改写成解题。只有主 Agent 的语义任务明确选择了某题时，"
@@ -3054,6 +3102,10 @@ class CircuitTutorEngine:
         if explain_bound_answer and reference_payload:
             system += (
                 " 本轮不是重新猜答案，而是解释当前绑定原题的既有参考答案。"
+                "原题与题库参考答案是本轮的权威边界：其中的电路拓扑、器件极性、符号、公式、数值和最终结论"
+                "不得擅自改写。只补充理解参考答案所必需的定义、公式来源和被省略的中间等式；不得增加另一套解法、"
+                "竞争性假设、课程大纲、工程评价、延伸应用或答案没有使用的知识。检索资料只能解释答案中已经出现的"
+                "概念，任何无直接对应关系的资料不得引用。"
                 "必须同时依据服务器提供的原题和参考答案，先指出参考答案最终在说什么，再逐项解释符号、公式来源、"
                 "中间省略步骤及其与原题条件的对应关系；参考答案只有结论时，应补出学生能跟随的推导。"
                 "不得只复述答案原文。除非学生明确要求核验或纠错，否则不得另起一套独立解法、改变题图极性或拓扑、"
@@ -3064,6 +3116,8 @@ class CircuitTutorEngine:
                 "②题目中的哪些条件决定该结论；③用到的课程知识、公式或判断规则；"
                 "④中间推导或代入过程；⑤如何快速自检。不能用一两句话结束。"
                 "检索到的课程资料用于解释知识依据并按[资料n]标注；即使没有有效资料，也要明确说明后再用基础知识展开，不能退化为复述答案。"
+                "所谓基础知识展开也只能服务于参考答案已有步骤，不得产生新的题目解释或新结论。正文通常控制在"
+                "600—1000字；能够用一个等式说明的内容不得重复改写。"
             )
         if state.get("scene") == "image_answer":
             system += (
@@ -3088,6 +3142,16 @@ class CircuitTutorEngine:
             f"证据准入报告：\n{json.dumps(evidence_scope, ensure_ascii=False)}\n\n"
             f"课程资料：\n{context or '未检索到资料'}"
         )
+        if question_knowledge:
+            question_reference = state.get("reference_answer", {})
+            user += (
+                "\n\n本轮必须分析的当前原题：\n"
+                f"{state.get('attachment_context') or json.dumps(state.get('conversation_focus', {}), ensure_ascii=False) or '原题正文缺失'}"
+                "\n\n题库参考答案（仅用于确认本题实际考点，不得脱离它自由扩写）：\n"
+                f"{json.dumps(question_reference, ensure_ascii=False)[:5000] if question_reference else '题库未提供参考答案'}"
+                "\n\n学生的问题：\n"
+                f"{state.get('message', '')}"
+            )
         if conversation_meta:
             user = (
                 f"题目焦点链与近期对话：\n{state.get('conversation_context', '')}\n\n"
@@ -3124,11 +3188,16 @@ class CircuitTutorEngine:
             f"图片{index}：学生上传的题目/电路图片"
             for index in range(1, len(attachment_images) + 1)
         ]
-        if explain_bound_answer:
+        if explain_bound_answer or question_knowledge:
             for reference_image in state.get("reference_images", []):
                 images.append(reference_image)
                 image_labels.append(
-                    f"图片{len(images)}：原书参考答案图片，仅用于解释当前题目的既有答案"
+                    f"图片{len(images)}：原书参考答案图片，"
+                    + (
+                        "仅用于解释当前题目的既有答案"
+                        if explain_bound_answer
+                        else "仅用于确认当前题目的实际考点"
+                    )
                 )
         retriever = self.knowledge_bases.get(state.get("knowledge_base", "default"))
         reference_count = 0
@@ -3239,7 +3308,8 @@ class CircuitTutorEngine:
         focus_kind = str(focus.get("kind", "")) if isinstance(focus, dict) else ""
         question_type = str(blueprint.get("question_type", "")).lower() if isinstance(blueprint, dict) else ""
         knowledge_overview = state.get("answer_task") in {
-            "knowledge_query", "summarize_questions", "compare_questions", "general_answer",
+            "question_knowledge", "knowledge_query", "summarize_questions",
+            "compare_questions", "general_answer",
         }
         focus_requires_review = focus_kind in {
             "generated_practice", "recommended_question", "question_bank"
@@ -3307,7 +3377,9 @@ class CircuitTutorEngine:
                 "正在整理多题知识与方法"
                 if state.get("answer_task") in {"summarize_questions", "compare_questions"}
                 else "正在组织知识说明"
-                if state.get("answer_task") in {"knowledge_query", "general_answer"}
+                if state.get("answer_task") in {
+                    "question_knowledge", "knowledge_query", "general_answer",
+                }
                 else "正在说明题意与条件"
                 if state.get("answer_task") == "clarify_question"
                 else "正在生成分步解答"
@@ -3452,7 +3524,9 @@ class CircuitTutorEngine:
             (
                 "本轮任务是解释题库已有参考答案，不是独立重做或核验参考答案。"
                 "必须检查讲解是否忠实对应参考答案的结论、公式和步骤；不得改换题图极性、连接关系或另列竞争性解法，"
-                "不得把被推翻的尝试写入 corrected_answer。只有学生明确要求核验时才允许质疑参考答案。\n"
+                "不得把被推翻的尝试写入 corrected_answer。还必须拒绝答案没有使用的课程扩展、工程评价、无关章节引用、"
+                "重复推导，以及把精确结果擅自改成另一近似结果。corrected_answer 只能删去越界内容并把必要的中间步骤"
+                "改写得更清楚，不能增加新结论。只有学生明确要求核验时才允许质疑参考答案。\n"
                 if state.get("answer_task") == "explain_bound_answer" else ""
             )
             +

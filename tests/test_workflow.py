@@ -128,7 +128,7 @@ def test_bound_question_knowledge_overview_skips_solution_review():
     result = asyncio.run(engine._answer_llm({
         "message": "这道题包含哪些知识？",
         "scene": "chat",
-        "answer_task": "general_answer",
+        "answer_task": "question_knowledge",
         "conversation_focus": {"kind": "question_bank"},
         "attachment_blueprint": {
             "question_type": "calculation",
@@ -158,7 +158,7 @@ def test_image_question_knowledge_overview_can_never_enter_solution_review():
     result = asyncio.run(engine._answer_llm({
         "message": "这个题包含什么知识？",
         "scene": "image_answer",
-        "answer_task": "knowledge_query",
+        "answer_task": "question_knowledge",
         "conversation_focus": {"kind": "question_bank"},
         "attachment_blueprint": {
             "question_type": "calculation",
@@ -232,8 +232,34 @@ def test_solution_route_requires_independent_semantic_confirmation():
         "llm": SafetyClassifier(),
     }))
 
-    assert routed["answer_task"] == "knowledge_query"
+    assert routed["answer_task"] == "question_knowledge"
     assert routed["supervisor_decision"]["requires_validation"] is False
+
+
+def test_current_question_knowledge_cannot_route_to_global_course_overview():
+    engine = object.__new__(CircuitTutorEngine)
+    semantic = {
+        "source": "model",
+        "operation": "knowledge_query",
+        "scope": "global",
+        "target_focus_ids": [],
+        "reason": "误判为课程知识概览",
+    }
+    routed = asyncio.run(engine._supervise({
+        "message": "这道题有什么知识点？什么比较重要？",
+        "semantic_request": semantic,
+        "conversation_focus": {
+            "id": "focus-zener",
+            "kind": "question_bank",
+            "summary": "稳压二极管动态电阻题",
+        },
+    }))
+
+    assert routed["answer_task"] == "question_knowledge"
+    assert routed["supervisor_decision"]["context_policy"] == "bound_question"
+    assert semantic["scope"] == "current"
+    assert semantic["target_focus_ids"] == ["focus-zener"]
+    assert "整门课程概览" in routed["supervisor_decision"]["reason"]
 
 
 def test_general_answer_skips_course_retrieval_and_bound_question():
@@ -1159,11 +1185,59 @@ def test_answer_explanation_prompt_contains_bound_question_and_reference(tmp_pat
     user_message = result["answer_messages"][1]
     assert "不是重新猜答案" in system_prompt
     assert "不得只复述答案原文" in system_prompt
+    assert "原题与题库参考答案是本轮的权威边界" in system_prompt
+    assert "不得增加另一套解法" in system_prompt
+    assert "无直接对应关系的资料不得引用" in system_prompt
     assert "方波—三角波发生器，求阈值与周期" in user_message["content"]
     assert "阈值为正负 R2/R1·Vz" in user_message["content"]
     assert "参考答案里的阈值公式是怎么来的" in user_message["content"]
     assert user_message["images"] == ["question-image", "answer-image"]
     assert "原书参考答案图片" in user_message["content"]
+
+
+def test_question_knowledge_prompt_is_bounded_by_question_and_reference(tmp_path):
+    class FakeRetriever:
+        index_dir = tmp_path
+
+    class FakeKnowledgeBases:
+        def get(self, _knowledge_base):
+            return FakeRetriever()
+
+    class FakeVisionClient:
+        provider = "qwen"
+        model = "qwen3-vl-flash"
+
+    engine = object.__new__(CircuitTutorEngine)
+    engine.knowledge_bases = FakeKnowledgeBases()
+    result = asyncio.run(engine._compose_answer_prompt({
+        "message": "这道题有什么知识点？什么比较重要？",
+        "answer_task": "question_knowledge",
+        "semantic_request": {"operation": "knowledge_query", "scope": "current"},
+        "rewritten_query": "模拟电子技术 稳压二极管动态电阻",
+        "knowledge_base": "default",
+        "conversation_context": "当前焦点是题库例1.3.3",
+        "conversation_focus": {"id": "focus-zener", "kind": "question_bank"},
+        "attachment_context": "V1 经 1kΩ 电阻连接稳压管，Vz=4V，rz=50Ω。",
+        "structured_question": {"prompt": "求输入变化时的输出电压变化"},
+        "reference_answer": {
+            "answer": "ΔVo=rz/(R+rz)·ΔV1，故 Vo≈4.02V",
+        },
+        "question_images": ["question-image"],
+        "reference_images": ["answer-image"],
+        "hits": [],
+        "evidence_scope": {},
+        "llm": FakeVisionClient(),
+    }))
+
+    system_prompt = result["answer_messages"][0]["content"]
+    user_message = result["answer_messages"][1]
+    assert "只能是服务器绑定的当前原题" in system_prompt
+    assert "不得扩写为整门课程" in system_prompt
+    assert "不得改变题图拓扑、器件极性" in system_prompt
+    assert "V1 经 1kΩ 电阻连接稳压管" in user_message["content"]
+    assert "ΔVo=rz/(R+rz)·ΔV1" in user_message["content"]
+    assert user_message["images"] == ["question-image", "answer-image"]
+    assert "仅用于确认当前题目的实际考点" in user_message["content"]
 
 
 def test_annotation_prompt_keeps_marked_scope_and_original_question(tmp_path):

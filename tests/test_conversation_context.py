@@ -188,6 +188,32 @@ def test_model_can_unbind_current_question_for_general_knowledge():
     assert result["target_focus_ids"] == []
 
 
+def test_explicit_current_question_knowledge_cannot_become_course_overview():
+    focus = {
+        "id": "current-question-1",
+        "kind": "question_bank",
+        "label": "例1.3.3",
+        "summary": "稳压二极管动态电阻题",
+    }
+    client = _SemanticFocusClient(
+        '{"operation":"knowledge_query","scope":"global","target_focus_ids":[],'
+        '"target_step":"","confidence":0.9,"needs_clarification":false,'
+        '"reason":"误判为整门课程知识概览"}'
+    )
+    result = asyncio.run(resolve_semantic_request(
+        message="这道题有什么知识点？什么比较重要？",
+        mode="answer",
+        active_focus=focus,
+        focus_catalog=build_focus_catalog([focus]),
+        client=client,
+    ))
+
+    assert result["operation"] == "knowledge_query"
+    assert result["scope"] == "current"
+    assert result["target_focus_ids"] == ["current-question-1"]
+    assert "当前题目" in result["reason"]
+
+
 def test_explicit_question_bank_recommendation_overrides_model_generation_error():
     focus = {
         "id": "bank-focus-1",
