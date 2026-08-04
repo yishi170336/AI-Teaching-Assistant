@@ -2004,7 +2004,7 @@ class CircuitTutorEngine:
         ):
             return (
                 "explain_bound_answer",
-                "学生明确要求解释当前题库题的已有参考答案，按原题和参考答案讲解而不重新猜解",
+                "学生明确要求解释当前题库题的已有参考答案，需要结合原题进一步解释，按原题和参考答案讲解而不重新猜解",
             )
         client = state.get("llm") or getattr(self, "ollama", None)
         fallback_task = (
