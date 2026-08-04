@@ -56,4 +56,15 @@ assert.equal(
   true,
 )
 
+const tableFormula = normalizeLatex(String.raw`| 知识点 | 依据 | 为何重要 |
+|---|---|---|
+| 直流工作点 | 需用公式：$$ I_D=\frac{1}{2}k_p\left(\frac{W}{L}\right)(V_{GS}-V_{th})^2\left(1+\gamma\sqrt{|V_{SB}|}\right) $$ | 决定后续参数 |`)
+const formulaRow = tableFormula.split('\n').at(-1)
+assert.equal(formulaRow.match(/\|/g)?.length, 4, 'math absolute-value bars must not split GFM table cells')
+assert.equal(formulaRow.includes('$$'), false, 'display math embedded in a table cell must become inline math')
+assert.equal(formulaRow.includes(String.raw`\sqrt{\vert{}V_{SB}\vert{}}`), true)
+for (const inline of [...tableFormula.matchAll(/\$([^$]+)\$/g)].map((match) => match[1])) {
+  katex.renderToString(inline, { strict: false, throwOnError: true })
+}
+
 console.log('LaTeX normalization regression check passed')
