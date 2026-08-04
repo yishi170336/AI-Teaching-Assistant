@@ -2040,6 +2040,30 @@ def test_model_semantic_request_is_primary_for_multi_question_summary():
     assert result["supervisor_decision"]["context_policy"] == "selected_questions_and_global_summary"
 
 
+def test_explicit_question_bank_recommendation_cannot_enter_quiz_generation():
+    engine = object.__new__(CircuitTutorEngine)
+    result = asyncio.run(engine._supervise({
+        "message": "可以根据这个知识去题库里面推荐一道题目吗",
+        "mode": "quiz",
+        "semantic_request": {
+            "source": "model",
+            "operation": "generate_similar",
+            "scope": "current",
+            "target_focus_ids": ["focus-1"],
+            "reason": "误判为同类生成",
+        },
+        "conversation_focus": {
+            "id": "focus-1",
+            "kind": "question_bank",
+            "summary": "理想二极管分段分析",
+        },
+    }))
+
+    assert result["intent"] == "recommend"
+    assert result["supervisor_decision"]["agent"] == "题库推荐 Agent"
+    assert "生成新题与指定来源冲突" in result["supervisor_decision"]["reason"]
+
+
 def test_chat_add_mistake_is_confirmation_action_for_resolved_old_question():
     engine = object.__new__(CircuitTutorEngine)
     routed = asyncio.run(engine._supervise({

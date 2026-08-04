@@ -188,6 +188,32 @@ def test_model_can_unbind_current_question_for_general_knowledge():
     assert result["target_focus_ids"] == []
 
 
+def test_explicit_question_bank_recommendation_overrides_model_generation_error():
+    focus = {
+        "id": "bank-focus-1",
+        "kind": "question_bank",
+        "label": "例1.3.1",
+        "summary": "理想二极管分段分析",
+    }
+    client = _SemanticFocusClient(
+        '{"operation":"generate_similar","scope":"current",'
+        '"target_focus_ids":["bank-focus-1"],"target_step":"",'
+        '"confidence":0.91,"needs_clarification":false,"reason":"误判为生成新题"}'
+    )
+    result = asyncio.run(resolve_semantic_request(
+        message="可以根据这个知识去题库里面推荐一道题目吗",
+        mode="quiz",
+        active_focus=focus,
+        focus_catalog=build_focus_catalog([focus]),
+        client=client,
+    ))
+
+    assert result["operation"] == "retrieve_similar"
+    assert result["scope"] == "current"
+    assert result["target_focus_ids"] == ["bank-focus-1"]
+    assert "现有题库" in result["reason"]
+
+
 def test_general_answer_is_forced_global_even_if_model_reports_current_focus():
     focus = {"id": "e" * 32, "kind": "question", "label": "当前题", "summary": "二极管电阻计算"}
     client = _SemanticFocusClient(

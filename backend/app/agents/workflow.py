@@ -29,7 +29,10 @@ except ImportError:
 
 from langgraph.graph import END, StateGraph
 
-from backend.app.agents.context import ConversationContextBuilder
+from backend.app.agents.context import (
+    ConversationContextBuilder,
+    explicitly_requests_question_bank_retrieval,
+)
 from backend.app.config import settings
 from backend.app.rag.manager import KnowledgeBaseManager
 from backend.app.rag.models import RetrievalHit
@@ -2087,6 +2090,12 @@ class CircuitTutorEngine:
         if isinstance(semantic, dict) and semantic.get("source") == "model":
             operation = str(semantic.get("operation", "unknown"))
             reason = str(semantic.get("reason", "主 Agent 已完成语义任务解析"))[:160]
+            if (
+                operation == "generate_similar"
+                and explicitly_requests_question_bank_retrieval(state.get("message", ""))
+            ):
+                operation = "retrieve_similar"
+                reason = "学生明确要求从现有题库推荐；生成新题与指定来源冲突，已纠正为题库检索"
             if semantic.get("needs_clarification"):
                 return self._supervisor_result("answer", reason, "clarify_focus")
             semantic_routes = {

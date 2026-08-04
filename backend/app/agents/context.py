@@ -42,6 +42,14 @@ _SEMANTIC_OPERATIONS = {
 _SEMANTIC_SCOPES = {"none", "current", "specific", "multiple", "global", "ambiguous"}
 
 
+def explicitly_requests_question_bank_retrieval(message: str) -> bool:
+    """Return whether the student explicitly constrained the source to the bank."""
+    normalized = re.sub(r"\s+", "", str(message))
+    return "题库" in normalized and any(
+        marker in normalized for marker in ("推荐", "检索", "查找", "找一道", "选一道", "挑一道")
+    )
+
+
 def estimate_tokens(text: str) -> int:
     """Conservatively estimate mixed Chinese/ASCII prompt tokens."""
     if not text:
@@ -415,7 +423,12 @@ async def resolve_semantic_request(
         "规则：课程范围内的概念、原理、应用问题使用 knowledge_query；完全不属于当前课程的通用问题使用 general_answer。"
         "二者若不依赖某题，scope=global 或 none，不得强绑当前题；"
         "总结/比较多道题时选择所有相关 ID；要求解释某题答案的某一步时 operation=explain_answer 并填写 target_step；"
-        "同类生成、从题库检索相似题、查询题库数量/范围等元数据必须区分；‘加入错题本’只识别目标，不执行写入；"
+        "同类生成、从题库检索相似题、查询题库数量/范围等元数据必须区分；"
+        "只要学生明确说从/去/在题库中推荐、检索、查找或选择题目，就必须使用 retrieve_similar，"
+        "即使他说了‘根据这个知识’‘类似’‘同类’也不能改成 generate_similar；"
+        "只有明确要求生成、改编、变式或新编一道题时才使用 generate_similar。"
+        "例如‘可以根据这个知识去题库里面推荐一道题目吗’是 retrieve_similar，不是 generate_similar；"
+        "‘根据这道题改编一道新题’才是 generate_similar。‘加入错题本’只识别目标，不执行写入；"
         "无法唯一确定目标时 scope=ambiguous、needs_clarification=true，禁止猜最近题。"
         f"\n前端模式提示（仅作参考）：{mode}"
         f"\n当前焦点 ID：{active_id or '无'}"
@@ -445,6 +458,11 @@ async def resolve_semantic_request(
     scope = str(value.get("scope", "ambiguous")).strip()
     if operation not in _SEMANTIC_OPERATIONS:
         operation = "unknown"
+    if operation == "generate_similar" and explicitly_requests_question_bank_retrieval(message):
+        operation = "retrieve_similar"
+        value["reason"] = (
+            "学生明确限定从现有题库推荐题目；已将生成新题纠正为题库检索"
+        )
     if scope not in _SEMANTIC_SCOPES:
         scope = "ambiguous"
     valid_ids = {str(item.get("id", "")) for item in focus_catalog if item.get("id")}

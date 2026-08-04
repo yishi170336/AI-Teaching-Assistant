@@ -890,7 +890,7 @@ function ChatComposer({
               { label: 'AI 答疑', value: 'answer' },
               { label: '拍照答题', value: 'image_answer' },
               { label: '同类出题', value: 'quiz' },
-              { label: 'AI 出题', value: 'recommend' },
+              { label: '题库荐题', value: 'recommend' },
               { label: '知识讲解', value: 'explain' },
               { label: '学习规划', value: 'plan' },
             ]}
@@ -5226,7 +5226,7 @@ function StudentPageContent() {
             <button className="menu-button" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu size={19} /></button>
             <div>
               <span className="breadcrumb">学生工作台 /</span>
-              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'question-bank' ? '题库' : activeView === 'homework' ? '我的作业' : activeView === 'mistakes' ? '错题本' : activeView === 'schedule' ? '学习日历' : mode === 'recommend' ? 'AI 出题' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'explain' ? '知识讲解' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
+              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'question-bank' ? '题库' : activeView === 'homework' ? '我的作业' : activeView === 'mistakes' ? '错题本' : activeView === 'schedule' ? '学习日历' : mode === 'recommend' ? '题库推荐' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'explain' ? '知识讲解' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
             </div>
           </div>
           <div className="topbar-actions">
