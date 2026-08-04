@@ -4,6 +4,7 @@ from typing import Any
 
 
 QWEN_MODEL_OPTIONS = [
+    {"value": "qwen3.7-flash", "label": "Qwen3.7-Flash ⚡"},
     {"value": "qwen3.7-plus", "label": "Qwen3.7-Plus"},
     {"value": "qwen3.7-max", "label": "Qwen3.7-Max"},
     {"value": "qwen-vl-max", "label": "qwen-vl-max"},
@@ -68,7 +69,11 @@ def choose_default_model(
     qwen_configured: bool,
     deepseek_configured: bool,
 ) -> tuple[str, str]:
-    """Choose an available model without making Ollama a startup dependency."""
+    """Prefer configured cloud models; keep Ollama as an explicit fallback."""
+    if qwen_configured:
+        return "qwen", qwen_model
+    if deepseek_configured:
+        return "deepseek", deepseek_model
     if model_health.get("ok"):
         local_model = (
             ollama_model
@@ -76,10 +81,6 @@ def choose_default_model(
             else next(iter(model_health.get("models", [])), ollama_model)
         )
         return "ollama", local_model
-    if qwen_configured:
-        return "qwen", qwen_model
-    if deepseek_configured:
-        return "deepseek", deepseek_model
-    # No provider is ready yet, but returning a cloud configuration keeps the
-    # UI usable so the student can enter a key instead of failing at startup.
+    # No provider is ready yet. Return Qwen so the UI asks for a key instead of
+    # silently attempting a local Ollama connection.
     return "qwen", qwen_model

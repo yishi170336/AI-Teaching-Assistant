@@ -1,5 +1,6 @@
 import asyncio
 
+from backend.app.config import settings
 from backend.app.services.memory import ConversationMemory
 
 
@@ -156,3 +157,90 @@ def test_redis_summary_round_trip_and_delete(tmp_path):
     assert restored["summary"] == "Redis 摘要"
     assert deleted is True
     assert after_delete == {}
+
+
+def test_redis_session_listing_skips_summary_and_focus_registry_keys(tmp_path):
+    class FakeRedis:
+        def __init__(self):
+            self.base_key = "circuit-tutor:session:redis-session"
+            self.list_reads = []
+
+        async def scan_iter(self, **_kwargs):
+            for key in (
+                self.base_key,
+                self.base_key + ":summary",
+                self.base_key + ":focuses",
+            ):
+                yield key
+
+        async def lrange(self, key, _start, _end):
+            self.list_reads.append(key)
+            if key != self.base_key:
+                raise AssertionError("metadata key must not be read as a Redis list")
+            return [
+                '{"role":"user","content":"题目历史","created_at":"2026-01-01T00:00:00+00:00"}'
+            ]
+
+    async def scenario():
+        memory = ConversationMemory(storage_dir=tmp_path)
+        memory.backend = "redis"
+        fake = FakeRedis()
+        memory._redis = fake
+        return await memory.list_sessions(), fake.list_reads
+
+    sessions, list_reads = asyncio.run(scenario())
+    assert [item["session_id"] for item in sessions] == ["redis-session"]
+    assert list_reads == ["circuit-tutor:session:redis-session"]
+
+
+def test_focus_registry_keeps_exact_old_question_after_chat_trimming(tmp_path):
+    previous_limit = settings.session_history_messages
+    object.__setattr__(settings, "session_history_messages", 4)
+
+    async def scenario():
+        memory = ConversationMemory(storage_dir=tmp_path)
+        memory.backend = "local-persistent"
+        focus = {
+            "id": "focus-second",
+            "kind": "generated_practice",
+            "label": "第二道题",
+            "summary": "分析滞回比较器的上下门限",
+            "question_snapshot": {
+                "question": "求滞回比较器的上下门限。",
+                "answer": "上门限为 3 V，下门限为 -3 V。",
+                "solution_steps": ["先写正反馈分压", "再分别代入饱和电压"],
+            },
+            "assistant_answer": "第三步是把正、负饱和电压分别代入门限公式。",
+        }
+        await memory.append(
+            "long-session",
+            "assistant",
+            "第二题解答",
+            {"conversation_focus": focus},
+        )
+        for index in range(8):
+            await memory.append("long-session", "user", f"无关后续消息 {index}")
+
+        restarted = ConversationMemory(storage_dir=tmp_path)
+        restarted.backend = "local-persistent"
+        trimmed_history = await restarted.history("long-session")
+        retained_focuses = await restarted.focus_history("long-session")
+
+        # A later user turn may carry a public focus without the private answer.
+        await restarted.append(
+            "long-session",
+            "user",
+            "把第二题加入错题本",
+            {"conversation_focus": {key: value for key, value in focus.items() if key != "assistant_answer"}},
+        )
+        merged_focuses = await restarted.focus_history("long-session")
+        return trimmed_history, retained_focuses, merged_focuses
+
+    try:
+        trimmed, retained, merged = asyncio.run(scenario())
+    finally:
+        object.__setattr__(settings, "session_history_messages", previous_limit)
+    assert all(item.get("conversation_focus", {}).get("id") != "focus-second" for item in trimmed)
+    assert retained[0]["conversation_focus"]["question_snapshot"]["question"].startswith("求滞回比较器")
+    assert retained[0]["conversation_focus"]["assistant_answer"].startswith("第三步")
+    assert merged[0]["conversation_focus"]["assistant_answer"].startswith("第三步")

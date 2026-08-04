@@ -32,8 +32,8 @@ class ChatRequest(BaseModel):
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     question_ref: QuestionReference | None = None
     focus_id: str = Field(default="", max_length=32)
-    model_provider: Literal["ollama", "deepseek", "qwen", "custom"] = "ollama"
-    model: str = Field(default="qwen3.5:2b", min_length=1, max_length=128)
+    model_provider: Literal["ollama", "deepseek", "qwen", "custom"] = "qwen"
+    model: str = Field(default="qwen3.7-plus", min_length=1, max_length=128)
     api_key: str = Field(default="", max_length=512)
     base_url: str = Field(default="", max_length=512)
     vision_model: str = Field(default="", max_length=128)

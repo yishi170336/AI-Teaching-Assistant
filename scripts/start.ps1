@@ -21,7 +21,19 @@ finally {
 }
 
 Write-Host 'CircuitMind: http://127.0.0.1:8000/student'
-& conda run -n llm python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+$preferredPython = 'E:\pytorch\python.exe'
+$python = if ($env:CIRCUITMIND_PYTHON) {
+    $env:CIRCUITMIND_PYTHON
+}
+elseif (Test-Path -LiteralPath $preferredPython) {
+    $preferredPython
+}
+else {
+    (Get-Command python -ErrorAction Stop).Source
+}
+
+Write-Host "Using Python: $python"
+& $python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

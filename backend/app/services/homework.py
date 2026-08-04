@@ -31,18 +31,6 @@ ANSWER_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 HOMEWORK_ID_PATTERN = re.compile(r"[a-f0-9]{32}")
 ASSET_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,160}")
 STUDENT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,96}")
-QUESTION_KNOWLEDGE_CANDIDATES = (
-    "PN结", "二极管", "稳压二极管", "晶体管", "三极管", "场效应管",
-    "静态工作点", "共射放大电路", "共集放大电路", "共基放大电路",
-    "差分放大电路", "集成运算放大器", "反馈", "负反馈", "正反馈", "深度负反馈",
-    "虚短", "虚断", "相量", "复阻抗", "功率因数", "有功功率", "无功功率",
-    "RLC", "谐振", "KCL", "KVL", "基尔霍夫电流定律", "基尔霍夫电压定律",
-    "戴维南定理", "诺顿定理", "叠加定理", "节点电压法", "网孔电流法",
-    "一阶电路", "二阶电路", "零输入响应", "零状态响应", "正弦稳态",
-    "滤波器", "振荡电路", "功率放大电路", "直流稳压电源",
-)
-
-
 class QuestionBankProcessingCancelled(BaseException):
     """Cooperative cancellation that must bypass broad extraction fallbacks."""
 
@@ -164,13 +152,16 @@ def _question_knowledge_text(question: dict[str, Any]) -> str:
 
 
 def _fallback_question_knowledge_points(question: dict[str, Any]) -> list[str]:
-    content = _question_knowledge_text(question).casefold()
-    matched = [
-        point
-        for point in QUESTION_KNOWLEDGE_CANDIDATES
-        if point.casefold() in content
-    ]
-    return list(dict.fromkeys(matched))[:8] or ["电路基础"]
+    """Reuse structured evidence only; do not guess from a fixed vocabulary."""
+    profile = question.get("retrieval_profile")
+    profile = profile if isinstance(profile, dict) else {}
+    points = question.get("knowledge_points") or profile.get("knowledge_points") or []
+    result = [str(point).strip() for point in points if str(point).strip()]
+    if not result:
+        for tag in question.get("knowledge_tags", []):
+            if isinstance(tag, dict) and str(tag.get("tag_name", "")).strip():
+                result.append(str(tag["tag_name"]).strip())
+    return list(dict.fromkeys(result))[:8]
 
 
 def _unmatched_knowledge_alignment(points: list[str]) -> dict[str, Any]:
@@ -201,6 +192,9 @@ def _unmatched_knowledge_alignment(points: list[str]) -> dict[str, Any]:
 def _extract_question_knowledge_points(
     client: QwenVisionClient | Any,
     questions: list[dict[str, Any]],
+    *,
+    knowledge_base: str = "default",
+    semantic_inferer: Callable[[str, str], list[str]] | None = None,
 ) -> tuple[dict[str, list[str]], list[str]]:
     """Extract concise concepts in batches; failures remain local to each batch."""
     extracted: dict[str, list[str]] = {}
@@ -256,9 +250,22 @@ def _extract_question_knowledge_points(
 
     for question in questions:
         question_id = str(question.get("id", ""))
+        fallback_points = _fallback_question_knowledge_points(question)
+        if not fallback_points and semantic_inferer is not None:
+            try:
+                fallback_points = semantic_inferer(
+                    knowledge_base,
+                    _question_knowledge_text(question),
+                )
+            except Exception:
+                logger.warning(
+                    "Question-bank semantic knowledge inference failed for %s",
+                    question_id,
+                    exc_info=True,
+                )
         extracted.setdefault(
             question_id,
-            _fallback_question_knowledge_points(question),
+            fallback_points,
         )
     return extracted, warnings
 
@@ -1194,6 +1201,7 @@ class HomeworkStore:
     def backfill_question_bank_knowledge(
         self,
         knowledge_aligner: Callable[[str, list[str]], dict[str, Any]],
+        semantic_inferer: Callable[[str, str], list[str]] | None = None,
     ) -> bool:
         """Add graph metadata to ready banks created before knowledge tagging existed."""
         with self._lock:
@@ -1220,6 +1228,18 @@ class HomeworkStore:
         metadata: dict[tuple[str, str], dict[str, Any]] = {}
         for bank_id, knowledge_base, question in pending:
             points = _fallback_question_knowledge_points(question)
+            if not points and semantic_inferer is not None:
+                try:
+                    points = semantic_inferer(
+                        knowledge_base,
+                        _question_knowledge_text(question),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Legacy question-bank semantic inference failed for %s",
+                        question.get("id"),
+                        exc_info=True,
+                    )
             try:
                 alignment = knowledge_aligner(knowledge_base, points)
             except Exception:
@@ -4645,6 +4665,7 @@ def process_homework(
     client: QwenVisionClient | Any | None = None,
     layout_adapter: PDFExtractKitAdapter | Any | None = None,
     knowledge_aligner: Callable[[str, list[str]], dict[str, Any]] | None = None,
+    semantic_knowledge_inferer: Callable[[str, str], list[str]] | None = None,
     _record_kind: str = "homework",
     cancel_requested: Callable[[], bool] | None = None,
 ) -> None:
@@ -5013,6 +5034,8 @@ def process_homework(
             points_by_id, knowledge_warnings = _extract_question_knowledge_points(
                 client,
                 questions,
+                knowledge_base=str(raw.get("knowledge_base") or "default"),
+                semantic_inferer=semantic_knowledge_inferer,
             )
             warnings.extend(knowledge_warnings)
             _apply_question_knowledge_alignment(
@@ -5087,6 +5110,7 @@ def process_question_bank(
     client: QwenVisionClient | Any | None = None,
     layout_adapter: PDFExtractKitAdapter | Any | None = None,
     knowledge_aligner: Callable[[str, list[str]], dict[str, Any]] | None = None,
+    semantic_knowledge_inferer: Callable[[str, str], list[str]] | None = None,
     cancel_requested: Callable[[], bool] | None = None,
 ) -> None:
     process_homework(
@@ -5095,6 +5119,7 @@ def process_question_bank(
         client=client,
         layout_adapter=layout_adapter,
         knowledge_aligner=knowledge_aligner,
+        semantic_knowledge_inferer=semantic_knowledge_inferer,
         _record_kind="question_bank",
         cancel_requested=cancel_requested,
     )

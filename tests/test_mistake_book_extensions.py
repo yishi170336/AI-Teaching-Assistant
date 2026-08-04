@@ -322,6 +322,39 @@ def test_graph_failure_is_a_non_blocking_unmatched_fallback():
     assert result["prerequisites"] == []
 
 
+def test_semantic_mistake_fallback_uses_retrieval_tags_not_a_fixed_term_list():
+    class SemanticRetriever:
+        chunks = []
+
+        def search(self, query, *_args):
+            assert "方波三角波发生器" in query
+            return [
+                SimpleNamespace(
+                    chunk=SimpleNamespace(
+                        knowledge_tags=["滞回比较器", "积分器", "方波-三角波发生器"]
+                    ),
+                    score=0.91,
+                    rerank_score=0.94,
+                ),
+                SimpleNamespace(
+                    chunk=SimpleNamespace(knowledge_tags=["滞回比较器", "正反馈"]),
+                    score=0.77,
+                    rerank_score=0.81,
+                ),
+            ]
+
+    class SemanticKnowledgeBases:
+        def get(self, _knowledge_base):
+            return SemanticRetriever()
+
+    inferred = MistakeKnowledgeService(SemanticKnowledgeBases()).infer_points(
+        "default", "分析方波三角波发生器中滞回比较器的作用"
+    )
+    assert inferred[:2] == ["滞回比较器", "积分器"]
+    assert "方波-三角波发生器" in inferred
+    assert "电路基础" not in inferred
+
+
 def test_graph_location_prefers_chapter_covering_all_matched_tags():
     graph = {
         "nodes": [

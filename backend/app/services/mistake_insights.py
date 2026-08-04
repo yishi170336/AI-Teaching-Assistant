@@ -51,6 +51,38 @@ class MistakeKnowledgeService:
     def __init__(self, knowledge_bases: Any) -> None:
         self.knowledge_bases = knowledge_bases
 
+    def infer_points(self, knowledge_base: str, content: str) -> list[str]:
+        """Infer concepts from semantic retrieval evidence when model extraction fails."""
+        text = str(content or "").strip()
+        if not text:
+            return []
+        try:
+            retriever = self.knowledge_bases.get(knowledge_base)
+            hits = retriever.search(text[:12000], 10, False, None)
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            return []
+        scores: Counter[str] = Counter()
+        display_names: dict[str, str] = {}
+        for rank, hit in enumerate(hits):
+            chunk = getattr(hit, "chunk", None)
+            tags = getattr(chunk, "knowledge_tags", []) if chunk is not None else []
+            relevance = max(0.0, float(getattr(hit, "rerank_score", 0.0) or getattr(hit, "score", 0.0) or 0.0))
+            weight = max(0.05, relevance) / (rank + 1)
+            for raw_tag in tags:
+                tag = str(raw_tag).strip()
+                normalized = _normalized_name(tag)
+                if normalized and tag not in {"电路基础", "模拟电子技术基础"}:
+                    scores[normalized] += weight
+                    display_names.setdefault(normalized, tag)
+        if not scores:
+            return []
+        best = max(scores.values())
+        return [
+            display_names[key]
+            for key, score in scores.most_common(12)
+            if score >= max(0.08, best * 0.22)
+        ][:8]
+
     @staticmethod
     def _concept_nodes(graph: dict[str, Any]) -> list[dict[str, Any]]:
         return [
@@ -314,7 +346,6 @@ class MistakeKnowledgeService:
         chapter_counts: Counter[str] = Counter()
         tag_records: dict[str, dict[str, Any]] = {}
         annotation_count = 0
-
         for item in items:
             source_counts[str(item.get("source") or "user_uploaded")] += 1
             location = item.get("location") if isinstance(item.get("location"), dict) else {}

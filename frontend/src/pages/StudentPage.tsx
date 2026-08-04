@@ -83,7 +83,7 @@ import {
   RotateCcw,
   ScanLine,
 } from 'lucide-react'
-import MathMarkdown from '../components/MathMarkdown'
+import MathMarkdown, { InlineMath } from '../components/MathMarkdown'
 import HomeworkView from './HomeworkView'
 import {
   addMistakeAnnotation,
@@ -379,11 +379,11 @@ function Sidebar({
                 <button
                   className="recent-item"
                   onClick={() => onSelectSession(session.session_id)}
-                  title={session.title}
+                  title={normalizeQuestionNumberText(session.title)}
                 >
                   <span className="recent-icon"><Clock3 size={14} /></span>
                   <span>
-                    <strong>{session.title}</strong>
+                    <strong>{normalizeQuestionNumberText(session.title)}</strong>
                     <small>{sessionTime(session.updated_at)} · {Math.max(1, Math.ceil(session.message_count / 2))} 轮</small>
                   </span>
                 </button>
@@ -615,16 +615,16 @@ function SourceCard({
           {source.historical ? '历史记录' : `${Math.round(source.score * 100)}%`}
         </span>
       </div>
-      <strong title={sourceTitle}>{sourceTitle}</strong>
+      <strong title={sourceTitle}><InlineMath content={sourceTitle} /></strong>
       <p className="source-name" title={source.source}>{source.source}</p>
       {source.excerpt && (
         <>
-          <p
+          <div
             className={`source-excerpt ${excerptExpanded ? 'is-expanded' : ''}`}
             title={excerptExpanded ? undefined : source.excerpt}
           >
-            {source.excerpt}
-          </p>
+            <MathMarkdown content={source.excerpt} />
+          </div>
           {source.excerpt.length > 120 && (
             <button
               type="button"
@@ -644,7 +644,7 @@ function SourceCard({
       )}
       {allTags.length ? (
         <div className="source-tags">
-          {visibleTags.map((tag) => <span key={tag} title={tag}>{tag}</span>)}
+          {visibleTags.map((tag) => <span key={tag} title={tag}><InlineMath content={tag} /></span>)}
           {(hiddenTagCount > 0 || tagsExpanded) && (
             <button
               type="button"
@@ -890,7 +890,7 @@ function ChatComposer({
               { label: 'AI 答疑', value: 'answer' },
               { label: '拍照答题', value: 'image_answer' },
               { label: '同类出题', value: 'quiz' },
-              { label: 'AI 出题', value: 'recommend' },
+              { label: '题库荐题', value: 'recommend' },
               { label: '知识讲解', value: 'explain' },
               { label: '学习规划', value: 'plan' },
             ]}
@@ -921,13 +921,13 @@ function ChatComposer({
           </div>
           <span className="composer-tip">{mode === 'explain' ? 'Qwen Image 2.0 · 逐页生成' : 'Shift + Enter 换行'}</span>
         </div>
-        {activeFocus && mode !== 'explain' && (
+        {activeFocus && mode !== 'explain' && mode !== 'plan' && (
           <div className="conversation-focus-bar">
             <span className="conversation-focus-icon"><BrainCircuit size={15} /></span>
             <div className="conversation-focus-copy">
               <small>当前对话焦点 · 切换功能仍会保留</small>
-              <strong>{activeFocus.label}</strong>
-              {activeFocus.summary ? <span>{activeFocus.summary}</span> : null}
+              <strong><InlineMath content={activeFocus.label} /></strong>
+              {activeFocus.summary ? <span><InlineMath content={activeFocus.summary} /></span> : null}
             </div>
             <div className="conversation-focus-actions">
               {parentFocus ? (
@@ -1060,6 +1060,17 @@ function ChatComposer({
   )
 }
 
+function formatQuestionNumber(value?: string | number | null) {
+  const number = String(value ?? '').trim()
+  if (!number) return '题号未标注'
+  if (/^第\s*.+\s*题$/.test(number) || /^(?:例|习题|题)/.test(number)) return number
+  return `第 ${number} 题`
+}
+
+function normalizeQuestionNumberText(value: string) {
+  return value.replace(/第\s*(例\s*[\d.]+)\s*题/g, '$1')
+}
+
 function normalizeQuizTitle(content: string) {
   return content.replace(
     /^(#{1,3}\s*同类型新题)(?:\s*[·•・—-]\s*[^\r\n]+)?\s*$/m,
@@ -1097,7 +1108,7 @@ function PracticeCard({
         </div>
         <div className="practice-card-tags">
           {practice.difficulty && <Tag bordered={false}>{practice.difficulty}</Tag>}
-          {practice.knowledge_point && <Tag bordered={false}>{practice.knowledge_point}</Tag>}
+          {practice.knowledge_point && <Tag bordered={false}><InlineMath content={practice.knowledge_point} /></Tag>}
           {Boolean(practice.verification?.passed) && <Tag bordered={false} color="success">已校验</Tag>}
         </div>
       </div>
@@ -1116,7 +1127,7 @@ function PracticeCard({
                   ? '题库原题图 · 拓扑参考'
                   : '上传原题图 · 拓扑参考'}
               </strong>
-              <small>{practice.circuit_diagram.notice}</small>
+              <small><InlineMath content={practice.circuit_diagram.notice} /></small>
             </div>
           </div>
           <div className={`practice-circuit-images count-${Math.min(3, practice.circuit_diagram.attachments.length)}`}>
@@ -1127,7 +1138,7 @@ function PracticeCard({
             ))}
           </div>
           {practice.circuit_diagram.topology && (
-            <p><strong>结构识别：</strong>{practice.circuit_diagram.topology}</p>
+            <p><strong>结构识别：</strong><InlineMath content={practice.circuit_diagram.topology} /></p>
           )}
         </div>
       ) : null}
@@ -1161,7 +1172,7 @@ function PracticeCard({
           {practice.common_mistakes?.length > 0 && (
             <div>
               <span>易错提醒</span>
-              <ul>{practice.common_mistakes.map((item) => <li key={item}>{item}</li>)}</ul>
+              <ul>{practice.common_mistakes.map((item) => <li key={item}><InlineMath content={item} /></li>)}</ul>
             </div>
           )}
         </div>
@@ -1187,7 +1198,14 @@ function mistakeDraftForAssistant(messages: ChatMessage[], index: number): Mista
   const message = messages[index]
   if (message.role !== 'assistant' || !message.content) return null
   const agent = message.agent || ''
-  if (agent !== '答疑 Agent' && agent !== '出题 Agent') return null
+  // 仅 AI 出题、同类出题（出题 Agent）和拍照答题（答疑 Agent + 含识别结果）可加入错题本
+  if (agent === '出题 Agent') {
+    // allow
+  } else if (agent === '答疑 Agent' && message.recognition) {
+    // allow
+  } else {
+    return null
+  }
   const previousUser = [...messages.slice(0, index)].reverse().find((item) => item.role === 'user')
   if (!previousUser?.content) return null
   let question = previousUser.content
@@ -1198,7 +1216,7 @@ function mistakeDraftForAssistant(messages: ChatMessage[], index: number): Mista
     : undefined
   if (!message.practice && message.questionSummary?.prompt) {
     question = message.questionSummary.prompt
-    title = `${message.questionSummary.bank_title} 第 ${message.questionSummary.number || '—'} 题`
+    title = `${message.questionSummary.bank_title} ${formatQuestionNumber(message.questionSummary.number)}`
   }
   if (message.practice) {
     question = message.practice.question
@@ -1226,6 +1244,9 @@ function mistakeDraftForAssistant(messages: ChatMessage[], index: number): Mista
     answer,
     agent,
     attachments,
+    questionBankId: boundQuestion
+      ? `QB:${boundQuestion.question_bank_id}:${boundQuestion.question_id}`
+      : '',
     source: boundQuestion ? 'question_bank' : isGenerated ? 'ai_generated' : 'user_uploaded',
     sourceRef: boundQuestion ? {
       kind: 'question_bank',
@@ -1307,8 +1328,8 @@ function RecognitionConfirmationCard({
         <Input value={uncertain} onChange={(event) => setUncertain(event.target.value)} />
       </label>
       <div className="recognition-hints">
-        {recognition.knowledge_points.map((point) => <Tag key={point}>{point}</Tag>)}
-        {recognition.topology && <span>拓扑：{recognition.topology}</span>}
+        {recognition.knowledge_points.map((point) => <Tag key={point}><InlineMath content={point} /></Tag>)}
+        {recognition.topology && <span>拓扑：<InlineMath content={recognition.topology} /></span>}
       </div>
       <div className="recognition-actions">
         <Button
@@ -1402,8 +1423,8 @@ function MistakeConfirmModal({
                 </Tag>
               )}
             </div>
-            <strong>{draft.title || draft.question.slice(0, 100)}</strong>
-            <p>{draft.question.slice(0, 220)}</p>
+            <strong><InlineMath content={draft.title || draft.question.slice(0, 100)} /></strong>
+            <MathMarkdown content={draft.question.slice(0, 220)} />
             {(draft.attachments.some((attachment) => attachment.kind === 'image') || Boolean(draft.attachmentUrls?.length)) && (
               <div className="mistake-candidate-images">
                 {draft.attachments.filter((attachment) => attachment.kind === 'image').slice(0, 3).map((attachment) => (
@@ -1475,7 +1496,7 @@ function RecommendationCard({
   disabled: boolean
   onSimilar: (reference: QuestionReference) => void
   onBookmark: (reference: QuestionReference) => void
-  onAnother: (query?: string) => void
+  onAnother: () => void
   onStart: (recommendation: QuestionRecommendation) => void
   onHint: (reference: QuestionReference, level: 'direction' | 'formula') => void
 }) {
@@ -1483,7 +1504,6 @@ function RecommendationCard({
   const [answer, setAnswer] = useState<Awaited<ReturnType<typeof getRecommendedQuestionAnswer>>>()
   const [loadingAnswer, setLoadingAnswer] = useState(false)
   const [answerError, setAnswerError] = useState('')
-  const [removedConditions, setRemovedConditions] = useState<Set<string>>(() => new Set())
   const question = recommendation.question
   const difficultyLabels = { basic: '基础', intermediate: '进阶', advanced: '挑战' }
 
@@ -1503,28 +1523,13 @@ function RecommendationCard({
     calculation: '计算题', choice: '选择题', true_false: '判断题',
     design: '设计题', short_answer: '简答题', other: '综合题',
   }
-  const requirementEntries = [
-    ...((recommendation.requirements.knowledge_points as string[] | undefined) || []).map((value) => [`topic:${value}`, value] as const),
-    ...(recommendation.requirements.question_type ? [[`type:${recommendation.requirements.question_type}`, typeLabels[String(recommendation.requirements.question_type)] || String(recommendation.requirements.question_type)] as const] : []),
-    ...(recommendation.requirements.difficulty ? [[`difficulty:${recommendation.requirements.difficulty}`, difficultyLabels[recommendation.requirements.difficulty as keyof typeof difficultyLabels]] as const] : []),
-    ...((recommendation.requirements.skills as string[] | undefined) || []).map((value) => [`skill:${value}`, value] as const),
-    ...((recommendation.requirements.components as string[] | undefined) || []).map((value) => [`component:${value}`, value] as const),
-    ...((recommendation.requirements.tasks as string[] | undefined) || []).map((value) => [`task:${value}`, value] as const),
-    ...((recommendation.requirements.methods as string[] | undefined) || []).map((value) => [`method:${value}`, value] as const),
-    ...((recommendation.requirements.circuit_functions as string[] | undefined) || []).map((value) => [`function:${value}`, value] as const),
-    ...(recommendation.requirements.chapter ? [[`chapter:${recommendation.requirements.chapter}`, String(recommendation.requirements.chapter)] as const] : []),
-    ...(recommendation.requirements.requires_figure === true ? [['figure:yes', '包含题图'] as const] : []),
-    ...(recommendation.requirements.requires_figure === false ? [['figure:no', '纯文字题'] as const] : []),
-  ].filter(([key]) => !removedConditions.has(key))
-  const nextQuery = requirementEntries.map(([, label]) => label).join(' ')
-
   return (
     <section className="recommendation-card" onClick={(event) => event.stopPropagation()}>
       <div className="recommendation-question">
         <div className="recommendation-kicker">
           <Tag color="blue">原书题目</Tag>
           <span>{recommendation.source.book_title}</span>
-          <span>第 {recommendation.source.number || question.sequence} 题</span>
+          <span>{formatQuestionNumber(recommendation.source.number || question.sequence)}</span>
         </div>
         <MathMarkdown content={question.prompt} />
         {question.subquestions?.map((item) => (
@@ -1549,7 +1554,7 @@ function RecommendationCard({
           </div>
         ) : null}
         <div className="recommendation-tags">
-          {recommendation.profile.knowledge_points.map((item) => <Tag key={item}>{item}</Tag>)}
+          {recommendation.profile.knowledge_points.map((item) => <Tag key={item}><InlineMath content={item} /></Tag>)}
           <Tag>{difficultyLabels[recommendation.profile.difficulty]}</Tag>
           <Tag>{typeLabels[recommendation.profile.question_type] || recommendation.profile.question_type}</Tag>
         </div>
@@ -1571,11 +1576,21 @@ function RecommendationCard({
               <summary>参考答案（建议完成后核对）</summary>
               <MathMarkdown content={answer.answer || '原书未提供文字答案'} />
               {answer.answer_subquestions?.map((item) => (
-                <div key={item.label}><strong>({item.label})</strong> <MathMarkdown content={item.text} /></div>
+                <div className="recommendation-answer-part" key={item.label}>
+                  <strong>({item.label})</strong>
+                  <MathMarkdown content={item.text} />
+                </div>
               ))}
-              {answer.answer_figures?.map((figure) => (
-                <AntImage key={figure.file} src={figure.url} alt={figure.caption || '答案图'} />
-              ))}
+              {answer.answer_figures?.length ? (
+                <div className="recommendation-answer-figures">
+                  {answer.answer_figures.map((figure) => (
+                    <figure key={figure.file}>
+                      <AntImage src={figure.url} alt={figure.caption || '答案图'} />
+                      {figure.caption ? <figcaption>{figure.caption}</figcaption> : null}
+                    </figure>
+                  ))}
+                </div>
+              ) : null}
             </details>
           )}
         </div>
@@ -1591,42 +1606,27 @@ function RecommendationCard({
         {recommendation.agent_analysis?.intent_summary && (
           <div className="recommendation-intent">
             <small>Agent 理解的训练目标</small>
-            <p>{recommendation.agent_analysis.intent_summary}</p>
+            <MathMarkdown content={recommendation.agent_analysis.intent_summary} />
           </div>
         )}
-        <strong className="recommendation-reason-copy">{recommendation.reason}</strong>
+        <strong className="recommendation-reason-copy"><InlineMath content={recommendation.reason} /></strong>
         <ul className="recommendation-evidence">
-          {recommendation.evidence.map((item) => <li key={item}>{item}</li>)}
+          {recommendation.evidence.map((item) => <li key={item}><InlineMath content={item} /></li>)}
         </ul>
         <div className="recommendation-meta-grid">
           <div><small>章节</small><p>{recommendation.source.chapter || '待复核'}</p></div>
-          <div><small>训练技能</small><p>{recommendation.profile.skills.join('、') || '综合训练'}</p></div>
+          <div><small>训练技能</small><p><InlineMath content={recommendation.profile.skills.join('、') || '综合训练'} /></p></div>
           {recommendation.agent_analysis?.reasoning_focus && (
             <div className="recommendation-reasoning-focus">
-              <small>关键推理</small><p>{recommendation.agent_analysis.reasoning_focus}</p>
+              <small>关键推理</small><MathMarkdown content={recommendation.agent_analysis.reasoning_focus} />
             </div>
           )}
-        </div>
-        <div className="recommendation-condition-bar">
-          <small>再来一道将沿用</small>
-          <div>
-            {requirementEntries.map(([key, label]) => (
-              <Tag
-                key={key}
-                closable
-                onClose={(event) => {
-                  event.preventDefault()
-                  setRemovedConditions((current) => new Set(current).add(key))
-                }}
-              >{label}</Tag>
-            ))}
-          </div>
         </div>
         <div className="recommendation-actions">
           <Button disabled={disabled} type="primary" onClick={() => onStart(recommendation)}>开始作答</Button>
           <Button disabled={disabled} onClick={() => onHint(recommendation.question_ref, 'direction')}>给点提示</Button>
           <Button disabled={disabled} onClick={() => onHint(recommendation.question_ref, 'formula')}>关键公式</Button>
-          <Button disabled={disabled} icon={<RotateCcw size={14} />} onClick={() => onAnother(nextQuery || '不限条件')}>再来一道</Button>
+          <Button disabled={disabled} icon={<RotateCcw size={14} />} onClick={onAnother}>再来一道</Button>
           <Button disabled={disabled} icon={<WandSparkles size={14} />} onClick={() => onSimilar(recommendation.question_ref)}>同类出题</Button>
           <Button disabled={disabled} icon={<BookmarkPlus size={14} />} onClick={() => onBookmark(recommendation.question_ref)}>收藏错题</Button>
         </div>
@@ -1667,7 +1667,7 @@ function ReferenceMistakeConfirmModal({
         <Button key="ok" type="primary" loading={saving} onClick={() => onConfirm({ reason, categoryId, title })}>确认加入</Button>,
       ]}
     >
-      <p>{candidate?.question.slice(0, 260)}</p>
+      {candidate?.question ? <MathMarkdown content={candidate.question.slice(0, 260)} /> : null}
       <div className="mistake-confirm-fields">
         <label><span>错题名称</span><Input value={title} onChange={(event) => setTitle(event.target.value)} /></label>
         <label>
@@ -1704,7 +1704,7 @@ function Conversation({
   onGenerateSimilar: () => void
   onRecommendationSimilar: (reference: QuestionReference) => void
   onRecommendationBookmark: (reference: QuestionReference) => void
-  onRecommendationAnother: (query?: string) => void
+  onRecommendationAnother: () => void
   onRecommendationStart: (recommendation: QuestionRecommendation) => void
   onRecommendationHint: (reference: QuestionReference, level: 'direction' | 'formula') => void
 }) {
@@ -1912,8 +1912,34 @@ function Conversation({
                 <BookMarked size={16} />
                 <div>
                   <small>来源题目 · {message.questionSummary.bank_title}</small>
-                  <strong>第 {message.questionSummary.number || '—'} 题</strong>
-                  <span>{message.questionSummary.prompt}</span>
+                  <strong>{formatQuestionNumber(message.questionSummary.number)}</strong>
+                  <MathMarkdown content={message.questionSummary.prompt} />
+                  {message.questionSummary.figures?.length ? (
+                    <div className="message-question-figure-group">
+                      <small>题图</small>
+                      <div className="message-question-figures">
+                        {message.questionSummary.figures.map((figure) => (
+                          <figure key={figure.file || figure.url}>
+                            <AntImage src={figure.url} alt={figure.caption || '题目电路图'} />
+                            {figure.caption ? <figcaption>{figure.caption}</figcaption> : null}
+                          </figure>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {message.questionSummary.answer_figures?.length ? (
+                    <div className="message-question-figure-group answer">
+                      <small>参考答案图</small>
+                      <div className="message-question-figures">
+                        {message.questionSummary.answer_figures.map((figure) => (
+                          <figure key={figure.file || figure.url}>
+                            <AntImage src={figure.url} alt={figure.caption || '参考答案图'} />
+                            {figure.caption ? <figcaption>{figure.caption}</figcaption> : null}
+                          </figure>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             ) : null}
@@ -1929,7 +1955,7 @@ function Conversation({
                     <MathMarkdown content={normalizeQuizTitle(message.content)} />
                   </div>
                 )
-                : <p>{message.content}</p>
+                : <div className="user-message-content"><MathMarkdown content={message.content} /></div>
             ) : (
               <div className="thinking-placeholder">
                 <span className="thinking-dots"><i /><i /><i /></span>
@@ -1978,7 +2004,7 @@ function Conversation({
             {message.content
               && message.role === 'assistant'
               && !message.failed
-              && (message.agent === '答疑 Agent' || message.agent === '出题 Agent')
+              && (message.agent === '出题 Agent' || (message.agent === '答疑 Agent' && message.recognition))
               && !(streaming && index === messages.length - 1) && (
               <div className="message-tools">
                 {message.agent === '答疑 Agent' && (
@@ -2450,7 +2476,7 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
           <div className="graph-legend"><span><i className="document" />教材</span><span><i className="page" />页面</span><span><i className="concept" />知识点</span><span><i className="circuit" />电路图</span><span><i className="component" />元件</span></div>
         </div>
         <aside className="graph-detail">
-          {selected ? <><span>{typeLabel[selected.type] || '知识节点'}</span><h2>{selected.name || '未命名节点'}</h2><p>连接 {neighbors} 个语义节点{selected.evidence_count ? `，由 ${selected.evidence_count} 条教材证据支持` : ''}。公式与正文片段不会单独铺在图中，但仍参与检索和答案引用。</p>{selectedPages.length > 0 && <div className="graph-page-list">来源页码：{selectedPages.map((page) => `第 ${page} 页`).join('、')}</div>}</> : <><Network size={28} /><h2>探索知识关系</h2><p>教材位于中心，绿色知识点构成语义核心，蓝色页面与外围电路结构作为可追溯证据。</p></>}
+          {selected ? <><span>{typeLabel[selected.type] || '知识节点'}</span><h2><InlineMath content={selected.name || '未命名节点'} /></h2><p>连接 {neighbors} 个语义节点{selected.evidence_count ? `，由 ${selected.evidence_count} 条教材证据支持` : ''}。公式与正文片段不会单独铺在图中，但仍参与检索和答案引用。</p>{selectedPages.length > 0 && <div className="graph-page-list">来源页码：{selectedPages.map((page) => `第 ${page} 页`).join('、')}</div>}</> : <><Network size={28} /><h2>探索知识关系</h2><p>教材位于中心，绿色知识点构成语义核心，蓝色页面与外围电路结构作为可追溯证据。</p></>}
         </aside>
       </div>
       {chapters.length > 0 && (
@@ -2472,14 +2498,14 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
                   <span>{String(index + 1).padStart(2, '0')}</span>
                   <small>{chapterPageRange(chapter)}</small>
                 </div>
-                <h3>{chapter.name}</h3>
+                <h3><InlineMath content={chapter.name} /></h3>
                 <div className="chapter-card-stats">
                   <span><strong>{chapter.concept_count}</strong> 个知识点</span>
                   <span><strong>{chapter.section_count}</strong> 个小节</span>
                 </div>
                 <div className="chapter-card-preview">
                   {chapter.concepts.slice(0, 5).map((concept) => (
-                    <span key={concept.id}>{concept.name}</span>
+                    <span key={concept.id}><InlineMath content={concept.name} /></span>
                   ))}
                   {chapter.concept_count > 5 && <span>+{chapter.concept_count - 5}</span>}
                 </div>
@@ -2518,7 +2544,7 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
                     }}
                   >
                     <span>{String(index + 1).padStart(2, '0')}</span>
-                    <div><strong>{chapter.name}</strong><small>{chapter.concept_count} 个知识点</small></div>
+                    <div><strong><InlineMath content={chapter.name} /></strong><small>{chapter.concept_count} 个知识点</small></div>
                     <ChevronRight size={14} />
                   </button>
                 ))}
@@ -2528,7 +2554,7 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
               <div className="chapter-window-heading">
                 <div>
                   <span>第 {selectedChapter.order} 组 · {chapterPageRange(selectedChapter)}</span>
-                  <h2>{selectedChapter.name}</h2>
+                  <h2><InlineMath content={selectedChapter.name} /></h2>
                   <p>{selectedChapter.sources.join('、')} · {selectedChapter.section_count} 个小节 · {selectedChapter.concept_count} 个知识点</p>
                 </div>
                 <div className="chapter-concept-total"><strong>{selectedChapter.concept_count}</strong><span>KNOWLEDGE POINTS</span></div>
@@ -2546,7 +2572,7 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
                   <article className="chapter-concept-card" key={concept.id}>
                     <span>{String(index + 1).padStart(2, '0')}</span>
                     <div>
-                      <h3>{concept.name}</h3>
+                      <h3><InlineMath content={concept.name} /></h3>
                       <p>{concept.evidence_count} 条教材证据{concept.pages.length ? ` · 第 ${concept.pages.join('、')} 页` : ''}</p>
                     </div>
                   </article>
@@ -2633,7 +2659,7 @@ function QuestionKnowledgeAlignment({ question }: { question: HomeworkQuestion }
               <Tooltip key={`${tag.tag_id}-${index}`} title={`${matchLabel} · 匹配程度 ${confidence}%`}>
                 <span className={`question-knowledge-tag ${tag.match_type}`}>
                   <Tag color={tag.match_type === 'exact' ? 'green' : tag.match_type === 'approximate' ? 'gold' : 'default'}>
-                    {tag.tag_name}
+                    <InlineMath content={tag.tag_name} />
                   </Tag>
                   <b>{confidence}%</b>
                 </span>
@@ -2646,7 +2672,7 @@ function QuestionKnowledgeAlignment({ question }: { question: HomeworkQuestion }
       )}
       {question.prerequisites?.length ? (
         <p className="question-prerequisites">
-          前置知识：{question.prerequisites.map((item) => item.name).join('、')}
+          前置知识：<InlineMath content={question.prerequisites.map((item) => item.name).join('、')} />
         </p>
       ) : null}
     </section>
@@ -2716,20 +2742,22 @@ function QuestionBankQuestionCard({
           <small>{sourceKindLabel} · {question.section_title || '题目'} · {questionTypeName(question.question_type)}</small>
           <strong>{displayedTitle}</strong>
         </div>
-        <Tag color={question.answer_readiness?.status === 'needs_confirmation' ? 'warning' : 'success'}>
-          {question.answer_readiness?.status === 'needs_confirmation' ? '需确认' : '可直接答疑'}
-        </Tag>
-        <Button type="primary" icon={<MessageSquareText size={14} />} onClick={onAsk}>AI 答疑</Button>
-        <Popconfirm
-          title="从题库中删除这道题？"
-          description="删除后无法恢复，已经生成的作业不受影响。"
-          okText="删除"
-          cancelText="取消"
-          okButtonProps={{ danger: true }}
-          onConfirm={onDelete}
-        >
-          <Button danger type="text" loading={deleting} icon={<Trash2 size={14} />}>删除</Button>
-        </Popconfirm>
+        <div className="student-bank-question-actions">
+          <Tag color={question.answer_readiness?.status === 'needs_confirmation' ? 'warning' : 'success'}>
+            {question.answer_readiness?.status === 'needs_confirmation' ? '需确认' : '可直接答疑'}
+          </Tag>
+          <Button type="primary" icon={<MessageSquareText size={14} />} onClick={onAsk}>AI 答疑</Button>
+          <Popconfirm
+            title="从题库中删除这道题？"
+            description="删除后无法恢复，已经生成的作业不受影响。"
+            okText="删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+            onConfirm={onDelete}
+          >
+            <Button danger type="text" loading={deleting} icon={<Trash2 size={14} />}>删除</Button>
+          </Popconfirm>
+        </div>
       </header>
       <div className="student-bank-question-body">
         {question.answer_readiness?.reasons?.length ? (
@@ -2769,7 +2797,10 @@ function QuestionBankQuestionCard({
               <>
                 {question.answer ? <MathMarkdown content={question.answer} /> : null}
                 {question.answer_subquestions?.map((part) => (
-                  <div key={part.label}><b>（{part.label}）</b><MathMarkdown content={part.text} /></div>
+                  <div className="student-bank-answer-part" key={part.label}>
+                    <b>（{part.label}）</b>
+                    <MathMarkdown content={part.text} />
+                  </div>
                 ))}
                 {question.answer_figures?.length ? (
                   <QuestionBankFigureGallery
@@ -2899,7 +2930,7 @@ function PhotoPdfQuestionPickerModal({
                   </Tag>
                 </div>
                 <strong>{question.section_title || '未定位章节'}</strong>
-                <p>{question.prompt || '未识别到题干'}</p>
+                <MathMarkdown content={question.prompt || '未识别到题干'} />
                 <Button type="primary" onClick={() => onAsk(bank, question)}>AI 答疑</Button>
               </article>
             ))}
@@ -3156,7 +3187,7 @@ function QuestionBankView({
                       <Button size="small" danger icon={<CircleStop size={14} />} loading={actionId === bank.id} onClick={() => void runBankAction(bank.id, 'cancel')}>取消建立</Button>
                     </div>
                   ) : null}
-                  <footer><span>{questionBankTime(bank.updated_at)} 更新</span><ChevronRight size={16} /></footer>
+                  <footer><span>{questionBankTime(bank.updated_at)} 更新 · 查看知识对齐</span><ChevronRight size={16} /></footer>
                 </article>
               )
             })}
@@ -3247,6 +3278,12 @@ function QuestionBankView({
               <div className="homework-processing-panel">
                 <LoaderCircle className="spin" size={30} />
                 <div><strong>{selectedBank.processing_message || '正在逐页提取题库内容'}</strong><span>进度 {selectedBank.processing_progress || 0}% · 完成后将自动显示知识点匹配程度。</span></div>
+              </div>
+            ) : null}
+            {selectedBank.status === 'ready' ? (
+              <div className="student-bank-alignment-hint">
+                <Network size={15} />
+                <span>知识对齐显示在每道题的题图下方；百分比表示题目知识点与课程知识图谱的匹配程度。</span>
               </div>
             ) : null}
             {selectedBank.processing_error ? (
@@ -3398,7 +3435,7 @@ function MistakeBookView({
             {analysis.recommended_order.slice(0, 4).map((area, index) => (
               <article key={area.knowledge_point}>
                 <span>优先级 {index + 1}</span>
-                <strong>{area.knowledge_point}</strong>
+                <strong><InlineMath content={area.knowledge_point} /></strong>
                 <Tag color={area.severity === '重度薄弱' ? 'red' : area.severity === '中度薄弱' ? 'orange' : 'blue'}>{area.severity}</Tag>
                 <p>{area.chapter}{area.section !== '暂未确定' ? ` · ${area.section}` : ''}</p>
                 <small>{area.mistake_count} 道关联错题{area.prerequisites.length ? ` · 先复习 ${area.prerequisites.map((item) => item.name).join('、')}` : ''}</small>
@@ -3472,7 +3509,7 @@ function MistakeBookView({
               <div className="mistake-points">
                 {(item.knowledge_tags?.length ? item.knowledge_tags : item.knowledge_points.map((point) => ({ tag_id: point, tag_name: point, match_type: 'unmatched' as const, confidence: 0 }))).map((tag) => (
                   <Tooltip key={tag.tag_id} title={`${tag.match_type === 'exact' ? '图谱精确匹配' : tag.match_type === 'approximate' ? '图谱近似匹配' : '独立标签'} · 置信度 ${Math.round(tag.confidence * 100)}%`}>
-                    <Tag color={tag.match_type === 'exact' ? 'green' : tag.match_type === 'approximate' ? 'gold' : 'default'}>{tag.tag_name}</Tag>
+                    <Tag color={tag.match_type === 'exact' ? 'green' : tag.match_type === 'approximate' ? 'gold' : 'default'}><InlineMath content={tag.tag_name} /></Tag>
                   </Tooltip>
                 ))}
               </div>
@@ -3567,7 +3604,7 @@ function MistakeBookView({
                   {selectedMistake.messages.map((message, index) => (
                     <article key={`${message.role}-${index}`} className={message.role}>
                       <small>{message.role === 'user' ? '学生' : message.agent || 'AI 助教'}</small>
-                      {message.role === 'assistant' ? <MathMarkdown content={message.content} /> : <p>{message.content}</p>}
+                      <MathMarkdown content={message.content} />
                     </article>
                   ))}
                 </div>
@@ -3586,7 +3623,7 @@ function MistakeBookView({
                         autoSize={{ minRows: 3, maxRows: 8 }}
                         onChange={(event) => setEditingAnnotationContent(event.target.value)}
                       />
-                    ) : <p>{annotation.content}</p>}
+                    ) : <MathMarkdown content={annotation.content} />}
                     <div>
                       {editingAnnotationId === annotation.id ? (
                         <>
@@ -3796,8 +3833,8 @@ function ScheduleView({
                   <span className="day-schedule-category">{scheduleCategoryIcon(item.category, 14)}</span>
                   <div>
                     <div><small>{item.time || '全天'} · {scheduleCategoryLabels[item.category]}</small></div>
-                    <strong>{item.title}</strong>
-                    {item.note && <p>{item.note}</p>}
+                    <strong><InlineMath content={item.title} /></strong>
+                    {item.note && <MathMarkdown content={item.note} />}
                   </div>
                   <Popconfirm title="删除这项安排？" okText="删除" cancelText="取消" onConfirm={() => onDelete(item.id)}>
                     <button type="button" className="schedule-delete" aria-label={`删除 ${item.title}`}><Trash2 size={14} /></button>
@@ -4018,7 +4055,7 @@ function KnowledgeExplanationView({
               {history.map((item) => (
                 <button key={item.id} type="button" onClick={() => onSelect(item)}>
                   <span className={`history-lesson-icon ${item.status}`}><Presentation size={18} /></span>
-                  <span><strong>{item.title || item.question}</strong><small>{item.page_count || '—'} 页 · {explanationTime(item.created_at)}</small></span>
+                  <span><strong><InlineMath content={item.title || item.question} /></strong><small>{item.page_count || '—'} 页 · {explanationTime(item.created_at)}</small></span>
                   <ChevronRight size={15} />
                 </button>
               ))}
@@ -4035,8 +4072,8 @@ function KnowledgeExplanationView({
         <header className="explanation-workbench-head">
           <div>
             <span className="explanation-model-kicker"><WandSparkles size={13} /> {knowledgeImageModelLabel(explanation.image_model)}</span>
-            <h1>{explanation.title || '正在规划知识讲解…'}</h1>
-            <p>{explanation.subtitle || explanation.question}</p>
+            <h1><InlineMath content={explanation.title || '正在规划知识讲解…'} /></h1>
+            <p><InlineMath content={explanation.subtitle || explanation.question} /></p>
           </div>
           <div className="explanation-head-meta">
             <Tag color={explanation.status === 'completed' ? 'green' : explanation.status === 'error' ? 'red' : explanation.status === 'cancelled' ? 'default' : 'blue'}>
@@ -4059,7 +4096,7 @@ function KnowledgeExplanationView({
               <div className="explanation-canvas-toolbar">
                 <div>
                   <span>{activePage ? `${activePage.index}/${explanation.page_count}` : '—'}</span>
-                  <strong>{activePage?.title || '页面准备中'}</strong>
+                  <strong><InlineMath content={activePage?.title || '页面准备中'} /></strong>
                 </div>
                 {activePage?.image_url && (
                   <a href={activePage.image_url} download={`${explanation.title}-${activePage.index}.png`}>
@@ -4079,7 +4116,7 @@ function KnowledgeExplanationView({
                     <span className="placeholder-blueprint"><Presentation size={34} /></span>
                     {activePage?.status === 'drawing' || activePage?.status === 'writing' ? <LoaderCircle className="spin" size={21} /> : <Layers3 size={21} />}
                     <strong>{activePage?.message || '正在准备页面结构…'}</strong>
-                    <small>{activePage?.learning_goal}</small>
+                    <small>{activePage?.learning_goal ? <InlineMath content={activePage.learning_goal} /> : null}</small>
                   </div>
                 )}
               </div>
@@ -4098,13 +4135,13 @@ function KnowledgeExplanationView({
                     <span className={`outline-number ${page.status}`}>
                       {page.status === 'ready' ? <Check size={13} /> : page.status === 'drawing' || page.status === 'writing' ? <LoaderCircle className="spin" size={13} /> : page.index}
                     </span>
-                    <span><strong>{page.title}</strong><small>{page.subtitle}</small></span>
+                    <span><strong><InlineMath content={page.title} /></strong><small><InlineMath content={page.subtitle} /></small></span>
                   </button>
                 ))}
               </div>
               <div className="explanation-goal-card">
                 <BrainCircuit size={17} />
-                <div><small>本页学习目标</small><p>{activePage?.learning_goal || '等待大纲生成'}</p></div>
+                <div><small>本页学习目标</small><p><InlineMath content={activePage?.learning_goal || '等待大纲生成'} /></p></div>
               </div>
             </aside>
           </div>
@@ -4128,7 +4165,7 @@ function KnowledgeExplanationView({
                   {page.image_url ? <img src={page.image_url} alt="" /> : <Presentation size={20} />}
                   <b>{page.index}</b>
                 </span>
-                <strong>{page.title}</strong>
+                <strong><InlineMath content={page.title} /></strong>
               </button>
             ))}
           </div>
@@ -4142,7 +4179,7 @@ function KnowledgeExplanationView({
             {history.filter((item) => item.id !== explanation.id).slice(0, 4).map((item) => (
               <button key={item.id} type="button" onClick={() => onSelect(item)}>
                 <span className={`history-lesson-icon ${item.status}`}><Presentation size={18} /></span>
-                <span><strong>{item.title || item.question}</strong><small>{item.page_count || '—'} 页 · {explanationTime(item.created_at)}</small></span>
+                <span><strong><InlineMath content={item.title || item.question} /></strong><small>{item.page_count || '—'} 页 · {explanationTime(item.created_at)}</small></span>
                 <ChevronRight size={15} />
               </button>
             ))}
@@ -4477,6 +4514,7 @@ function StudentPageContent() {
   const { message: toast } = AntApp.useApp()
   const previousBuildStates = useRef<Record<string, KBStatus['state']>>({})
   const previousExplanationState = useRef<{ id: string; status: KnowledgeExplanation['status'] } | undefined>(undefined)
+  const handledMistakeProposalId = useRef<string>('')
   const activeBuilds = statuses.filter((item) => item.state === 'building' || item.state === 'cancelling')
   const hasActiveBuilds = activeBuilds.length > 0
   const explanationBusy = activeExplanation?.status === 'planning' || activeExplanation?.status === 'generating'
@@ -4548,11 +4586,10 @@ function StudentPageContent() {
     try {
       const catalog = await fetchModels()
       setModelCatalog(catalog)
-      const local = catalog.providers.find((item) => item.id === 'ollama')
       const preferred = catalog.providers.find((item) => item.id === catalog.default.provider)
-      if (allowAutoSwitch && modelConfig.provider === 'ollama' && !local?.configured && preferred?.configured && preferred.id !== 'ollama') {
+      if (allowAutoSwitch && modelConfig.provider === 'ollama' && preferred?.configured && preferred.id !== 'ollama') {
         setModelConfig({ provider: preferred.id, model: catalog.default.model, apiKey: '', baseUrl: preferred.base_url })
-        toast.info(`Ollama 未启动，已使用已配置的 ${preferred.label}`)
+        toast.info(`已使用已配置的 ${preferred.label}`)
       }
     } catch {
       setModelCatalog(fallbackModelCatalog)
@@ -4638,6 +4675,19 @@ function StudentPageContent() {
       .catch(() => setKnowledgeGraph(undefined))
       .finally(() => setGraphLoading(false))
   }, [activeView, knowledgeBase])
+
+  useEffect(() => {
+    const proposalMessage = [...messages].reverse().find((item) => (
+      item.role === 'assistant' && item.mistakeProposal && !item.id.startsWith('history-')
+    ))
+    if (!proposalMessage?.mistakeProposal || handledMistakeProposalId.current === proposalMessage.id) return
+    handledMistakeProposalId.current = proposalMessage.id
+    if (!proposalMessage.mistakeProposal.question.trim() || !proposalMessage.mistakeProposal.answer.trim()) {
+      toast.warning('当前内容还不能整理为错题')
+      return
+    }
+    setPendingMistakeDrafts([proposalMessage.mistakeProposal])
+  }, [messages, toast])
 
   const kbOptions = useMemo(() => {
     const base = statuses.map((item) => ({
@@ -4756,7 +4806,7 @@ function StudentPageContent() {
     setMode('answer')
     setScene('image_answer')
     void send(
-      `请解答题库《${bank.title}》第 ${question.number || question.sequence} 题。`,
+      `请结合题库已有参考答案，解释《${bank.title}》${formatQuestionNumber(question.number || question.sequence)}的解题思路、公式来源和中间步骤。`,
       { questionRef },
     ).then(() => refreshSessions())
   }
@@ -4786,10 +4836,10 @@ function StudentPageContent() {
     }).then(() => refreshSessions())
   }
 
-  const recommendAnother = (query?: string) => {
+  const recommendAnother = () => {
     setMode('recommend')
     setScene('chat')
-    void send(query?.trim() ? `请按这些条件推荐一道原书题目：${query.trim()}` : '再来一道')
+    void send('再来一道')
       .then(() => refreshSessions())
   }
 
@@ -5145,7 +5195,7 @@ function StudentPageContent() {
             <button className="menu-button" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu size={19} /></button>
             <div>
               <span className="breadcrumb">学生工作台 /</span>
-              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'question-bank' ? '题库' : activeView === 'homework' ? '我的作业' : activeView === 'mistakes' ? '错题本' : activeView === 'schedule' ? '学习日历' : mode === 'recommend' ? 'AI 出题' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'explain' ? '知识讲解' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
+              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'question-bank' ? '题库' : activeView === 'homework' ? '我的作业' : activeView === 'mistakes' ? '错题本' : activeView === 'schedule' ? '学习日历' : mode === 'recommend' ? '题库推荐' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'explain' ? '知识讲解' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
             </div>
           </div>
           <div className="topbar-actions">

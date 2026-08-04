@@ -520,89 +520,6 @@ class MistakeBook:
             self._write(items)
             return normalized
 
-    async def delete(self, student_id: str, mistake_id: str) -> bool:
-        async with self._lock:
-            items = self._read()
-            kept = [
-                item
-                for item in items
-                if not (item.get("student_id") == student_id and item.get("id") == mistake_id)
-            ]
-            if len(kept) == len(items):
-                return False
-            self._write(kept)
-            return True
-
-    async def create_category(self, student_id: str, name: str) -> dict[str, Any]:
-        normalized = name.strip()
-        async with self._lock:
-            categories = self._read_categories()
-            user_categories = self._student_categories(categories, student_id)
-            if any(str(item.get("name", "")).casefold() == normalized.casefold() for item in user_categories):
-                raise ValueError("已存在同名分类")
-            now = _now()
-            category = {
-                "id": uuid4().hex,
-                "student_id": student_id,
-                "name": normalized,
-                "created_at": now,
-                "updated_at": now,
-            }
-            categories.append(category)
-            self._write_categories(categories)
-            return category
-
-    async def rename_category(
-        self, student_id: str, category_id: str, name: str
-    ) -> dict[str, Any] | None:
-        if category_id == DEFAULT_CATEGORY_ID:
-            raise ValueError("默认分类不能重命名")
-        normalized = name.strip()
-        async with self._lock:
-            categories = self._read_categories()
-            category = next(
-                (
-                    item
-                    for item in categories
-                    if item.get("student_id") == student_id and item.get("id") == category_id
-                ),
-                None,
-            )
-            if category is None:
-                return None
-            if any(
-                item.get("student_id") == student_id
-                and item.get("id") != category_id
-                and str(item.get("name", "")).casefold() == normalized.casefold()
-                for item in categories
-            ):
-                raise ValueError("已存在同名分类")
-            category["name"] = normalized
-            category["updated_at"] = _now()
-            self._write_categories(categories)
-            return dict(category)
-
-    async def delete_category(self, student_id: str, category_id: str) -> bool:
-        if category_id == DEFAULT_CATEGORY_ID:
-            raise ValueError("默认分类不能删除")
-        async with self._lock:
-            categories = self._read_categories()
-            kept = [
-                item
-                for item in categories
-                if not (item.get("student_id") == student_id and item.get("id") == category_id)
-            ]
-            if len(kept) == len(categories):
-                return False
-            items = self._read()
-            for item in items:
-                if item.get("student_id") == student_id and item.get("category_id") == category_id:
-                    item["category_id"] = DEFAULT_CATEGORY_ID
-                    item["updated_at"] = _now()
-            self._write_categories(kept)
-            self._write(items)
-            return True
-
     async def add_annotation(
         self,
         student_id: str,
@@ -723,5 +640,88 @@ class MistakeBook:
             upgraded["updated_at"] = _now()
             item.clear()
             item.update(upgraded)
+            self._write(items)
+            return True
+
+    async def delete(self, student_id: str, mistake_id: str) -> bool:
+        async with self._lock:
+            items = self._read()
+            kept = [
+                item
+                for item in items
+                if not (item.get("student_id") == student_id and item.get("id") == mistake_id)
+            ]
+            if len(kept) == len(items):
+                return False
+            self._write(kept)
+            return True
+
+    async def create_category(self, student_id: str, name: str) -> dict[str, Any]:
+        normalized = name.strip()
+        async with self._lock:
+            categories = self._read_categories()
+            user_categories = self._student_categories(categories, student_id)
+            if any(str(item.get("name", "")).casefold() == normalized.casefold() for item in user_categories):
+                raise ValueError("已存在同名分类")
+            now = _now()
+            category = {
+                "id": uuid4().hex,
+                "student_id": student_id,
+                "name": normalized,
+                "created_at": now,
+                "updated_at": now,
+            }
+            categories.append(category)
+            self._write_categories(categories)
+            return category
+
+    async def rename_category(
+        self, student_id: str, category_id: str, name: str
+    ) -> dict[str, Any] | None:
+        if category_id == DEFAULT_CATEGORY_ID:
+            raise ValueError("默认分类不能重命名")
+        normalized = name.strip()
+        async with self._lock:
+            categories = self._read_categories()
+            category = next(
+                (
+                    item
+                    for item in categories
+                    if item.get("student_id") == student_id and item.get("id") == category_id
+                ),
+                None,
+            )
+            if category is None:
+                return None
+            if any(
+                item.get("student_id") == student_id
+                and item.get("id") != category_id
+                and str(item.get("name", "")).casefold() == normalized.casefold()
+                for item in categories
+            ):
+                raise ValueError("已存在同名分类")
+            category["name"] = normalized
+            category["updated_at"] = _now()
+            self._write_categories(categories)
+            return dict(category)
+
+    async def delete_category(self, student_id: str, category_id: str) -> bool:
+        if category_id == DEFAULT_CATEGORY_ID:
+            raise ValueError("默认分类不能删除")
+        async with self._lock:
+            categories = self._read_categories()
+            kept = [
+                item
+                for item in categories
+                if not (item.get("student_id") == student_id and item.get("id") == category_id)
+            ]
+            if len(kept) == len(categories):
+                return False
+            items = self._read()
+            for item in items:
+                if item.get("student_id") == student_id and item.get("category_id") == category_id:
+                    item["category_id"] = DEFAULT_CATEGORY_ID
+                    item["updated_at"] = _now()
+            self._write_categories(kept)
             self._write(items)
             return True

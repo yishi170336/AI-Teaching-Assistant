@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { AttachmentInfo, ConversationFocus, KBStatus, ModelConfig, ModelProviderId, PhotoRecognition, PracticeExercise, PracticeGrading, QuestionRecommendation, QuestionReference, QuestionSummary, SourceInfo, StoredMessage, streamChat, uploadChatAttachment, VisionModelConfig } from '../lib/api'
+import { AttachmentInfo, ConversationFocus, KBStatus, MistakeCandidateDraft, ModelConfig, ModelProviderId, PhotoRecognition, PracticeExercise, PracticeGrading, QuestionRecommendation, QuestionReference, QuestionSummary, SourceInfo, StoredMessage, streamChat, uploadChatAttachment, VisionModelConfig } from '../lib/api'
 
 export type ChatMode = 'auto' | 'answer' | 'quiz' | 'plan' | 'recommend' | 'explain'
 export type ChatScene = 'chat' | 'image_answer' | 'quiz_grade'
@@ -25,6 +25,7 @@ export type ChatMessage = {
   questionSummary?: QuestionSummary
   recommendation?: QuestionRecommendation
   focus?: ConversationFocus
+  mistakeProposal?: MistakeCandidateDraft
 }
 
 export type PendingAttachment = {
@@ -43,15 +44,15 @@ const studentKey = 'circuitmind-student-id'
 const modelConfigKey = 'circuitmind-model-config'
 const visionModelConfigKey = 'circuitmind-vision-model-config'
 const defaultKnowledgeBaseKey = 'circuitmind-default-knowledge-base'
-export const CHAT_MODEL_PROVIDER: ModelProviderId = 'ollama'
-export const CHAT_MODEL = 'qwen3.5:2b'
+export const CHAT_MODEL_PROVIDER: ModelProviderId = 'qwen'
+export const CHAT_MODEL = 'qwen3.7-plus'
 const QWEN_VL_FALLBACK_MODEL = 'qwen3-vl-flash'
 
 const defaultModelConfig: ModelConfig = {
   provider: CHAT_MODEL_PROVIDER,
   model: CHAT_MODEL,
   apiKey: '',
-  baseUrl: 'http://127.0.0.1:11434',
+  baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
 }
 
 const defaultVisionModelConfig: VisionModelConfig = {
@@ -371,6 +372,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         questionSummary: item.question_summary,
         recommendation: item.recommendation,
         focus: item.conversation_focus,
+        mistakeProposal: item.mistake_proposal,
       }
     })
     const latestAssistant = [...messages].reverse().find((item) => item.role === 'assistant')
@@ -506,6 +508,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                         questionSummary: data.question_summary,
                         recommendation: data.recommendation,
                         focus: data.conversation_focus,
+                        mistakeProposal: data.mistake_proposal,
                       }
                     : item,
                 ),

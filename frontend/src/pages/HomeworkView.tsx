@@ -27,6 +27,7 @@ import {
   submitHomework,
 } from '../lib/api'
 import HomeworkPaper from '../components/HomeworkPaper'
+import MathMarkdown from '../components/MathMarkdown'
 
 const { Dragger } = Upload
 const { TextArea } = Input
@@ -280,7 +281,7 @@ function StudentGrading({
         <div>
           <span>本次得分</span>
           <strong>{grading.total_score} <small>/ {grading.max_score} 分</small></strong>
-          <p>{grading.summary || '自动批改已完成'}</p>
+          <MathMarkdown content={grading.summary || '自动批改已完成'} />
         </div>
       </header>
       <div className="student-grade-items">
@@ -300,7 +301,7 @@ function StudentGrading({
             <span className={item.is_correct ? 'correct' : 'incorrect'}>
               {item.is_correct ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
             </span>
-            <div><strong>第 {item.number} 题</strong><p>{item.feedback || '已完成评分'}</p></div>
+            <div><strong>第 {item.number} 题</strong><MathMarkdown content={item.feedback || '已完成评分'} /></div>
             <b>{item.score} / {item.max_score}</b>
           </article>
         ))}

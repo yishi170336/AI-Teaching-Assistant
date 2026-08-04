@@ -213,6 +213,13 @@ class KnowledgeBaseManager:
             raise RuntimeError(f"知识库 {knowledge_base} 尚未构建完成")
         return self._retrievers[knowledge_base]
 
+    def get_or_none(self, knowledge_base: str) -> HybridRetriever | None:
+        """不抛异常的 get，用于 Agent 节点中优雅降级。"""
+        try:
+            return self.get(knowledge_base)
+        except RuntimeError:
+            return None
+
     def close_all(self) -> None:
         for process in self._processes.values():
             if process.returncode is None:
@@ -270,6 +277,80 @@ class KnowledgeBaseManager:
                 "chapters": len(chapters),
             },
         }
+
+    def quick_search(
+        self, knowledge_base: str, query: str, top_k: int = 4
+    ) -> list[dict[str, Any]]:
+        """轻量快速检索，不做重排，用于主 Agent 理解阶段。
+
+        与 HybridRetriever.search() 不同，此方法跳过 cross-encoder 重排和
+        多模态检索，以降低延迟。仅使用向量 + BM25 + 知识图谱信号。
+        """
+        retriever = self.get(knowledge_base)
+        try:
+            hits = retriever.search(query, top_k, False, None)
+            return [hit.source_dict() for hit in hits]
+        except Exception:
+            return []
+
+    def graph_lookup(
+        self, knowledge_base: str, concepts: list[str]
+    ) -> dict[str, Any]:
+        """查询知识图谱中概念间的关系和依赖。
+
+        返回：{concepts: [...], relations: [...], prerequisites: {...}}
+        """
+        result: dict[str, Any] = {
+            "concepts": [],
+            "relations": [],
+            "prerequisites": {},
+        }
+        try:
+            graph_data = self.graph(knowledge_base)
+        except Exception:
+            return result
+
+        # 匹配概念节点
+        nodes = graph_data.get("nodes", [])
+        edges = graph_data.get("edges", [])
+        matched_ids: set[str] = set()
+
+        normalized = {c.lower().strip() for c in concepts if c.strip()}
+        for node in nodes:
+            name = str(node.get("name", "")).lower().strip()
+            if any(concept in name or name in concept for concept in normalized):
+                node_id = str(node.get("id", ""))
+                if node_id:
+                    matched_ids.add(node_id)
+                    result["concepts"].append({
+                        "id": node_id,
+                        "name": node.get("name", ""),
+                        "type": node.get("type", ""),
+                    })
+
+        # 查询相关边
+        for edge in edges:
+            source = str(edge.get("source", ""))
+            target = str(edge.get("target", ""))
+            if source in matched_ids or target in matched_ids:
+                result["relations"].append({
+                    "source": edge.get("source"),
+                    "target": edge.get("target"),
+                    "relation": edge.get("relation", "RELATED"),
+                })
+                # 收集前置概念
+                if edge.get("relation") in ("PREREQUISITE", "DEPENDS_ON"):
+                    prereq = edge.get("source", "")
+                    concept = edge.get("target", "")
+                    result["prerequisites"].setdefault(concept, []).append(prereq)
+
+        # 去重 prerequisites
+        for key in result["prerequisites"]:
+            result["prerequisites"][key] = list(
+                dict.fromkeys(result["prerequisites"][key])
+            )
+
+        return result
 
     def start_build(
         self,

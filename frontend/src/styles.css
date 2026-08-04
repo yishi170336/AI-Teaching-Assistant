@@ -213,17 +213,19 @@ button { color: inherit; }
 .source-score { color: #5c8d83; font-size: 9px; font-weight: 800; }
 .source-card > strong { display: block; color: #25494c; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .source-card > p.source-name { margin: 5px 0 8px; color: #899a98; font-size: 9px; line-height: 1.45; overflow-wrap: anywhere; }
-.source-card > p.source-excerpt { display: -webkit-box; overflow: hidden; margin: 8px 0; color: #5f7775; font-size: 9px; line-height: 1.55; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
-.source-card > p.source-excerpt.is-expanded { display: block; overflow: visible; -webkit-line-clamp: unset; }
+.source-card > .source-excerpt { display: -webkit-box; overflow: hidden; margin: 8px 0; color: #5f7775; font-size: 9px; line-height: 1.55; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.source-card > .source-excerpt.is-expanded { display: block; overflow: visible; -webkit-line-clamp: unset; }
+.source-excerpt .math-markdown { font-size: inherit; line-height: inherit; }
+.source-excerpt .math-markdown p { margin: 0; }
 .source-content-toggle { display: inline-flex; align-items: center; gap: 2px; padding: 1px 0; color: #4d847c; cursor: pointer; background: transparent; border: 0; font-size: 8px; }
 .source-content-toggle:hover { color: #126f67; }
 .source-content-toggle svg { transition: transform .16s ease; }
 .source-content-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
 .source-tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 7px 0; }
-.source-tags span, .source-tags button { padding: 2px 5px; color: #42766f; background: #edf6f3; border: 0; border-radius: 5px; font-size: 8px; line-height: 1.5; }
-.source-tags span { overflow-wrap: anywhere; }
-.source-tags button { color: #176f67; cursor: pointer; font-weight: 750; }
-.source-tags button:hover { background: #dcefeb; }
+.source-tags > span, .source-tags > button { padding: 2px 5px; color: #42766f; background: #edf6f3; border: 0; border-radius: 5px; font-size: 8px; line-height: 1.5; }
+.source-tags > span { overflow-wrap: anywhere; }
+.source-tags > button { color: #176f67; cursor: pointer; font-weight: 750; }
+.source-tags > button:hover { background: #dcefeb; }
 .source-score-grid { display: grid; gap: 4px; margin: 8px 0; }
 .source-score-grid > div { display: grid; grid-template-columns: 34px 1fr; align-items: center; gap: 5px; color: #849795; font-size: 8px; }
 .source-score-grid i { height: 3px; overflow: hidden; background: #edf1f0; border-radius: 99px; }
@@ -253,8 +255,8 @@ button { color: inherit; }
 .conversation-focus-icon { display: grid; flex: 0 0 27px; width: 27px; height: 27px; place-items: center; color: #fff; background: #25877f; border-radius: 8px; }
 .conversation-focus-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; }
 .conversation-focus-copy small { color: #6f918d; font-size: 9px; }
-.conversation-focus-copy strong { overflow: hidden; color: #255b57; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.conversation-focus-copy span { overflow: hidden; color: #718784; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-focus-copy > strong { overflow: hidden; color: #255b57; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-focus-copy > span { overflow: hidden; color: #718784; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-focus-actions { display: flex; flex: 0 0 auto; align-items: center; }
 .conversation-focus-actions .ant-btn { color: #547d79; font-size: 10px; }
 .sr-only-file { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
@@ -309,6 +311,8 @@ button { color: inherit; }
 .message-bubble { max-width: min(730px, calc(100% - 45px)); color: #27484b; }
 .message-row.user .message-bubble { padding: 11px 15px; color: #fff; background: linear-gradient(135deg, #126f68, #0b5e5b); border-radius: 15px 15px 4px 15px; box-shadow: 0 6px 16px rgba(18,100,95,.12); }
 .message-row.user p { margin: 0; font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
+.message-row.user .math-markdown { color: inherit; font-size: 13px; line-height: 1.65; }
+.message-row.user .math-markdown .katex-display { color: inherit; background: rgba(255,255,255,.08); }
 .message-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .message-image-attachment { position: relative; width: 176px; overflow: hidden; color: #e8f7f4; text-decoration: none; background: rgba(0,0,0,.12); border: 1px solid rgba(255,255,255,.16); border-radius: 10px; }
 .message-image-attachment img { display: block; width: 100%; max-height: 150px; object-fit: cover; background: #fff; }
@@ -347,10 +351,19 @@ button { color: inherit; }
 .recognition-hints { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 10px; color: #6c8581; font-size: 8px; }
 .recognition-hints .ant-tag { margin: 0; color: #39756f; background: #e8f4f1; border-color: #cde4de; font-size: 8px; }
 .recognition-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 13px; }
-.message-question-source { display: flex; gap: 9px; margin: 8px 0 10px; padding: 10px 12px; border: 1px solid #dce8e5; border-radius: 10px; background: #f7fbfa; color: #315e58; }
-.message-question-source > div { display: grid; gap: 2px; min-width: 0; }
+.message-question-source { display: flex; width: min(640px, 100%); box-sizing: border-box; align-items: flex-start; gap: 10px; margin: 10px 0 12px; padding: 12px 14px; border: 1px solid #d7e7e3; border-radius: 12px; background: linear-gradient(145deg, #f7fbfa, #fbfdfc); color: #315e58; }
+.message-question-source > svg { flex: 0 0 auto; margin-top: 2px; color: #39877e; }
+.message-question-source > div { display: grid; flex: 1; gap: 3px; min-width: 0; }
 .message-question-source small { color: #6d817e; }
-.message-question-source span { overflow: hidden; color: #4d5d5b; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.message-question-source > div > .math-markdown { max-height: 42px; overflow: hidden; color: #4d5d5b; font-size: 11px; line-height: 1.55; }
+.message-question-source > div > .math-markdown p { margin: 0; }
+.message-question-figure-group { display: grid; gap: 5px; margin-top: 7px; }
+.message-question-figure-group > small { color: #4f766f; font-weight: 700; }
+.message-question-figure-group.answer > small { color: #796c4f; }
+.message-question-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 260px)); gap: 10px; margin-top: 5px; }
+.message-question-figures figure { width: 100%; box-sizing: border-box; margin: 0; padding: 8px; border: 1px solid #dbe8e5; border-radius: 10px; background: #fff; box-shadow: 0 3px 10px rgba(31,76,71,.04); }
+.message-question-figures .ant-image, .message-question-figures img { display: block; width: 100%; max-height: 220px; object-fit: contain; }
+.message-question-figures figcaption { margin-top: 6px; color: #6d817e; font-size: 10px; line-height: 1.4; text-align: center; }
 .practice-card { width: min(650px, 100%); margin-top: 13px; padding: 14px; background: linear-gradient(145deg, #f5faf8, #fff); border: 1px solid #c9e0da; border-radius: 14px; box-shadow: 0 8px 22px rgba(25,83,78,.065); }
 .practice-card.graded { background: linear-gradient(145deg, #f8faf5, #fff); border-color: #d8e2c5; }
 .practice-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
@@ -411,6 +424,8 @@ button { color: inherit; }
 .stage-pill { display: inline-flex; align-items: center; gap: 8px; margin: -12px 0 20px 47px; padding: 6px 9px; color: #6c8986; background: #edf5f2; border-radius: 12px; font-size: 9px; }
 
 .math-markdown { font-size: 13px; line-height: 1.88; overflow-wrap: anywhere; }
+.math-markdown-inline { display: inline; font-size: inherit; line-height: inherit; }
+.math-markdown-inline .katex-display { display: inline; margin: 0; padding: 0; background: transparent; }
 .math-markdown > :first-child { margin-top: 0; }
 .math-markdown > :last-child { margin-bottom: 0; }
 .math-markdown h1, .math-markdown h2, .math-markdown h3 { color: #173f42; line-height: 1.38; }
@@ -579,7 +594,7 @@ button { color: inherit; }
 .chapter-card-stats { display: flex; gap: 14px; color: #708783; font-size: 9px; }
 .chapter-card-stats strong { color: #17766e; font-size: 12px; }
 .chapter-card-preview { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; padding-right: 4px; }
-.chapter-card-preview span { max-width: 120px; padding: 4px 7px; overflow: hidden; color: #54726e; background: #edf5f2; border-radius: 12px; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.chapter-card-preview > span { max-width: 120px; padding: 4px 7px; overflow: hidden; color: #54726e; background: #edf5f2; border-radius: 12px; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .chapter-card-enter { position: absolute; right: 15px; bottom: 14px; display: flex; align-items: center; gap: 3px; padding: 0; color: #16776e; cursor: pointer; background: transparent; border: 0; font-size: 9px; font-weight: 800; }
 .chapter-card-enter:hover { color: #e06f36; }
 .chapter-knowledge-modal .ant-modal-content { padding: 0; overflow: hidden; border-radius: 18px; }
@@ -868,14 +883,15 @@ button { color: inherit; }
 .student-grade-report > header span { color: #77908c; font-size: 9px; }
 .student-grade-report > header strong { color: #164e4b; font-size: 28px; }
 .student-grade-report > header small { color: #78908b; font-size: 11px; }
-.student-grade-report > header p { margin: 3px 0 0; color: #6d8581; font-size: 9px; }
+.student-grade-report > header .math-markdown { margin-top: 3px; color: #6d8581; font-size: 9px; line-height: 1.6; }
 .student-grade-items { display: grid; gap: 7px; margin-top: 17px; }
 .student-grade-items article { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 10px 12px; background: #f7faf9; border-radius: 9px; }
 .student-grade-items article > span { display: grid; place-items: center; }
 .student-grade-items .correct { color: #138174; }
 .student-grade-items .incorrect { color: #d16b55; }
 .student-grade-items strong { color: #355956; font-size: 10px; }
-.student-grade-items p { margin: 2px 0 0; color: #7a8e8a; font-size: 8px; }
+.student-grade-items .math-markdown { margin-top: 2px; color: #7a8e8a; font-size: 8px; line-height: 1.6; }
+.student-grade-items .math-markdown p { margin: 0; }
 .student-grade-items b { color: #285e5a; font-size: 10px; }
 .student-review-note { display: flex; gap: 9px; margin-top: 14px; padding: 11px; border-radius: 9px; }
 .student-review-note.passed { color: #1d756b; background: #eaf6f2; }
@@ -1129,9 +1145,9 @@ button { color: inherit; }
 .grading-score span { margin-top: 3px; color: #7e918d; font-size: 8px; }
 .grading-items { display: grid; gap: 6px; }
 .grading-items > div { display: grid; grid-template-columns: 75px 80px minmax(0, 1fr); align-items: center; gap: 8px; padding: 8px 10px; background: #f7faf9; border-radius: 8px; }
-.grading-items span, .grading-items p { color: #788e89; font-size: 8px; }
+.grading-items span, .grading-items .math-markdown { color: #788e89; font-size: 8px; }
 .grading-items strong { color: #315b57; font-size: 9px; }
-.grading-items p { margin: 0; }
+.grading-items .math-markdown p { margin: 0; }
 .review-result { display: flex; gap: 8px; margin-top: 12px; padding: 11px; border-radius: 9px; }
 .review-result.passed { color: #21786f; background: #eaf6f2; }
 .review-result.flagged { color: #a7672c; background: #fff6e8; }
@@ -1178,6 +1194,8 @@ button { color: inherit; }
 .student-bank-question-head > div { display: flex; min-width: 0; flex-direction: column; }
 .student-bank-question-head small { color: #2b7d75; font-size: 8px; font-weight: 700; }
 .student-bank-question-head strong { margin-top: 2px; color: #355a56; font-size: 11px; }
+.student-bank-question-actions { display: flex !important; align-items: center; justify-content: flex-end; flex-direction: row !important; flex-wrap: wrap; gap: 7px; }
+.student-bank-question-actions .ant-tag { margin: 0; }
 .student-bank-question-body { padding: 17px; color: #314f4c; font-size: 11px; line-height: 1.75; }
 .student-bank-question-body > .math-markdown p { margin: 0 0 8px; }
 .student-bank-subquestions { display: grid; gap: 7px; margin: 8px 0; }
@@ -1212,9 +1230,19 @@ button { color: inherit; }
 .question-knowledge-empty,
 .question-prerequisites { margin: 7px 0 0; color: #7e918d; font-size: 8px; }
 .question-prerequisites { padding-top: 7px; border-top: 1px dashed #d6e5e1; }
-.student-bank-answer { margin-top: 10px; padding: 10px 12px; color: #496964; background: #fbfaf4; border: 1px solid #ebe5cf; border-radius: 9px; }
-.student-bank-answer summary { cursor: pointer; color: #8a6c2f; font-size: 9px; font-weight: 800; }
-.student-bank-answer[open] summary { margin-bottom: 8px; }
+.student-bank-alignment-hint { display: flex; align-items: center; gap: 7px; margin: 12px 17px 0; padding: 9px 11px; color: #3e746e; background: #eaf6f2; border: 1px solid #cee6df; border-radius: 10px; font-size: 9px; line-height: 1.55; }
+.student-bank-alignment-hint svg { flex: 0 0 auto; color: #238078; }
+.student-bank-answer { margin-top: 12px; padding: 11px 13px; color: #496964; background: linear-gradient(145deg, #fffdf7, #fbfaf4); border: 1px solid #e8dfc3; border-radius: 11px; }
+.student-bank-answer summary { cursor: pointer; color: #806326; font-size: 10px; font-weight: 800; }
+.student-bank-answer[open] summary { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px dashed #e4d9b8; }
+.student-bank-answer > .math-markdown { color: #405955; }
+.student-bank-answer-part { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 9px; margin-top: 8px; padding: 10px 12px; background: rgba(255,255,255,.78); border: 1px solid #e8e6dc; border-radius: 9px; }
+.student-bank-answer-part > b { display: grid; place-items: center; min-width: 27px; height: 25px; color: #fff; background: #8a743e; border-radius: 7px; font-size: 9px; }
+.student-bank-answer-part > .math-markdown { min-width: 0; line-height: 1.8; }
+.student-bank-answer-part > .math-markdown p { margin: 0 0 7px; }
+.student-bank-answer-part > .math-markdown p:last-child { margin-bottom: 0; }
+.student-bank-answer .student-bank-figures.answer { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 320px)); margin-top: 12px; }
+.student-bank-answer .student-bank-figures.answer figure { width: 100%; box-sizing: border-box; background: #fff; }
 
 @media (max-width: 1180px) {
   .sidebar { width: 226px; min-width: 226px; }
@@ -1507,6 +1535,17 @@ button { color: inherit; }
 .recommendation-tags .ant-tag { margin-inline-end: 0; }
 .recommendation-answer { padding: 10px 0 0; border-top: 1px dashed #d7e1ef; }
 .recommendation-answer details summary { cursor: pointer; color: #3157a5; font-weight: 600; }
+.recommendation-answer details[open] summary { margin-bottom: 10px; }
+.recommendation-answer details > .math-markdown { color: #405b59; }
+.recommendation-answer-part { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 9px; margin-top: 8px; padding: 10px 12px; color: #3d5956; background: #f8fbfa; border: 1px solid #e0ebe8; border-radius: 10px; }
+.recommendation-answer-part > strong { display: grid; place-items: center; min-width: 25px; height: 25px; color: #fff; background: #438b82; border-radius: 7px; font-size: 10px; }
+.recommendation-answer-part > .math-markdown { min-width: 0; line-height: 1.8; }
+.recommendation-answer-part > .math-markdown p { margin: 0 0 7px; }
+.recommendation-answer-part > .math-markdown p:last-child { margin-bottom: 0; }
+.recommendation-answer-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 300px)); gap: 10px; margin-top: 12px; }
+.recommendation-answer-figures figure { width: 100%; box-sizing: border-box; margin: 0; padding: 8px; background: #fff; border: 1px solid #e0e7e5; border-radius: 10px; }
+.recommendation-answer-figures .ant-image, .recommendation-answer-figures img { display: block; width: 100%; max-height: 240px; object-fit: contain; }
+.recommendation-answer-figures figcaption { margin-top: 6px; color: #718682; font-size: 9px; text-align: center; }
 .recommendation-actions { margin-top: 8px; }
 .recommendation-reason {
   position: sticky;
@@ -1580,9 +1619,6 @@ button { color: inherit; }
 .recommendation-match.exact { color: #17684d; background: #dff5ea; }
 .recommendation-match.partial,
 .recommendation-match.fallback { color: #9a4238; background: #ffe8e4; }
-.recommendation-condition-bar { margin: 0; padding-top: 8px; border-top: 1px solid #d7e3e8; }
-.recommendation-condition-bar > small { display: block; margin-bottom: 5px; }
-.recommendation-condition-bar .ant-tag { margin: 0 4px 4px 0; font-size: 10px; }
 .recommendation-answer-error { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: #a3443a; }
 .recommendation-intent {
   padding: 7px 8px;
@@ -1751,7 +1787,8 @@ button { color: inherit; }
   background: #fbfdfc;
 }
 .photo-pdf-question-list article > strong { display: block; margin: 7px 0 4px; }
-.photo-pdf-question-list article > p { display: -webkit-box; margin: 0; overflow: hidden; color: #607773; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.photo-pdf-question-list article > .math-markdown { display: -webkit-box; margin: 0; overflow: hidden; color: #607773; font-size: inherit; line-height: inherit; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.photo-pdf-question-list article > .math-markdown p { margin: 0; }
 .photo-pdf-question-list article > .ant-btn { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); }
 .photo-pdf-loading { margin-top: 8px; color: #70827f; font-size: 12px; }
 

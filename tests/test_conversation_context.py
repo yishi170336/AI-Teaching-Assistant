@@ -1,10 +1,25 @@
+import asyncio
+
 from backend.app.agents.context import (
     ConversationContextBuilder,
+    build_focus_catalog,
     estimate_tokens,
+    find_focus_by_question_ref,
+    resolve_semantic_request,
     summary_prompt,
     summary_update_due,
     usable_history,
 )
+
+
+class _SemanticFocusClient:
+    def __init__(self, payload: str) -> None:
+        self.payload = payload
+        self.prompt = ""
+
+    async def chat(self, messages, **_kwargs):
+        self.prompt = messages[0]["content"]
+        return self.payload
 
 
 def _turn(index: int, topic: str, status: str = "completed") -> list[dict]:
@@ -103,3 +118,303 @@ def test_focus_chain_is_shared_without_private_answers():
     assert "秘密标准答案" not in context.text
     assert "秘密解题过程" not in context.text
     assert "嵌套秘密答案" not in context.text
+
+
+def test_learning_plan_context_uses_global_history_without_bound_question_focus():
+    history = [
+        *_turn(1, "戴维南等效"),
+        *_turn(2, "二极管限幅"),
+        *_turn(3, "共射放大电路"),
+    ]
+    context = ConversationContextBuilder().build_global_plan(
+        history=history,
+        message="请制定我的学习规划",
+        summary={
+            "summary": "学生需要系统补齐模拟电路基础。",
+            "confirmed_facts": ["二极管方向判断容易出错"],
+            "knowledge_points": ["戴维南等效", "二极管限幅", "共射放大电路"],
+        },
+    )
+
+    assert "[全局学习画像]" in context.text
+    assert "[近期学习记录]" in context.text
+    assert "戴维南等效" in context.text
+    assert "二极管限幅" in context.text
+    assert "共射放大电路" in context.text
+    assert "[当前学习焦点]" not in context.text
+
+
+def test_model_resolves_second_question_and_specific_answer_step():
+    focuses = [
+        {"conversation_focus": {"id": "a" * 32, "kind": "question", "label": "二极管题", "summary": "判断二极管导通"}, "created_at": "2026-01-01T00:00:01"},
+        {"conversation_focus": {"id": "b" * 32, "kind": "question", "label": "反馈题", "summary": "判断负反馈组态"}, "created_at": "2026-01-01T00:00:02"},
+        {"conversation_focus": {"id": "c" * 32, "kind": "question", "label": "振荡题", "summary": "计算振荡频率"}, "created_at": "2026-01-01T00:00:03"},
+    ]
+    catalog = build_focus_catalog(focuses)
+    client = _SemanticFocusClient(
+        '{"operation":"explain_answer","scope":"specific","target_focus_ids":["'
+        + "b" * 32
+        + '"],"target_step":"第3步","confidence":0.96,"needs_clarification":false,"reason":"用户明确指向第二题"}'
+    )
+    result = asyncio.run(resolve_semantic_request(
+        message="解释前面第二道题答案的第三步",
+        mode="answer",
+        active_focus=focuses[-1]["conversation_focus"],
+        focus_catalog=catalog,
+        client=client,
+    ))
+
+    assert [item["sequence"] for item in catalog] == [1, 2, 3]
+    assert result["target_focus_ids"] == ["b" * 32]
+    assert result["target_step"] == "第3步"
+    assert "不要按关键词机械匹配" in client.prompt
+
+
+def test_model_can_unbind_current_question_for_general_knowledge():
+    focus = {"id": "d" * 32, "kind": "question", "label": "当前计算题", "summary": "计算静态工作点"}
+    client = _SemanticFocusClient(
+        '{"operation":"knowledge_query","scope":"global","target_focus_ids":[],"target_step":"",'
+        '"confidence":0.93,"needs_clarification":false,"reason":"独立概念问题"}'
+    )
+    result = asyncio.run(resolve_semantic_request(
+        message="负反馈在放大电路中有哪些作用？",
+        mode="answer",
+        active_focus=focus,
+        focus_catalog=build_focus_catalog([focus]),
+        client=client,
+    ))
+
+    assert result["scope"] == "global"
+    assert result["target_focus_ids"] == []
+
+
+def test_explicit_current_question_knowledge_cannot_become_course_overview():
+    focus = {
+        "id": "current-question-1",
+        "kind": "question_bank",
+        "label": "例1.3.3",
+        "summary": "稳压二极管动态电阻题",
+    }
+    client = _SemanticFocusClient(
+        '{"operation":"knowledge_query","scope":"global","target_focus_ids":[],'
+        '"target_step":"","confidence":0.9,"needs_clarification":false,'
+        '"reason":"误判为整门课程知识概览"}'
+    )
+    result = asyncio.run(resolve_semantic_request(
+        message="这道题有什么知识点？什么比较重要？",
+        mode="answer",
+        active_focus=focus,
+        focus_catalog=build_focus_catalog([focus]),
+        client=client,
+    ))
+
+    assert result["operation"] == "knowledge_query"
+    assert result["scope"] == "current"
+    assert result["target_focus_ids"] == ["current-question-1"]
+    assert "当前题目" in result["reason"]
+
+
+def test_explicit_question_bank_recommendation_overrides_model_generation_error():
+    focus = {
+        "id": "bank-focus-1",
+        "kind": "question_bank",
+        "label": "例1.3.1",
+        "summary": "理想二极管分段分析",
+    }
+    client = _SemanticFocusClient(
+        '{"operation":"generate_similar","scope":"current",'
+        '"target_focus_ids":["bank-focus-1"],"target_step":"",'
+        '"confidence":0.91,"needs_clarification":false,"reason":"误判为生成新题"}'
+    )
+    result = asyncio.run(resolve_semantic_request(
+        message="可以根据这个知识去题库里面推荐一道题目吗",
+        mode="quiz",
+        active_focus=focus,
+        focus_catalog=build_focus_catalog([focus]),
+        client=client,
+    ))
+
+    assert result["operation"] == "retrieve_similar"
+    assert result["scope"] == "current"
+    assert result["target_focus_ids"] == ["bank-focus-1"]
+    assert "现有题库" in result["reason"]
+
+
+def test_general_answer_is_forced_global_even_if_model_reports_current_focus():
+    focus = {"id": "e" * 32, "kind": "question", "label": "当前题", "summary": "二极管电阻计算"}
+    client = _SemanticFocusClient(
+        '{"operation":"general_answer","scope":"current","target_focus_ids":["'
+        + "e" * 32
+        + '"],"target_step":"","confidence":0.91,"needs_clarification":false,"reason":"通用问题"}'
+    )
+    result = asyncio.run(resolve_semantic_request(
+        message="法国的首都是哪里？",
+        mode="answer",
+        active_focus=focus,
+        focus_catalog=build_focus_catalog([focus]),
+        client=client,
+    ))
+
+    assert result["operation"] == "general_answer"
+    assert result["scope"] == "global"
+    assert result["target_focus_ids"] == []
+
+
+def test_multi_question_context_contains_all_selected_questions_without_answers():
+    first = {
+        "id": "e" * 32,
+        "kind": "generated_practice",
+        "label": "第一题",
+        "summary": "二极管限幅",
+        "question_snapshot": {"question": "分析限幅波形", "answer": "秘密答案"},
+    }
+    second = {
+        "id": "f" * 32,
+        "kind": "generated_practice",
+        "label": "第二题",
+        "summary": "负反馈判断",
+        "question_snapshot": {"question": "判断反馈组态", "solution": "秘密过程"},
+    }
+    context = ConversationContextBuilder(token_budget=8000).build(
+        history=[],
+        message="总结这两道题",
+        focus_catalog=build_focus_catalog([first, second]),
+        selected_focuses=[first, second],
+        semantic_request={"operation": "summarize_questions", "scope": "multiple"},
+    )
+
+    assert "分析限幅波形" in context.text
+    assert "判断反馈组态" in context.text
+    assert "秘密答案" not in context.text
+    assert "秘密过程" not in context.text
+
+
+def test_long_focus_catalog_can_resolve_an_early_question_outside_recent_window():
+    class LongCatalogClient:
+        def __init__(self):
+            self.candidate_calls = 0
+
+        async def chat(self, messages, **_kwargs):
+            prompt = messages[0]["content"]
+            if "候选筛选器" in prompt:
+                self.candidate_calls += 1
+                return (
+                    '{"target_focus_ids":["focus-002"]}'
+                    if '"sequence": 2' in prompt
+                    else '{"target_focus_ids":[]}'
+                )
+            assert '"id": "focus-002"' in prompt
+            return (
+                '{"operation":"explain_answer","scope":"specific",'
+                '"target_focus_ids":["focus-002"],"target_step":"第三步",'
+                '"confidence":0.97,"needs_clarification":false,"reason":"定位到早期第二题"}'
+            )
+
+    focuses = [
+        {
+            "id": f"focus-{index:03d}",
+            "kind": "generated_practice",
+            "label": f"第 {index} 题",
+            "summary": f"历史练习题 {index}",
+        }
+        for index in range(1, 81)
+    ]
+    client = LongCatalogClient()
+    result = asyncio.run(resolve_semantic_request(
+        message="解释很早以前第二道题答案的第三步",
+        mode="answer",
+        active_focus=focuses[-1],
+        focus_catalog=build_focus_catalog(focuses),
+        client=client,
+    ))
+
+    assert client.candidate_calls == 2
+    assert result["target_focus_ids"] == ["focus-002"]
+    assert result["target_step"] == "第三步"
+
+
+def test_exact_question_ref_overrides_a_stale_active_focus():
+    old_ref = {
+        "kind": "question_bank",
+        "question_bank_id": "a" * 32,
+        "question_id": "b" * 32,
+    }
+    selected_ref = {
+        "kind": "question_bank",
+        "question_bank_id": "c" * 32,
+        "question_id": "d" * 32,
+    }
+    records = [
+        {
+            "created_at": "2026-01-01T00:00:01",
+            "conversation_focus": {"id": "1" * 32, "question_ref": old_ref},
+        },
+        {
+            "created_at": "2026-01-01T00:00:02",
+            "conversation_focus": {
+                "id": "2" * 32,
+                "label": "卡片中选中的题",
+                "question_ref": selected_ref,
+            },
+        },
+    ]
+
+    matched = find_focus_by_question_ref(records, selected_ref)
+
+    assert matched is not None
+    assert matched["id"] == "2" * 32
+    assert matched["label"] == "卡片中选中的题"
+
+
+def test_global_knowledge_context_excludes_active_question_and_catalog():
+    focus = {
+        "id": "a" * 32,
+        "summary": "无关当前题：计算滞回比较器门限",
+        "question_snapshot": {"question": "求上下门限"},
+    }
+    context = ConversationContextBuilder().build(
+        history=[],
+        message="负反馈有哪些一般作用？",
+        focus=focus,
+        focus_catalog=build_focus_catalog([focus]),
+        selected_focuses=[focus],
+        semantic_request={
+            "source": "model",
+            "operation": "knowledge_query",
+            "scope": "global",
+        },
+    )
+
+    assert "负反馈有哪些一般作用" in context.text
+    assert "无关当前题" not in context.text
+    assert "求上下门限" not in context.text
+    assert "会话题目目录" not in context.text
+
+
+def test_multi_question_context_preserves_every_selected_item_when_first_is_long():
+    focuses = [
+        {
+            "id": f"focus-{index:02d}",
+            "label": f"第 {index} 题",
+            "summary": f"唯一题目标记-{index}",
+            "question_snapshot": {
+                "question": ("很长的第一题条件" * 1500) if index == 1 else f"题干-{index}",
+                "answer": f"秘密答案-{index}",
+            },
+        }
+        for index in range(1, 7)
+    ]
+    context = ConversationContextBuilder(token_budget=6000).build(
+        history=[],
+        message="总结刚才六道题",
+        selected_focuses=focuses,
+        semantic_request={
+            "source": "model",
+            "operation": "summarize_questions",
+            "scope": "multiple",
+        },
+    )
+
+    for index in range(1, 7):
+        assert f"唯一题目标记-{index}" in context.text
+        assert f"秘密答案-{index}" not in context.text
