@@ -36,6 +36,7 @@ PAGE_LAYOUT_INSTRUCTIONS = {
     "case-walkthrough": "从具体情境、例题或工程现象切入，按问题、分析、结果组织视觉叙事。",
 }
 VISUAL_TYPES = ("general", "circuit", "curve", "formula-derivation")
+VISUAL_HIERARCHIES = ("primary", "secondary", "supporting")
 CONTENT_GENERATION_ATTEMPTS = 2
 DANGLING_TEXT_ENDINGS = (
     "的",
@@ -510,6 +511,7 @@ class KnowledgeExplanationService:
                 "layout": item["layout"],
                 "sections": [],
                 "key_takeaway": "",
+                "visual_layout": {},
                 "image_prompt": "",
                 "status": "pending",
                 "message": "等待生成",
@@ -526,13 +528,14 @@ class KnowledgeExplanationService:
             pages=pages,
             status="generating",
             progress=10,
-            message=f"大纲已完成，开始生成第 1/{len(pages)} 页…",
+            message=f"大纲已完成，开始规划第 1/{len(pages)} 页具体内容…",
         )
-        seed = int(hashlib.sha256(question.encode("utf-8")).hexdigest()[:8], 16)
-        image_model_label = qwen_image_model_label(image_client.model)
+        # Finish the instructional content for every page before any visual layout
+        # or image prompt is designed. This keeps the later stages from silently
+        # changing the teaching plan to fit an early visual idea.
         for page in pages:
             page_index = int(page["index"])
-            base_progress = 10 + int((page_index - 1) * 88 / len(pages))
+            base_progress = 10 + int((page_index - 1) * 30 / len(pages))
             self.store.update_page(
                 task_id,
                 page_index,
@@ -542,7 +545,7 @@ class KnowledgeExplanationService:
             self.store.update(
                 task_id,
                 progress=base_progress,
-                message=f"正在编排第 {page_index}/{len(pages)} 页内容…",
+                message=f"正在规划第 {page_index}/{len(pages)} 页具体内容…",
             )
             detail = await self._create_page_detail(
                 question=question,
@@ -550,29 +553,79 @@ class KnowledgeExplanationService:
                 page=page,
                 text_client=text_client,
             )
+            page.update(detail)
             self.store.update_page(
                 task_id,
                 page_index,
                 sections=detail["sections"],
                 key_takeaway=detail["key_takeaway"],
-                message="正在编写本页专属生图提示词…",
+                message="本页内容已确认，等待整组布局设计…",
             )
             self.store.update(
                 task_id,
-                progress=min(96, base_progress + 2),
+                progress=10 + int(page_index * 30 / len(pages)),
+                message=f"已完成 {page_index}/{len(pages)} 页内容规划",
+            )
+
+        self.store.update(
+            task_id,
+            progress=42,
+            message="页面内容已确认，正在设计整组图片布局…",
+        )
+        for page in pages:
+            self.store.update_page(
+                task_id,
+                int(page["index"]),
+                status="writing",
+                message="正在设计主视觉、内容分区与阅读动线…",
+            )
+        visual_layouts = await self._create_visual_layouts(
+            question=question,
+            plan=plan,
+            pages=pages,
+            text_client=text_client,
+        )
+        for page, visual_layout in zip(pages, visual_layouts):
+            page["visual_layout"] = visual_layout
+            self.store.update_page(
+                task_id,
+                int(page["index"]),
+                visual_layout=visual_layout,
+                message="图片布局已确认，等待生成专属提示词…",
+            )
+        self.store.update(
+            task_id,
+            progress=48,
+            message="整组图片布局已完成，开始编译逐页提示词…",
+        )
+
+        seed = int(hashlib.sha256(question.encode("utf-8")).hexdigest()[:8], 16)
+        image_model_label = qwen_image_model_label(image_client.model)
+        for page in pages:
+            page_index = int(page["index"])
+            base_progress = 48 + int((page_index - 1) * 50 / len(pages))
+            self.store.update_page(
+                task_id,
+                page_index,
+                status="writing",
+                message="正在按已确认布局编写本页专属生图提示词…",
+            )
+            self.store.update(
+                task_id,
+                progress=base_progress,
                 message=f"正在生成第 {page_index}/{len(pages)} 页专属提示词…",
             )
             drafted_prompt = await self._create_image_prompt(
                 question=question,
                 plan=plan,
-                page={**page, **detail},
+                page=page,
                 text_client=text_client,
             )
             prompt = build_page_prompt(
                 lesson_title=plan["title"],
                 lesson_subtitle=plan["subtitle"],
                 page_count=len(pages),
-                page={**page, **detail},
+                page=page,
                 drafted_prompt=drafted_prompt,
             )
             self.store.update_page(
@@ -601,7 +654,7 @@ class KnowledgeExplanationService:
             )
             self.store.update(
                 task_id,
-                progress=min(98, 10 + int(page_index * 88 / len(pages))),
+                progress=min(98, 48 + int(page_index * 50 / len(pages))),
                 message=f"已完成 {page_index}/{len(pages)} 页",
             )
         return self.store.update(
@@ -845,6 +898,92 @@ visual_type 必须选择 general、circuit、curve、formula-derivation 之一�
         )
         return _review_feedback(_json_object(raw))
 
+    async def _create_visual_layouts(
+        self,
+        *,
+        question: str,
+        plan: dict[str, Any],
+        pages: list[dict[str, Any]],
+        text_client: Any,
+    ) -> list[dict[str, Any]]:
+        layout_inputs = [
+            {
+                "index": page["index"],
+                "title": page["title"],
+                "subtitle": page["subtitle"],
+                "layout_archetype": page["layout"],
+                "layout_archetype_instruction": PAGE_LAYOUT_INSTRUCTIONS[page["layout"]],
+                "visual_focus": page["visual_focus"],
+                "sections": page["sections"],
+                "key_takeaway": page["key_takeaway"],
+            }
+            for page in pages
+        ]
+        prompt = f"""
+你是一名专业的中文知识信息图视觉布局设计师。教学内容已经确认；你现在只负责为整组横向 16:9 页面设计画面结构，不能改写、删减、合并或补充任何知识内容，也不能提前撰写生图提示词。
+
+用户原问题：{question}
+整组视觉主线：{plan['subtitle']}
+已确认的页面内容：
+{json.dumps(layout_inputs, ensure_ascii=False, indent=2)}
+
+布局设计要求：
+1. 同时观察整组页面，让页码、标题区、字体、线条和基础色彩保持统一；各页主体构图必须由本页知识关系决定，避免连续使用相同的等宽卡片阵列。
+2. 每个 section 必须且只能映射到一个 region，section_index 与输入顺序严格一致。不能在布局阶段创造新分区或遗漏已有分区。
+3. composition 写清整页主次结构；reading_flow 写清读者视线从哪里开始、经过哪些区域、在哪里收束。
+4. 每个 region 必须写清位置、画面占比、视觉层级、该区具体呈现方式以及与其他区域的箭头、连线或邻接关系。视觉层级只能为 primary、secondary、supporting；每页至少有一个且最多两个 primary。
+5. 电路、曲线、公式推导或结构示意应获得与理解难度匹配的空间，不能为了排版把主图压缩成装饰；并列比较可使用两个 primary 区域。
+6. takeaway_placement 与 takeaway_treatment 要自然收束本页逻辑，不默认使用固定底部通栏。palette_strategy 只描述颜色如何承担语义，decoration 只允许与主题直接相关且不干扰正文的轻量元素。
+7. 所有字段必须是完整、可执行的中文短句，不得使用“适当布局”“合理排版”“美观呈现”等空泛表述。
+8. 只输出 JSON，不要 Markdown。
+
+JSON 结构：
+{{
+  "pages": [
+    {{
+      "index": 1,
+      "composition": "整页主体构图与主次关系，不超过100字",
+      "reading_flow": "明确的阅读起点、路径与收束点，不超过80字",
+      "regions": [
+        {{
+          "section_index": 1,
+          "position": "画布中的具体位置，不超过30字",
+          "proportion": "宽高或主体占比，不超过30字",
+          "hierarchy": "primary|secondary|supporting",
+          "presentation": "本区图文如何组合，不超过120字",
+          "connection": "与其他区域的关系或明确说明独立呈现，不超过80字"
+        }}
+      ],
+      "takeaway_placement": "结论放置位置，不超过40字",
+      "takeaway_treatment": "结论强调方式，不超过80字",
+      "palette_strategy": "本页颜色的语义分工，不超过80字",
+      "decoration": "主题装饰及避让原则，不超过80字"
+    }}
+  ]
+}}
+""".strip()
+        feedback = ""
+        for _attempt in range(CONTENT_GENERATION_ATTEMPTS):
+            retry_instruction = (
+                "\n\n上一次布局未通过结构校验，必须根据以下问题重新设计整组布局：\n"
+                + feedback
+                if feedback
+                else ""
+            )
+            raw = await text_client.chat(
+                [{"role": "user", "content": prompt + retry_instruction}],
+                temperature=0.2,
+                json_mode=True,
+                reasoning_budget=768,
+            )
+            try:
+                return normalize_visual_layouts(_json_object(raw), pages)
+            except KnowledgeExplanationError as exc:
+                feedback = str(exc)
+        raise KnowledgeExplanationError(
+            "整组图片布局连续两次未通过结构与内容映射校验：" + feedback
+        )
+
     async def _create_image_prompt(
         self,
         *,
@@ -867,9 +1006,10 @@ visual_type 必须选择 general、circuit、curve、formula-derivation 之一�
             "layout_instruction": PAGE_LAYOUT_INSTRUCTIONS[page["layout"]],
             "sections": page["sections"],
             "key_takeaway": page["key_takeaway"],
+            "visual_layout": page["visual_layout"],
         }
         prompt = f"""
-你是一名中文教育信息图生图提示词工程师。请把已经确定的单页讲解内容编译成一份可直接交给生图模型的完整中文提示词。你只负责安排画面，不得重新规划、增删或改写教学内容。
+你是一名中文教育信息图生图提示词工程师。教学内容和视觉布局都已经确认，请把它们编译成一份可直接交给生图模型的完整中文提示词。你只能忠实展开既定方案，不得重新规划、增删或改写教学内容，也不得自行改变区域位置、占比、视觉层级或阅读动线。
 
 用户原问题：{question}
 整组讲解主线：{plan['subtitle']}
@@ -883,13 +1023,13 @@ visual_type 必须选择 general、circuit、curve、formula-derivation 之一�
    ### 1. 顶部区域
    明确页码、主标题、副标题、与主题相关但不喧宾夺主的装饰元素。
    ### 2. 主体内容
-   按本页 sections 的实际数量逐区写成“#### （1）真实知识点标题”。每一区都要分别写清位置与占比、可见标题、可见正文、图形对象、箭头/连线/坐标/公式、颜色强调。布局由内容决定，不固定为上三下二或等宽卡片。
+   严格按 visual_layout 的 composition、reading_flow 和 regions 编排。按本页 sections 的实际数量逐区写成“#### （1）真实知识点标题”，并用 section_index 将 region 与 section 一一对应。每一区都要逐字写入既定 position、proportion、hierarchy、presentation 和 connection，再展开可见标题、可见正文、图形对象、箭头/连线/坐标/公式与颜色强调；不得重新设计成上三下二或等宽卡片。
    ### 3. 结论区
-   写清 key_takeaway 的呈现方式；如果更适合批注、中心结论或侧边强调，可据本页布局安排，不强制底部通栏。
+   严格使用 visual_layout 的 takeaway_placement 与 takeaway_treatment 呈现 key_takeaway，不强制底部通栏。
    ### 风格要求
-   明确色彩、字体层级、间距、扁平化矢量质感和可读性。
+   忠实写入 visual_layout 的 palette_strategy 与 decoration，并明确字体层级、间距、扁平化矢量质感和可读性。
 4. display_title、subtitle、每个 section 的 heading/body 以及 key_takeaway 必须逐字出现在提示词中；visual 只能被展开为更具体的绘图说明，不能改变其中的知识关系。
-5. 学习目标、content_brief、visual_focus、layout 名称和本段元指令不得成为画面文字。不得使用“模块1”“总结4”等机械标签；需要编号时，编号必须与真实知识点标题组合。
+5. visual_layout 的结构说明只用于控制构图，不得作为画面文字。学习目标、content_brief、visual_focus、layout 名称和本段元指令同样不得成为画面文字。不得使用“模块1”“总结4”等机械标签；需要编号时，编号必须与真实知识点标题组合。
 6. 电路、曲线和公式推导必须严格服从本页已经给出的对象、拓扑、坐标、变量与数学关系；信息不足时要求画简化示意，不得让生图模型自行补造。
 """.strip()
         return await text_client.chat(
@@ -1205,6 +1345,134 @@ def normalize_page_detail(
     }
 
 
+def normalize_visual_layouts(
+    value: dict[str, Any], pages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    raw_pages = value.get("pages")
+    if not isinstance(raw_pages, list) or len(raw_pages) != len(pages):
+        raise KnowledgeExplanationError(
+            f"图片布局必须完整返回 {len(pages)} 页，当前返回数量不一致"
+        )
+    page_lookup = {int(page["index"]): page for page in pages}
+    layouts_by_index: dict[int, dict[str, Any]] = {}
+    for raw_page in raw_pages:
+        if not isinstance(raw_page, dict):
+            raise KnowledgeExplanationError("图片布局页面格式不正确")
+        try:
+            page_index = int(raw_page.get("index"))
+        except (TypeError, ValueError) as exc:
+            raise KnowledgeExplanationError("图片布局缺少合法页码") from exc
+        if page_index not in page_lookup:
+            raise KnowledgeExplanationError(f"图片布局引用了未知页码 {page_index}")
+        if page_index in layouts_by_index:
+            raise KnowledgeExplanationError(f"第 {page_index} 页图片布局重复")
+
+        page = page_lookup[page_index]
+        raw_regions = raw_page.get("regions")
+        section_count = len(page["sections"])
+        if not isinstance(raw_regions, list) or len(raw_regions) != section_count:
+            raise KnowledgeExplanationError(
+                f"第 {page_index} 页布局必须为 {section_count} 个内容分区逐一指定区域"
+            )
+        regions_by_section: dict[int, dict[str, Any]] = {}
+        primary_count = 0
+        for raw_region in raw_regions:
+            if not isinstance(raw_region, dict):
+                raise KnowledgeExplanationError(f"第 {page_index} 页存在无效布局区域")
+            try:
+                section_index = int(raw_region.get("section_index"))
+            except (TypeError, ValueError) as exc:
+                raise KnowledgeExplanationError(
+                    f"第 {page_index} 页布局区域缺少合法 section_index"
+                ) from exc
+            if not 1 <= section_index <= section_count:
+                raise KnowledgeExplanationError(
+                    f"第 {page_index} 页布局引用了未知内容分区 {section_index}"
+                )
+            if section_index in regions_by_section:
+                raise KnowledgeExplanationError(
+                    f"第 {page_index} 页内容分区 {section_index} 被重复布局"
+                )
+            hierarchy = str(raw_region.get("hierarchy") or "").strip().lower()
+            if hierarchy not in VISUAL_HIERARCHIES:
+                raise KnowledgeExplanationError(
+                    f"第 {page_index} 页内容分区 {section_index} 的视觉层级无效"
+                )
+            if hierarchy == "primary":
+                primary_count += 1
+            regions_by_section[section_index] = {
+                "section_index": section_index,
+                "position": complete_text(
+                    raw_region.get("position"),
+                    label=f"第 {page_index} 页分区 {section_index} 位置",
+                    max_length=30,
+                ),
+                "proportion": complete_text(
+                    raw_region.get("proportion"),
+                    label=f"第 {page_index} 页分区 {section_index} 占比",
+                    max_length=30,
+                ),
+                "hierarchy": hierarchy,
+                "presentation": complete_text(
+                    raw_region.get("presentation"),
+                    label=f"第 {page_index} 页分区 {section_index} 呈现方式",
+                    max_length=120,
+                ),
+                "connection": complete_text(
+                    raw_region.get("connection"),
+                    label=f"第 {page_index} 页分区 {section_index} 连接关系",
+                    max_length=80,
+                ),
+            }
+        expected_section_indexes = set(range(1, section_count + 1))
+        if set(regions_by_section) != expected_section_indexes:
+            raise KnowledgeExplanationError(
+                f"第 {page_index} 页布局没有完整映射所有内容分区"
+            )
+        if not 1 <= primary_count <= 2:
+            raise KnowledgeExplanationError(
+                f"第 {page_index} 页必须设置一至两个 primary 主视觉区域"
+            )
+        layouts_by_index[page_index] = {
+            "composition": complete_text(
+                raw_page.get("composition"),
+                label=f"第 {page_index} 页整体构图",
+                max_length=100,
+            ),
+            "reading_flow": complete_text(
+                raw_page.get("reading_flow"),
+                label=f"第 {page_index} 页阅读动线",
+                max_length=80,
+            ),
+            "regions": [
+                regions_by_section[index] for index in range(1, section_count + 1)
+            ],
+            "takeaway_placement": complete_text(
+                raw_page.get("takeaway_placement"),
+                label=f"第 {page_index} 页结论位置",
+                max_length=40,
+            ),
+            "takeaway_treatment": complete_text(
+                raw_page.get("takeaway_treatment"),
+                label=f"第 {page_index} 页结论呈现方式",
+                max_length=80,
+            ),
+            "palette_strategy": complete_text(
+                raw_page.get("palette_strategy"),
+                label=f"第 {page_index} 页配色策略",
+                max_length=80,
+            ),
+            "decoration": complete_text(
+                raw_page.get("decoration"),
+                label=f"第 {page_index} 页装饰策略",
+                max_length=80,
+            ),
+        }
+    if set(layouts_by_index) != set(page_lookup):
+        raise KnowledgeExplanationError("图片布局没有覆盖全部讲解页面")
+    return [layouts_by_index[int(page["index"])] for page in pages]
+
+
 def page_display_title(
     lesson_title: str, page_title: str, page_index: int, page_count: int
 ) -> str:
@@ -1238,6 +1506,34 @@ def _drafted_prompt_is_complete(
     required_copy = [title, str(page["subtitle"]), str(page["key_takeaway"])]
     for section in page["sections"]:
         required_copy.extend((str(section["heading"]), str(section["body"])))
+    visual_layout = page.get("visual_layout")
+    if isinstance(visual_layout, dict) and visual_layout:
+        layout_keys = (
+            "composition",
+            "reading_flow",
+            "takeaway_placement",
+            "takeaway_treatment",
+            "palette_strategy",
+            "decoration",
+        )
+        if any(not visual_layout.get(key) for key in layout_keys):
+            return False
+        required_copy.extend(
+            str(visual_layout[key]) for key in layout_keys
+        )
+        regions = visual_layout.get("regions")
+        if not isinstance(regions, list) or len(regions) != len(page["sections"]):
+            return False
+        for region in regions:
+            if isinstance(region, dict):
+                region_keys = ("position", "proportion", "presentation", "connection")
+                if any(not region.get(key) for key in region_keys):
+                    return False
+                required_copy.extend(
+                    str(region[key]) for key in region_keys
+                )
+            else:
+                return False
     return all(item in prompt for item in (*required_structure, *required_copy))
 
 
@@ -1259,6 +1555,18 @@ def build_page_prompt(
         "orange": "橙色",
         "red": "红色",
     }
+    visual_layout = page.get("visual_layout")
+    visual_layout = visual_layout if isinstance(visual_layout, dict) else {}
+    layout_regions = {
+        int(region["section_index"]): region
+        for region in visual_layout.get("regions") or []
+        if isinstance(region, dict) and str(region.get("section_index", "")).isdigit()
+    }
+    hierarchy_labels = {
+        "primary": "主视觉",
+        "secondary": "次级说明",
+        "supporting": "辅助信息",
+    }
     for section_index, section in enumerate(page["sections"], start=1):
         visual_type = normalize_visual_type(section.get("visual_type"), section)
         section_visual_types = [
@@ -1269,9 +1577,18 @@ def build_page_prompt(
             if detected_type not in visual_types:
                 visual_types.append(detected_type)
         accent = accent_labels.get(str(section.get("accent")), "蓝色")
+        region = layout_regions.get(section_index, {})
+        required_region_keys = ("position", "proportion", "presentation", "connection")
+        region_instruction = (
+            f"位于{region['position']}，{region['proportion']}，视觉层级为"
+            f"{hierarchy_labels.get(str(region.get('hierarchy')), '内容分区')}；"
+            f"{region['presentation']}；{region['connection']}"
+            if region and all(region.get(key) for key in required_region_keys)
+            else "依据整页信息关系分配空间，不使用机械等宽卡片"
+        )
         section_blocks.append(
             f"""#### （{section_index}）{section['heading']}
-- 位置与形式：依据整页信息关系分配空间，不使用机械等宽卡片；本区以{accent}作少量语义强调。
+- 位置与形式：{region_instruction}；本区以{accent}作少量语义强调。
 - 标题：清晰显示「{section['heading']}」。
 - 文字：逐字显示「{section['body']}」。
 - 示意图：{section['visual']}
@@ -1284,26 +1601,35 @@ def build_page_prompt(
     ) or "- 本页没有电路、曲线或公式推导专项图示；所有图形仍须忠实表达提示词中的知识关系。"
     layout = normalize_page_layout(page.get("layout"), page_index)
     layout_instruction = PAGE_LAYOUT_INSTRUCTIONS[layout]
+    composition = visual_layout.get("composition") or layout_instruction
+    reading_flow = visual_layout.get("reading_flow") or "按知识依赖从主视觉依次阅读各分区"
+    takeaway_placement = visual_layout.get("takeaway_placement") or "与当前版式协调的视觉收束区"
+    takeaway_treatment = visual_layout.get("takeaway_treatment") or "使用强调框、批注或中心结论自然收束"
+    palette_strategy = visual_layout.get("palette_strategy") or "蓝色承担主线，绿、橙、红仅用于明确语义强调"
+    decoration = visual_layout.get("decoration") or "只使用与主题直接相关的浅蓝色轻量线稿，并避让正文"
     fallback_prompt = f"""
-生成一张「专业知识讲解」风格的横向 16:9 中文信息图，主题为《{title}》，副标题为“{page['subtitle']}”。整体采用蓝白为主色调，按本页知识关系使用绿、橙、红作少量强调；风格简洁专业、逻辑分层清楚，重点突出本页主视觉。版式要求：{layout_instruction}
+生成一张「专业知识讲解」风格的横向 16:9 中文信息图，主题为《{title}》，副标题为“{page['subtitle']}”。整体采用蓝白为主色调，风格简洁专业、逻辑分层清楚。已确认的整体构图：{composition}
 
 ### 1. 顶部区域
 - 左上角：蓝色圆角页码标签，白色文字「{page_index}/{page_count}」。
 - 主标题：深蓝色粗体大字「{title}」。
 - 副标题：浅蓝灰色常规字体「{page['subtitle']}」。
-- 装饰元素：只使用与本页主题直接相关的浅蓝色扁平矢量线稿，不添加无关器件、公式或文字。
+- 装饰元素：{decoration}
 
 ### 2. 主体内容
-- 整体布局：{layout_instruction} 根据本页 {len(page['sections'])} 个真实知识分区安排主次与阅读路径，不固定为上三下二，不强制等宽卡片。
+- 整体布局：{composition}
+- 阅读动线：{reading_flow}
 
 {chr(10).join(section_blocks)}
 
 ### 3. 结论区
-- 用与当前版式协调的强调区、批注或视觉收束呈现结论，不强制底部通栏。
+- 结论位置：{takeaway_placement}
+- 呈现方式：{takeaway_treatment}
+- 不强制底部通栏，必须服从上述已确认的结论位置与呈现方式。
 - 结论文字逐字显示：「{page['key_takeaway']}」。
 
 ### 风格要求
-- 色彩：白到浅蓝灰背景，深蓝标题，蓝色为主强调色；绿、橙、红只承担明确语义。
+- 色彩：白到浅蓝灰背景，深蓝标题；{palette_strategy}
 - 排版：标题、正文、注释层级分明，分区间留白均匀，图标、公式和文字严格对齐。
 - 质感：扁平化二维矢量设计，无复杂阴影、无写实 3D；突出教学信息可读性。
 - 整组一致性：围绕“{lesson_subtitle}”保持页码、字体与线条体系一致，但本句不是画面文字。

@@ -92,6 +92,25 @@ export type KnowledgeExplanationLayout =
   | 'system-diagram'
   | 'case-walkthrough'
 
+export type KnowledgeExplanationVisualRegion = {
+  section_index: number
+  position: string
+  proportion: string
+  hierarchy: 'primary' | 'secondary' | 'supporting'
+  presentation: string
+  connection: string
+}
+
+export type KnowledgeExplanationVisualLayout = {
+  composition: string
+  reading_flow: string
+  regions: KnowledgeExplanationVisualRegion[]
+  takeaway_placement: string
+  takeaway_treatment: string
+  palette_strategy: string
+  decoration: string
+}
+
 export type KnowledgeExplanationPage = {
   index: number
   title: string
@@ -101,6 +120,7 @@ export type KnowledgeExplanationPage = {
   visual_focus?: string
   covers?: string[]
   layout: KnowledgeExplanationLayout
+  visual_layout?: KnowledgeExplanationVisualLayout
   sections: KnowledgeExplanationSection[]
   key_takeaway: string
   status: 'pending' | 'writing' | 'drawing' | 'ready' | 'cancelled' | 'error'

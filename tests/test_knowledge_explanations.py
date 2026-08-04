@@ -17,6 +17,7 @@ from backend.app.services.knowledge_explanations import (
     build_page_prompt,
     normalize_page_detail,
     normalize_plan,
+    normalize_visual_layouts,
     normalize_visual_type,
     qwen_image_model_label,
     qwen_image_endpoint,
@@ -29,6 +30,7 @@ class FakeTextClient:
         self.detail_calls = 0
         self.prompt_calls = 0
         self.review_calls = 0
+        self.layout_calls = 0
 
     async def chat(self, *_args, **_kwargs) -> str:
         self.calls += 1
@@ -79,6 +81,40 @@ class FakeTextClient:
                 {"passed": True, "missing_requirements": [], "issues": []},
                 ensure_ascii=False,
             )
+        if "知识信息图视觉布局设计师" in user_prompt:
+            self.layout_calls += 1
+            payload_text = user_prompt.split("已确认的页面内容：\n", 1)[1].split(
+                "\n\n布局设计要求：", 1
+            )[0]
+            layout_inputs = json.loads(payload_text)
+            return json.dumps(
+                {
+                    "pages": [
+                        {
+                            "index": page["index"],
+                            "composition": f"第{page['index']}页采用左侧主视觉与右侧解释区的非对称构图",
+                            "reading_flow": "视线从左侧主视觉开始，依次阅读右侧说明，最后落到结论区",
+                            "regions": [
+                                {
+                                    "section_index": section_index,
+                                    "position": "主体左侧" if section_index == 1 else "主体右侧",
+                                    "proportion": "约占主体宽度45%" if section_index == 1 else "约占主体宽度25%",
+                                    "hierarchy": "primary" if section_index == 1 else "secondary",
+                                    "presentation": f"以{section['heading']}的图示为视觉锚点并让正文紧邻对应图形",
+                                    "connection": "用由左向右的箭头连接下一知识区" if section_index < len(page["sections"]) else "与结论区上下邻接形成视觉收束",
+                                }
+                                for section_index, section in enumerate(page["sections"], start=1)
+                            ],
+                            "takeaway_placement": "主体右下方的独立强调区",
+                            "takeaway_treatment": "使用深蓝描边与浅蓝底色突出结论，并保留充足留白",
+                            "palette_strategy": "深蓝表示核心关系，绿色表示可行结论，橙色表示条件限制",
+                            "decoration": "仅在页角使用浅蓝信号线稿，并避让标题和正文",
+                        }
+                        for page in layout_inputs
+                    ]
+                },
+                ensure_ascii=False,
+            )
         if "生图提示词工程师" in user_prompt:
             self.prompt_calls += 1
             payload_text = user_prompt.split("本页确定内容：\n", 1)[1].split(
@@ -89,20 +125,31 @@ class FakeTextClient:
                 f"#### （{index}）{section['heading']}\n- 文字：{section['body']}\n- 示意图：{section['visual']}"
                 for index, section in enumerate(payload["sections"], start=1)
             )
-            return f"""生成一张「通信领域知识讲解」风格的横向 16:9 信息图，主题为《{payload['display_title']}》，副标题为“{payload['subtitle']}”。整体蓝白配色，逻辑清晰。
+            visual_layout = payload["visual_layout"]
+            region_layouts = "\n".join(
+                f"- 布局：{region['position']}；{region['proportion']}；{region['presentation']}；{region['connection']}"
+                for region in visual_layout["regions"]
+            )
+            return f"""生成一张「通信领域知识讲解」风格的横向 16:9 信息图，主题为《{payload['display_title']}》，副标题为“{payload['subtitle']}”。整体蓝白配色，逻辑清晰。{visual_layout['composition']}
 
 ### 1. 顶部区域
 - 页码：{payload['page_number']}。
 - 主标题：{payload['display_title']}。
 - 副标题：{payload['subtitle']}。
+- 装饰：{visual_layout['decoration']}。
 
 ### 2. 主体内容
+- 阅读动线：{visual_layout['reading_flow']}。
+{region_layouts}
 {section_blocks}
 
 ### 3. 结论区
-- 结论：{payload['key_takeaway']}
+- 位置：{visual_layout['takeaway_placement']}。
+- 方式：{visual_layout['takeaway_treatment']}。
+- 结论：{payload['key_takeaway']}。
 
 ### 风格要求
+- 配色：{visual_layout['palette_strategy']}。
 - 使用蓝白主色、扁平化矢量图形、清晰无衬线字体和均匀留白。
 - 主体布局严格跟随知识关系，不使用无关装饰，不改写任何正文和公式。
 - 所有图形、坐标、变量、箭头和文字一一对应，确保教学信息准确清晰。"""
@@ -182,14 +229,20 @@ def test_generate_dynamic_explanation_pages_and_persist_images(tmp_path: Path) -
     assert completed["status"] == "completed"
     assert completed["progress"] == 100
     assert completed["page_count"] == 3
-    assert text_client.calls == 11
+    assert text_client.calls == 12
     assert text_client.detail_calls == 3
     assert text_client.prompt_calls == 3
     assert text_client.review_calls == 4
+    assert text_client.layout_calls == 1
     assert len(image_client.calls) == 3
     assert all(page["status"] == "ready" for page in completed["pages"])
     raw_pages = store.raw(created["id"])["pages"]
     assert all(page["image_prompt"] for page in raw_pages)
+    assert all(page["visual_layout"]["regions"] for page in raw_pages)
+    assert all(
+        page["visual_layout"]["composition"] in page["image_prompt"]
+        for page in raw_pages
+    )
     assert all("通信领域知识讲解" in page["image_prompt"] for page in raw_pages)
     assert [call[0] for call in image_client.calls] == [
         page["image_prompt"] for page in raw_pages
@@ -534,6 +587,190 @@ def test_incomplete_text_model_prompt_falls_back_to_structured_prompt() -> None:
 
     assert "生成一张「专业知识讲解」" in prompt
     assert "#### （1）R不超过C" in prompt
+
+
+def test_visual_layout_maps_every_section_and_drives_fallback_prompt() -> None:
+    page = {
+        "index": 1,
+        "title": "带宽与信噪比",
+        "subtitle": "观察两个变量如何改变容量",
+        "layout": "formula-focus",
+        "sections": [
+            {
+                "heading": "容量公式",
+                "body": "C = B log₂(1 + S/N)。",
+                "visual": "居中展示容量公式并标出变量",
+                "accent": "blue",
+            },
+            {
+                "heading": "参数趋势",
+                "body": "带宽增大时容量线性增加，信噪比的收益呈对数增长。",
+                "visual": "并列展示两条定性趋势曲线",
+                "accent": "green",
+            },
+        ],
+        "key_takeaway": "带宽和信噪比以不同规律共同决定容量。",
+    }
+    raw_layout = {
+        "pages": [
+            {
+                "index": 1,
+                "composition": "左侧以容量公式为主视觉，右侧上下排列两条参数趋势曲线",
+                "reading_flow": "从左侧公式开始，沿箭头进入右侧曲线，最后下移到结论区",
+                "regions": [
+                    {
+                        "section_index": 2,
+                        "position": "主体右侧",
+                        "proportion": "约占主体宽度40%",
+                        "hierarchy": "secondary",
+                        "presentation": "上下排列两条共享坐标风格的趋势曲线，正文紧邻图例",
+                        "connection": "用从公式变量指向对应曲线的两条箭头建立联系",
+                    },
+                    {
+                        "section_index": 1,
+                        "position": "主体左侧中央",
+                        "proportion": "约占主体宽度50%",
+                        "hierarchy": "primary",
+                        "presentation": "放大容量公式，以细引线连接变量及其解释",
+                        "connection": "公式中的B和S/N分别指向右侧对应趋势曲线",
+                    },
+                ],
+                "takeaway_placement": "右下角曲线下方的强调区",
+                "takeaway_treatment": "用深蓝描边框承接两条曲线并突出最终结论",
+                "palette_strategy": "深蓝用于公式，绿色与橙色分别区分两种参数趋势",
+                "decoration": "页角仅保留浅蓝无线电波线稿，并避让公式和坐标轴",
+            }
+        ]
+    }
+
+    visual_layout = normalize_visual_layouts(raw_layout, [page])[0]
+    assert [region["section_index"] for region in visual_layout["regions"]] == [1, 2]
+    page["visual_layout"] = visual_layout
+    prompt = build_page_prompt(
+        lesson_title="香农定理",
+        lesson_subtitle="解释信道容量的决定因素",
+        page_count=1,
+        page=page,
+    )
+
+    assert visual_layout["composition"] in prompt
+    assert visual_layout["reading_flow"] in prompt
+    assert "位于主体左侧中央，约占主体宽度50%，视觉层级为主视觉" in prompt
+    assert visual_layout["takeaway_placement"] in prompt
+    assert visual_layout["palette_strategy"] in prompt
+
+
+def test_visual_layout_rejects_missing_or_duplicate_section_mapping() -> None:
+    page = {
+        "index": 1,
+        "title": "反馈关系",
+        "sections": [
+            {"heading": "输入", "body": "输入信号进入比较点。"},
+            {"heading": "反馈", "body": "输出经反馈网络返回比较点。"},
+        ],
+    }
+    invalid_layout = {
+        "pages": [
+            {
+                "index": 1,
+                "composition": "左侧输入与右侧反馈形成闭环结构",
+                "reading_flow": "从输入端沿顺时针方向追踪完整闭环",
+                "regions": [
+                    {
+                        "section_index": 1,
+                        "position": "主体左侧",
+                        "proportion": "约占主体宽度45%",
+                        "hierarchy": "primary",
+                        "presentation": "输入比较点与信号箭头组合呈现",
+                        "connection": "沿顺时针箭头连接反馈区域",
+                    }
+                ],
+                "takeaway_placement": "闭环中心下方",
+                "takeaway_treatment": "使用浅蓝强调框呈现结论",
+                "palette_strategy": "蓝色表示前向通路，绿色表示反馈通路",
+                "decoration": "不使用额外装饰",
+            }
+        ]
+    }
+
+    with pytest.raises(KnowledgeExplanationError, match="2 个内容分区"):
+        normalize_visual_layouts(invalid_layout, [page])
+
+
+def test_visual_layout_stage_retries_invalid_section_mapping(tmp_path: Path) -> None:
+    class LayoutRetryClient:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        async def chat(self, messages, **_kwargs) -> str:
+            prompt = messages[-1]["content"]
+            self.prompts.append(prompt)
+            region_count = 1 if len(self.prompts) == 1 else 2
+            return json.dumps(
+                {
+                    "pages": [
+                        {
+                            "index": 1,
+                            "composition": "左侧信号路径与右侧反馈路径围绕比较点形成闭环",
+                            "reading_flow": "从输入端进入比较点，沿前向通路到输出，再沿反馈路径返回",
+                            "regions": [
+                                {
+                                    "section_index": section_index,
+                                    "position": "主体左侧" if section_index == 1 else "主体右侧",
+                                    "proportion": "约占主体宽度45%",
+                                    "hierarchy": "primary" if section_index == 1 else "secondary",
+                                    "presentation": "用规范信号框和方向箭头呈现对应知识关系",
+                                    "connection": "沿闭环方向连接另一个内容区域",
+                                }
+                                for section_index in range(1, region_count + 1)
+                            ],
+                            "takeaway_placement": "闭环中心下方的留白区",
+                            "takeaway_treatment": "用深蓝描边框突出反馈判断结论",
+                            "palette_strategy": "蓝色表示前向通路，绿色表示反馈通路",
+                            "decoration": "仅使用浅蓝信号箭头纹理，并避让正文",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+    pages = [
+        {
+            "index": 1,
+            "title": "反馈信号闭环",
+            "subtitle": "追踪输出如何返回输入端",
+            "layout": "process-flow",
+            "visual_focus": "完整闭环信号路径",
+            "sections": [
+                {
+                    "heading": "前向通路",
+                    "body": "输入经放大环节形成输出。",
+                    "visual": "从输入端指向输出端的蓝色箭头",
+                    "accent": "blue",
+                },
+                {
+                    "heading": "反馈通路",
+                    "body": "部分输出经反馈网络返回比较点。",
+                    "visual": "从输出端返回比较点的绿色箭头",
+                    "accent": "green",
+                },
+            ],
+            "key_takeaway": "沿闭环追踪信号即可判断反馈作用。",
+        }
+    ]
+    client = LayoutRetryClient()
+    layouts = asyncio.run(
+        KnowledgeExplanationService(KnowledgeExplanationStore(tmp_path))._create_visual_layouts(
+            question="怎样判断反馈作用？",
+            plan={"subtitle": "沿完整信号闭环判断反馈"},
+            pages=pages,
+            text_client=client,
+        )
+    )
+
+    assert len(client.prompts) == 2
+    assert "必须为 2 个内容分区逐一指定区域" in client.prompts[1]
+    assert [region["section_index"] for region in layouts[0]["regions"]] == [1, 2]
 
 
 def test_plan_keeps_content_selected_layouts_even_when_adjacent_pages_repeat() -> None:
