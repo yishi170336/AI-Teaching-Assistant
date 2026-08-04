@@ -4837,7 +4837,7 @@ function StudentPageContent() {
     setMode('answer')
     setScene('image_answer')
     void send(
-      `请解答题库《${bank.title}》${formatQuestionNumber(question.number || question.sequence)}。`,
+      `请结合题库已有参考答案，解释《${bank.title}》${formatQuestionNumber(question.number || question.sequence)}的解题思路、公式来源和中间步骤。`,
       { questionRef },
     ).then(() => refreshSessions())
   }

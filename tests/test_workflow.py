@@ -953,6 +953,26 @@ def test_supervisor_understands_short_answer_is_unclear_followup():
     assert routed["supervisor_decision"]["context_policy"] == "bound_question_and_reference_answer"
 
 
+def test_question_bank_ai_answer_request_explains_saved_reference_without_resolving():
+    class RouterMustNotOverrideExplicitReferenceExplanation:
+        async def chat(self, *_args, **_kwargs):
+            raise AssertionError("明确的参考答案讲解请求不应再被模型改判为独立解题")
+
+    engine = object.__new__(CircuitTutorEngine)
+    routed = asyncio.run(engine._supervise({
+        "message": "请结合题库已有参考答案，解释《电子电路基础学习指导书》例1.3.1的解题思路、公式来源和中间步骤。",
+        "attachment_context": "二极管电路如图 1.3.1(a) 所示。",
+        "reference_answer": {"answer": "按三个输入区间判断 D1、D2 的状态。"},
+        "conversation_focus": {"kind": "question_bank", "focus_id": "qb-1"},
+        "mode": "answer",
+        "llm": RouterMustNotOverrideExplicitReferenceExplanation(),
+    }))
+
+    assert routed["intent"] == "answer"
+    assert routed["answer_task"] == "explain_bound_answer"
+    assert "不重新猜解" in routed["supervisor_decision"]["reason"]
+
+
 def test_selected_text_annotation_is_bound_without_calling_router_model():
     class RouterMustNotRun:
         async def chat(self, *_args, **_kwargs):
@@ -1086,6 +1106,19 @@ def test_bound_answer_explanation_rejects_a_one_sentence_restatement():
 
     assert any("逐步讲解过短" in issue for issue in issues)
     assert any("缺少公式来源" in issue for issue in issues)
+
+
+def test_answer_surface_rejects_discarded_attempts_and_forced_reference_matching():
+    issues = _student_answer_surface_issues(
+        "请解释参考答案",
+        (
+            "先假设电源为正极性，计算得到区间 $12<v_i<4$，仍矛盾！说明应重新定义极性。"
+            "正确分析（依据题图标注与参考答案）后，最终采用参考答案逻辑。"
+        ),
+        answer_task="explain_bound_answer",
+    )
+
+    assert any("被推翻的假设" in issue for issue in issues)
 
 
 def test_answer_explanation_prompt_contains_bound_question_and_reference(tmp_path):

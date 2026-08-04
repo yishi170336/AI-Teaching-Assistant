@@ -1330,6 +1330,14 @@ def _student_answer_surface_issues(
         issues.append("回答在句子或公式中途结束")
     if re.search(r"(?:错误[！!：:]|此处应为|前述.*错误|自相矛盾)", answer):
         issues.append("回答仍含审稿痕迹或自我推翻内容")
+    discarded_attempt_markers = re.findall(
+        r"(?:仍(?:然)?矛盾|矛盾[！!？?]|重新(?:定义|审视|分析|假设)|"
+        r"正确分析（?依据|最终采用(?:参考答案|标准答案).{0,12}(?:逻辑|结论)|"
+        r"说明题图.{0,16}(?:可能|应为)|应重新定义极性)",
+        answer,
+    )
+    if discarded_attempt_markers:
+        issues.append("回答暴露了被推翻的假设、竞争性解法或强行贴合参考答案的过程")
     if answer_task == "explain_bound_answer":
         compact = re.sub(r"\s+", "", answer)
         if len(compact) < 120:
@@ -1986,6 +1994,14 @@ class CircuitTutorEngine:
         state: AgentState,
     ) -> tuple[str, str]:
         """Let the supervisor interpret a contextual answer request semantically."""
+        if (
+            state.get("reference_answer")
+            and _is_answer_explanation_request(state.get("message", ""))
+        ):
+            return (
+                "explain_bound_answer",
+                "学生明确要求解释当前题库题的已有参考答案，按原题和参考答案讲解而不重新猜解",
+            )
         client = state.get("llm") or getattr(self, "ollama", None)
         fallback_task = (
             "conversation_meta"
@@ -3031,7 +3047,9 @@ class CircuitTutorEngine:
                 " 本轮不是重新猜答案，而是解释当前绑定原题的既有参考答案。"
                 "必须同时依据服务器提供的原题和参考答案，先指出参考答案最终在说什么，再逐项解释符号、公式来源、"
                 "中间省略步骤及其与原题条件的对应关系；参考答案只有结论时，应补出学生能跟随的推导。"
-                "不得只复述答案原文。若原题或参考答案确有矛盾，应明确指出具体冲突并给出复算依据。"
+                "不得只复述答案原文。除非学生明确要求核验或纠错，否则不得另起一套独立解法、改变题图极性或拓扑、"
+                "质疑或改写参考答案，也不得展示尝试后被推翻的假设。若现有题图或答案确实缺失到无法解释，"
+                "只指出无法对应的具体位置并请求补充，禁止通过竞争性假设继续猜解。"
                 "参考答案属于本轮答疑输入，不得提及内部复核、审稿、校验 Agent 或系统流程。"
                 "学生明确表示看不懂时，正文至少依次说明：①参考答案每一项在说什么；"
                 "②题目中的哪些条件决定该结论；③用到的课程知识、公式或判断规则；"
@@ -3422,6 +3440,13 @@ class CircuitTutorEngine:
                 if annotation_followup else ""
             )
             +
+            (
+                "本轮任务是解释题库已有参考答案，不是独立重做或核验参考答案。"
+                "必须检查讲解是否忠实对应参考答案的结论、公式和步骤；不得改换题图极性、连接关系或另列竞争性解法，"
+                "不得把被推翻的尝试写入 corrected_answer。只有学生明确要求核验时才允许质疑参考答案。\n"
+                if state.get("answer_task") == "explain_bound_answer" else ""
+            )
+            +
             "还要逐项检查每个[资料n]所在结论是否被对应教材正文直接支持。知识图谱命中只表示概念对齐，不能替代正文证据。"
             "只输出合法 JSON：passed(boolean)、issues(字符串数组)、independent_errors(字符串数组)、"
             "corrected_answer(字符串)、reference_check(consistent|conflict|unavailable)、"
@@ -3594,7 +3619,8 @@ class CircuitTutorEngine:
                     "不得补做其他小问，不得输出范围外的最终数值。\n"
                     if annotation_followup else ""
                 )
-                + "不得出现'错误！''此处应为'等审稿痕迹，不得列出互相竞争的结果。"
+                + "不得出现'错误！''此处应为''仍矛盾''重新定义''最终采用参考答案逻辑'等审稿痕迹，"
+                "不得列出互相竞争的结果或展示被推翻的假设。"
                 "图像或参数不足时，明确区分'可以确认'与'无法确认'，禁止猜测。只输出最终答案正文。"
             )
             try:
