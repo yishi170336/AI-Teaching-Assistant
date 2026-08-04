@@ -73,6 +73,19 @@ def test_recommendation_pool_excludes_disabled_bank_and_hides_answer(tmp_path):
     assert result["profile"]["difficulty"] in {"basic", "intermediate", "advanced"}
 
 
+def test_question_bank_metadata_counts_inventory_without_exposing_answers(tmp_path):
+    service = QuestionRecommendationService(_store(tmp_path), tmp_path / "recommend")
+    metadata = service.metadata(student_id="student-metadata")
+    assert metadata == {
+        "bank_count": 2,
+        "ready_bank_count": 2,
+        "recommendation_bank_count": 1,
+        "question_count": 4,
+        "ready_question_count": 4,
+        "recommendable_question_count": 3,
+    }
+
+
 def test_recent_recommendations_are_deduplicated_per_student(tmp_path):
     service = QuestionRecommendationService(_store(tmp_path), tmp_path / "recommend")
     ids = [

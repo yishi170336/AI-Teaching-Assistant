@@ -18,10 +18,55 @@ from backend.app.services.model_catalog import (
 )
 
 
-def test_chat_request_defaults_to_local_model():
+def test_chat_request_defaults_to_qwen():
     request = ChatRequest(session_id="student-demo", message="测试")
-    assert request.model_provider == "ollama"
-    assert request.model == "qwen3.5:2b"
+    assert request.model_provider == "qwen"
+    assert request.model == "qwen3.7-plus"
+
+
+def test_question_summary_keeps_question_figure_urls_for_chat_rendering():
+    summary = main_module._question_summary_from_context({
+        "bank": {"title": "电子电路基础学习指导书"},
+        "question": {
+            "number": "例1.3.1",
+            "prompt": "二极管电路如图所示。",
+            "figures": [{
+                "file": "figure-1.png",
+                "caption": "图1.3.1(a)",
+                "url": "/api/question-banks/bank/assets/figure-1.png?student_id=s1",
+                "path": "不得暴露的服务器路径",
+            }],
+        },
+    })
+
+    assert summary is not None
+    assert summary["figures"] == [{
+        "file": "figure-1.png",
+        "caption": "图1.3.1(a)",
+        "url": "/api/question-banks/bank/assets/figure-1.png?student_id=s1",
+    }]
+    assert "path" not in summary["figures"][0]
+    assert summary["answer_figures"] == []
+
+    with_answers = main_module._question_summary_from_context(
+        {
+            "bank": {"title": "电子电路基础学习指导书"},
+            "question_ref": {"question_bank_id": "bank"},
+            "question": {"number": "例1.3.1", "prompt": "如图所示", "figures": []},
+            "reference": {"answer_figures": [{
+                "path": "F:/private/assets/answer-figure.png",
+                "caption": "图1.3.2",
+            }]},
+        },
+        include_answer_figures=True,
+        student_id="student-1",
+    )
+    assert with_answers is not None
+    assert with_answers["answer_figures"] == [{
+        "file": "answer-figure.png",
+        "caption": "图1.3.2",
+        "url": "/api/question-banks/bank/assets/answer-figure.png?student_id=student-1",
+    }]
 
 
 def test_student_chat_uses_request_selected_model(monkeypatch):
@@ -256,7 +301,7 @@ def test_cloud_model_is_default_when_ollama_is_offline():
     assert (provider, model) == ("qwen", "qwen3-vl-plus")
 
 
-def test_running_ollama_uses_an_installed_model_when_default_is_missing():
+def test_configured_qwen_is_preferred_even_when_ollama_is_running():
     provider, model = choose_default_model(
         {"ok": True, "model_available": False, "models": ["qwen3.5:4b"]},
         ollama_model="qwen3.5:2b",
@@ -265,7 +310,7 @@ def test_running_ollama_uses_an_installed_model_when_default_is_missing():
         qwen_configured=True,
         deepseek_configured=False,
     )
-    assert (provider, model) == ("ollama", "qwen3.5:4b")
+    assert (provider, model) == ("qwen", "qwen3-vl-plus")
 
 
 def test_qwen_display_alias_is_canonicalized_to_exact_api_id():

@@ -55,7 +55,7 @@ import {
   uploadDocumentQuestionAsset,
 } from '../lib/api'
 import HomeworkPaper from '../components/HomeworkPaper'
-import MathMarkdown from '../components/MathMarkdown'
+import MathMarkdown, { InlineMath } from '../components/MathMarkdown'
 
 const { Dragger } = Upload
 const { TextArea } = Input
@@ -290,22 +290,22 @@ function SubmissionPanel({
                 size={88}
                 strokeColor="#0f766e"
               />
-              <div><strong>{grading.max_score > 0 ? `${grading.total_score} / ${grading.max_score}` : '本作业不计分'}</strong><span>{grading.summary || '自动批改已完成'}</span></div>
+              <div><strong>{grading.max_score > 0 ? `${grading.total_score} / ${grading.max_score}` : '本作业不计分'}</strong><span><InlineMath content={grading.summary || '自动批改已完成'} /></span></div>
             </div>
             <div className="grading-items">
               {grading.items.map((item) => (
                 <div key={`${item.question_id}-${item.number}`}>
                   <span>第 {item.number} 题</span>
                   <strong>{item.max_score > 0 ? `${item.score} / ${item.max_score} 分` : '不计分'}</strong>
-                  <p>
-                    {item.subquestion_results?.length
+                  <MathMarkdown content={
+                    item.subquestion_results?.length
                       ? item.subquestion_results.map((part) => (
                         part.max_score > 0
                           ? `（${part.label}）${part.answered ? `${part.score}/${part.max_score}分` : `未作答，0/${part.max_score}分`}`
                           : `（${part.label}）${part.answered ? '已作答（不计分）' : '未作答（不计分）'}`
                       )).join('；') + `。${item.feedback || item.evidence}`
-                      : item.feedback || item.evidence}
-                  </p>
+                      : item.feedback || item.evidence
+                  } />
                 </div>
               ))}
             </div>
@@ -317,8 +317,8 @@ function SubmissionPanel({
             <div>
               <strong>{deterministicReview ? '固定答案规则校验完成' : submission.review.passed ? '审查模型确认批改无误' : '审查模型发现疑点'}</strong>
               <span>{deterministicReview ? '本地确定性规则' : submission.review.review_model} · 置信度 {Math.round(submission.review.confidence * 100)}%</span>
-              {submission.review.issues.map((issue) => <p key={issue}>{issue}</p>)}
-              {submission.review.recommendation && <p>{submission.review.recommendation}</p>}
+              {submission.review.issues.map((issue) => <MathMarkdown key={issue} content={issue} />)}
+              {submission.review.recommendation && <MathMarkdown content={submission.review.recommendation} />}
             </div>
           </div>
         )}

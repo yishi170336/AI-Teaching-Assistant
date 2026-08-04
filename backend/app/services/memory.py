@@ -49,12 +49,36 @@ class ConversationMemory:
     def _summary_key(session_id: str) -> str:
         return f"circuit-tutor:session:{session_id}:summary"
 
+    @staticmethod
+    def _focus_key(session_id: str) -> str:
+        return f"circuit-tutor:session:{session_id}:focuses"
+
     def _fallback_path(self, session_id: str) -> Path:
         digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
         return self._storage_dir / f"{digest}.json"
 
     def _fallback_summary_path(self, session_id: str) -> Path:
         return self._fallback_path(session_id).with_suffix(".summary.json")
+
+    def _fallback_focus_path(self, session_id: str) -> Path:
+        return self._fallback_path(session_id).with_suffix(".focuses.json")
+
+    def _read_focus_registry(self, session_id: str) -> dict[str, dict[str, Any]]:
+        path = self._fallback_focus_path(session_id)
+        try:
+            value = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            return value if isinstance(value, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Unable to read local focus registry for session %s", session_id)
+            return {}
+
+    def _write_focus_registry(
+        self, session_id: str, registry: dict[str, dict[str, Any]]
+    ) -> None:
+        path = self._fallback_focus_path(session_id)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
 
     async def session_lock(self, session_id: str) -> asyncio.Lock:
         """Return the process-local lock that serializes one conversation."""
@@ -124,6 +148,26 @@ class ConversationMemory:
                 self._update_index(session_id, str(items[-1].get("created_at", "")))
             return items
 
+    async def focus_history(self, session_id: str) -> list[dict[str, Any]]:
+        """Return exact question-focus snapshots independently of trimmed chat text."""
+
+        if self.backend == "redis":
+            raw = await self._redis.hgetall(self._focus_key(session_id))
+            values: list[dict[str, Any]] = []
+            for item in raw.values():
+                try:
+                    parsed = json.loads(item)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict) and isinstance(parsed.get("conversation_focus"), dict):
+                    values.append(parsed)
+            values.sort(key=lambda item: str(item.get("first_seen_at", "")))
+            return values
+        async with self._lock:
+            values = list(self._read_focus_registry(session_id).values())
+            values.sort(key=lambda item: str(item.get("first_seen_at", "")))
+            return values
+
     @staticmethod
     def _session_summary(session_id: str, items: list[dict[str, Any]]) -> dict[str, Any]:
         first_user = next(
@@ -145,7 +189,9 @@ class ConversationMemory:
         summaries: list[dict[str, Any]] = []
         if self.backend == "redis":
             async for key in self._redis.scan_iter(match="circuit-tutor:session:*", count=100):
-                if key.endswith(":summary"):
+                # Summary is a string and the durable focus registry is a hash;
+                # only the base conversation key is a Redis list.
+                if key.endswith((":summary", ":focuses")):
                     continue
                 raw_items = await self._redis.lrange(key, 0, -1)
                 items = [json.loads(item) for item in raw_items]
@@ -169,17 +215,19 @@ class ConversationMemory:
         if self.backend == "redis":
             return bool(
                 await self._redis.delete(
-                    self._key(session_id), self._summary_key(session_id)
+                    self._key(session_id), self._summary_key(session_id), self._focus_key(session_id)
                 )
             )
         async with self._lock:
             digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
             path = self._storage_dir / f"{digest}.json"
             summary_path = self._fallback_summary_path(session_id)
+            focus_path = self._fallback_focus_path(session_id)
             index = self._read_index()
             existed = (
                 path.exists()
                 or summary_path.exists()
+                or focus_path.exists()
                 or digest in index
                 or session_id in self._fallback
             )
@@ -188,6 +236,8 @@ class ConversationMemory:
                 path.unlink()
             if summary_path.exists():
                 summary_path.unlink()
+            if focus_path.exists():
+                focus_path.unlink()
             if digest in index:
                 index.pop(digest, None)
                 self._write_index(index)
@@ -209,6 +259,8 @@ class ConversationMemory:
             item.update(
                 {key: value for key, value in metadata.items() if key not in {"role", "content"}}
             )
+        focus = item.get("conversation_focus")
+        focus_id = str(focus.get("id", "")) if isinstance(focus, dict) else ""
         limit = settings.session_history_messages
         if self.backend == "redis":
             key = self._key(session_id)
@@ -216,6 +268,26 @@ class ConversationMemory:
                 pipe.rpush(key, json.dumps(item, ensure_ascii=False))
                 pipe.ltrim(key, -limit, -1)
                 pipe.expire(key, 60 * 60 * 24 * 30)
+                if focus_id:
+                    focus_key = self._focus_key(session_id)
+                    existing_raw = await self._redis.hget(focus_key, focus_id)
+                    try:
+                        existing = json.loads(existing_raw) if existing_raw else {}
+                    except json.JSONDecodeError:
+                        existing = {}
+                    existing_focus = existing.get("conversation_focus", {})
+                    merged_focus = {
+                        **(existing_focus if isinstance(existing_focus, dict) else {}),
+                        **focus,
+                    }
+                    record = {
+                        "focus_id": focus_id,
+                        "first_seen_at": str(existing.get("first_seen_at") or item["created_at"]),
+                        "last_seen_at": item["created_at"],
+                        "conversation_focus": merged_focus,
+                    }
+                    pipe.hset(focus_key, focus_id, json.dumps(record, ensure_ascii=False))
+                    pipe.expire(focus_key, 60 * 60 * 24 * 30)
                 await pipe.execute()
             return
         async with self._lock:
@@ -224,6 +296,21 @@ class ConversationMemory:
             items = items[-limit:]
             self._fallback[session_id] = items
             self._write_fallback(session_id, items)
+            if focus_id:
+                registry = self._read_focus_registry(session_id)
+                existing = registry.get(focus_id, {})
+                existing_focus = existing.get("conversation_focus", {})
+                merged_focus = {
+                    **(existing_focus if isinstance(existing_focus, dict) else {}),
+                    **focus,
+                }
+                registry[focus_id] = {
+                    "focus_id": focus_id,
+                    "first_seen_at": str(existing.get("first_seen_at") or item["created_at"]),
+                    "last_seen_at": item["created_at"],
+                    "conversation_focus": merged_focus,
+                }
+                self._write_focus_registry(session_id, registry)
             self._update_index(session_id, item["created_at"])
 
     async def summary(self, session_id: str) -> dict[str, Any]:

@@ -235,6 +235,43 @@ class QuestionRecommendationService:
         temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(self.history_path)
 
+    def metadata(self, *, student_id: str) -> dict[str, Any]:
+        """Return server-authoritative inventory statistics for accessible banks."""
+        banks = self.homework_store.list_question_banks(
+            include_questions=True,
+            student_id=student_id,
+        )
+        ready_banks = [bank for bank in banks if bank.get("status") == "ready"]
+        enabled_banks = self.homework_store.list_recommendation_banks(
+            student_id=student_id
+        )
+        total_questions = sum(
+            len([item for item in bank.get("questions", []) if isinstance(item, dict)])
+            for bank in banks
+        )
+        ready_questions = sum(
+            len([item for item in bank.get("questions", []) if isinstance(item, dict)])
+            for bank in ready_banks
+        )
+        recommendable_questions = 0
+        for bank in enabled_banks:
+            warnings = list(bank.get("processing_warnings", []))
+            recommendable_questions += sum(
+                1
+                for question in bank.get("questions", [])
+                if isinstance(question, dict)
+                and self.homework_store._question_answer_readiness(question, warnings).get("status") == "ready"
+                and has_reference_answer(question)
+            )
+        return {
+            "bank_count": len(banks),
+            "ready_bank_count": len(ready_banks),
+            "recommendation_bank_count": len(enabled_banks),
+            "question_count": total_questions,
+            "ready_question_count": ready_questions,
+            "recommendable_question_count": recommendable_questions,
+        }
+
     def _parse_query(self, query: str, inherited: dict[str, Any] | None = None) -> dict[str, Any]:
         inherited = inherited or {}
         allow_relaxation = any(keyword in query for keyword in ("放宽", "最接近", "不限"))
@@ -416,7 +453,43 @@ class QuestionRecommendationService:
             "fit_dimensions",
         ):
             result[field] = _clean_list(value.get(field), 10)
+        raw_constraints = value.get("explicit_constraints")
+        if isinstance(raw_constraints, dict):
+            question_type = str(raw_constraints.get("question_type", "")).strip()
+            difficulty = str(raw_constraints.get("difficulty", "")).strip()
+            requires_figure = raw_constraints.get("requires_figure")
+            result["explicit_constraints"] = {
+                "question_type": question_type if question_type in {
+                    "calculation", "choice", "true_false", "design", "short_answer",
+                } else "",
+                "difficulty": difficulty if difficulty in {
+                    "basic", "intermediate", "advanced",
+                } else "",
+                "chapter": str(raw_constraints.get("chapter", "")).strip()[:120],
+                "requires_figure": requires_figure if isinstance(requires_figure, bool) else None,
+            }
         return result
+
+    @staticmethod
+    def _apply_agent_requirements(
+        requirements: dict[str, Any], agent_analysis: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Let model-understood explicit constraints override keyword guesses."""
+
+        constraints = agent_analysis.get("explicit_constraints")
+        if not isinstance(constraints, dict):
+            return requirements
+        updated = dict(requirements)
+        for field in ("question_type", "difficulty", "chapter"):
+            if constraints.get(field):
+                updated[field] = constraints[field]
+            elif field in {"question_type", "difficulty"}:
+                # A model that read the request and found no explicit constraint
+                # clears accidental keyword-derived hard filters.
+                updated[field] = ""
+        if constraints.get("requires_figure") is not None:
+            updated["requires_figure"] = constraints["requires_figure"]
+        return updated
 
     def shortlist(
         self,
@@ -437,7 +510,9 @@ class QuestionRecommendationService:
             constraint_query if constraint_query is not None else query,
             inherited_requirements,
         )
-        requirements["agent_analysis"] = self._sanitize_agent_analysis(agent_analysis)
+        sanitized_analysis = self._sanitize_agent_analysis(agent_analysis)
+        requirements = self._apply_agent_requirements(requirements, sanitized_analysis)
+        requirements["agent_analysis"] = sanitized_analysis
         excluded = {str(item) for item in (excluded_question_ids or set()) if str(item)}
         candidates: list[dict[str, Any]] = []
         for bank in self.homework_store.list_recommendation_banks(student_id=student_id):
@@ -480,7 +555,10 @@ class QuestionRecommendationService:
                     "score_components": score_components,
                 })
         candidates.sort(key=lambda item: item["retrieval_score"], reverse=True)
-        return candidates[: max(1, min(limit, 20))]
+        # The Agent may request a broad catalog and semantically read stems in
+        # batches. Ranking remains useful ordering, but no longer hard-caps the
+        # model to the first 20 keyword/profile matches.
+        return candidates[: max(1, min(limit, 500))]
 
     def recommend(
         self,
@@ -500,7 +578,9 @@ class QuestionRecommendationService:
             constraint_query if constraint_query is not None else query,
             inherited_requirements,
         )
-        requirements["agent_analysis"] = self._sanitize_agent_analysis(agent_analysis)
+        sanitized_analysis = self._sanitize_agent_analysis(agent_analysis)
+        requirements = self._apply_agent_requirements(requirements, sanitized_analysis)
+        requirements["agent_analysis"] = sanitized_analysis
         excluded = {str(item) for item in (excluded_question_ids or set()) if str(item)}
         candidates: list[dict[str, Any]] = []
         for bank in self.homework_store.list_recommendation_banks(student_id=student_id):

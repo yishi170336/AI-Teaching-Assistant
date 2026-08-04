@@ -699,6 +699,8 @@ export type QuestionSummary = {
   bank_title: string
   number?: string
   prompt: string
+  figures?: HomeworkAsset[]
+  answer_figures?: HomeworkAsset[]
 }
 
 export type ConversationFocus = {
@@ -772,11 +774,12 @@ export type StoredMessage = {
   question_summary?: QuestionSummary
   recommendation?: QuestionRecommendation
   conversation_focus?: ConversationFocus
+  mistake_proposal?: MistakeCandidateDraft
 }
 
 type SSECallbacks = {
   onStatus: (data: { stage: string; message: string; agent: string }) => void
-  onMeta: (data: { intent: string; agent: string; provider: ModelProviderId; model: string; sources: SourceInfo[]; cited_sources: SourceInfo[]; verification?: Record<string, unknown>; recognition?: PhotoRecognition; needs_confirmation?: boolean; evidence_mode?: 'grounded' | 'mixed' | 'general_only'; review?: AnswerReview; practice?: PracticeExercise; grading?: PracticeGrading; question_ref?: QuestionReference; question_summary?: QuestionSummary; recommendation?: QuestionRecommendation; conversation_focus?: ConversationFocus }) => void
+  onMeta: (data: { intent: string; agent: string; provider: ModelProviderId; model: string; sources: SourceInfo[]; cited_sources: SourceInfo[]; verification?: Record<string, unknown>; recognition?: PhotoRecognition; needs_confirmation?: boolean; evidence_mode?: 'grounded' | 'mixed' | 'general_only'; review?: AnswerReview; practice?: PracticeExercise; grading?: PracticeGrading; question_ref?: QuestionReference; question_summary?: QuestionSummary; recommendation?: QuestionRecommendation; conversation_focus?: ConversationFocus; mistake_proposal?: MistakeCandidateDraft }) => void
   onDelta: (content: string) => void
   onDone: () => void
   onError: (message: string) => void

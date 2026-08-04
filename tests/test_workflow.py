@@ -8,14 +8,83 @@ from backend.app.agents.workflow import (
     _detect_quiz_family,
     _filter_grounding_hits,
     _finalize_answer_citations,
+    _explicit_interaction_intent,
+    _is_quiz_followup,
     _plan_structure_guidance,
     _physical_assignment_conflicts,
     _quiz_reference,
+    _quiz_preferences,
     _quiz_family_matches,
     _recent_generated_questions,
     _source_context,
     _student_answer_surface_issues,
 )
+
+
+def test_meta_questions_and_question_bank_metadata_have_explicit_routes():
+    assert _explicit_interaction_intent("上一题是什么？") == "answer"
+    assert _explicit_interaction_intent("这两道题之间有联系吗？") == "answer"
+    assert _explicit_interaction_intent("题库有多少道题？") == "recommend"
+
+
+def test_quiz_adjustments_inherit_previous_question_and_change_preferences():
+    history = [{
+        "role": "assistant",
+        "practice": {
+            "question": "判断滞回比较器的两个阈值。",
+            "question_type": "conceptual",
+            "difficulty": "basic",
+        },
+    }]
+    assert _is_quiz_followup("太简单了，来道难题") is True
+    assert _is_quiz_followup("换一种题型") is True
+    assert _quiz_reference("换一种题型", "", history) == "判断滞回比较器的两个阈值。"
+    assert _quiz_preferences("太简单了，来道难题", history) == ("conceptual", "advanced")
+    assert _quiz_preferences("换一种题型", history) == ("numeric", "basic")
+
+
+def test_meta_surface_review_rejects_solving_or_repeating_the_bound_question():
+    context = "如图所示，求滞回比较器的上、下门限电压。"
+    assert "学生询问题目元信息，回答却转而求解题目" in _student_answer_surface_issues(
+        "这两道题之间有联系吗？",
+        "已知条件如下，代入计算后得到最终答案。",
+        answer_task="conversation_meta",
+        question_context=context,
+    )
+    assert "回答主要复述了题目，没有回答元问题" in _student_answer_surface_issues(
+        "上一题是什么？",
+        context,
+        answer_task="conversation_meta",
+        question_context=context,
+    )
+
+
+def test_question_bank_metadata_query_does_not_select_a_question():
+    class MetadataService:
+        def metadata(self, **_kwargs):
+            return {
+                "bank_count": 2,
+                "ready_bank_count": 1,
+                "recommendation_bank_count": 1,
+                "question_count": 320,
+                "ready_question_count": 300,
+                "recommendable_question_count": 280,
+            }
+
+        def shortlist(self, **_kwargs):
+            raise AssertionError("元数据查询不应召回候选题")
+
+        def recommend(self, **_kwargs):
+            raise AssertionError("元数据查询不应推荐单题")
+
+    engine = object.__new__(CircuitTutorEngine)
+    engine.recommendation_service = MetadataService()
+    result = asyncio.run(engine._run_recommend_agent({
+        "message": "题库有多少道题？",
+        "student_id": "student-meta",
+    }))
+    assert result["recommendation"]["kind"] == "question_bank_metadata"
+    assert "320 道题" in result["response"]
 from backend.app.rag.models import RetrievalHit, TextChunk
 from backend.app.rag.section_titles import repair_legacy_chunk_sections
 
@@ -43,6 +112,145 @@ def _retrieval_hit(index: int) -> RetrievalHit:
 def test_sympy_verification_passes():
     result = CircuitTutorEngine._verify_expression("10/(2000+3000)", "0.002")
     assert result["passed"] is True
+
+
+def test_bound_question_knowledge_overview_skips_solution_review():
+    class OverviewClient:
+        model = "overview-test"
+
+        async def stream_chat(self, messages, temperature=0.2):
+            yield "核心知识点包括理想二极管、分段线性分析与传输特性曲线。"
+
+        async def chat(self, *args, **kwargs):
+            raise AssertionError("知识概览不应进入数值解答复核链路")
+
+    engine = object.__new__(CircuitTutorEngine)
+    result = asyncio.run(engine._answer_llm({
+        "message": "这道题包含哪些知识？",
+        "scene": "chat",
+        "answer_task": "general_answer",
+        "conversation_focus": {"kind": "question_bank"},
+        "attachment_blueprint": {
+            "question_type": "calculation",
+            "has_circuit": True,
+        },
+        "reference_answer": {"answer": "参考答案"},
+        "answer_messages": [{"role": "user", "content": "分析知识点"}],
+        "hits": [],
+        "llm": OverviewClient(),
+    }))
+
+    assert result["response"].startswith("核心知识点包括")
+    assert "review" not in result
+
+
+def test_image_question_knowledge_overview_can_never_enter_solution_review():
+    class OverviewClient:
+        model = "overview-image-test"
+
+        async def stream_chat(self, messages, temperature=0.2):
+            yield "这道题涉及二极管的直流电阻、交流小信号电阻和工作点概念。"
+
+        async def chat(self, *args, **kwargs):
+            raise AssertionError("知识概览即使绑定图片题也不得调用解题审稿器")
+
+    engine = object.__new__(CircuitTutorEngine)
+    result = asyncio.run(engine._answer_llm({
+        "message": "这个题包含什么知识？",
+        "scene": "image_answer",
+        "answer_task": "knowledge_query",
+        "conversation_focus": {"kind": "question_bank"},
+        "attachment_blueprint": {
+            "question_type": "calculation",
+            "has_circuit": True,
+        },
+        "reference_answer": {"answer": "直流电阻与交流电阻"},
+        "answer_messages": [{"role": "user", "content": "分析知识点"}],
+        "hits": [],
+        "llm": OverviewClient(),
+    }))
+
+    assert "二极管" in result["response"]
+    assert "当前题目信息不足" not in result["response"]
+    assert "review" not in result
+
+
+def test_bound_question_clarification_cannot_enter_solution_review():
+    class ClarificationClient:
+        model = "clarification-test"
+
+        async def stream_chat(self, messages, temperature=0.2):
+            yield "题目是在区分二极管工作点处的直流电阻与交流小信号电阻。"
+
+        async def chat(self, *args, **kwargs):
+            raise AssertionError("题意澄清不得调用解题审稿器")
+
+    engine = object.__new__(CircuitTutorEngine)
+    result = asyncio.run(engine._answer_llm({
+        "message": "这个题包含什么知识？",
+        "scene": "chat",
+        "answer_task": "clarify_question",
+        "conversation_focus": {"kind": "question_bank"},
+        "attachment_blueprint": {"question_type": "calculation", "has_circuit": False},
+        "reference_answer": {"answer": "直流电阻与交流电阻"},
+        "answer_messages": [{"role": "user", "content": "说明题目考查内容"}],
+        "hits": [],
+        "llm": ClarificationClient(),
+    }))
+
+    assert "直流电阻" in result["response"]
+    assert "当前题目信息不足" not in result["response"]
+    assert "review" not in result
+
+
+def test_unclassified_answer_defaults_to_non_solving_knowledge_task():
+    result = CircuitTutorEngine._supervisor_result("answer", "模型未返回有效子任务")
+
+    assert result["answer_task"] == "knowledge_query"
+    assert result["supervisor_decision"]["requires_validation"] is False
+
+
+def test_solution_route_requires_independent_semantic_confirmation():
+    class SafetyClassifier:
+        async def chat(self, messages, **_kwargs):
+            assert "答疑任务" in messages[0]["content"] or "哪一种答疑任务" in messages[0]["content"]
+            return '{"answer_task":"knowledge_query","reason":"学生只要求概括知识点"}'
+
+    engine = object.__new__(CircuitTutorEngine)
+    routed = asyncio.run(engine._supervise({
+        "message": "这个题包含什么知识？",
+        "semantic_request": {
+            "source": "model",
+            "operation": "solve",
+            "scope": "current",
+            "reason": "第一层误判为求解",
+        },
+        "conversation_focus": {"id": "focus-1", "summary": "二极管电阻题"},
+        "attachment_context": "若二极管工作电流为 1mA，工作电压为 0.7V。",
+        "reference_answer": {"answer": "涉及直流电阻和交流电阻"},
+        "conversation_context": "当前绑定二极管题",
+        "llm": SafetyClassifier(),
+    }))
+
+    assert routed["answer_task"] == "knowledge_query"
+    assert routed["supervisor_decision"]["requires_validation"] is False
+
+
+def test_general_answer_skips_course_retrieval_and_bound_question():
+    engine = object.__new__(CircuitTutorEngine)
+    rewritten = asyncio.run(engine._rewrite_query({
+        "message": "法国的首都是哪里？",
+        "answer_task": "general_answer",
+        "attachment_context": "无关的当前二极管计算题",
+    }))
+    retrieved = asyncio.run(engine._answer_retrieve({
+        "answer_task": "general_answer",
+        "rewritten_query": rewritten["rewritten_query"],
+    }))
+
+    assert rewritten["rewritten_query"] == "法国的首都是哪里？"
+    assert retrieved["hits"] == []
+    assert retrieved["sources"] == []
 
 
 def test_backend_rebuilds_reference_section_from_valid_inline_citations():
@@ -162,7 +370,8 @@ def test_backend_does_not_present_retrieval_candidates_as_citations():
         "这段回答没有引用编号。", [_retrieval_hit(1)]
     )
 
-    assert "未检测到正文中的有效资料引用" in response
+    assert response == "这段回答没有引用编号。"
+    assert "检索依据" not in response
     assert cited_sources == []
 
 
@@ -344,7 +553,7 @@ def test_sympy_verification_rejects_identifiers():
     assert result["passed"] is False
 
 
-def test_conceptual_quiz_is_rejected_from_same_type_practice():
+def test_conceptual_quiz_is_accepted_when_student_requests_that_type():
     engine = object.__new__(CircuitTutorEngine)
     state = {
         "quiz_type": "conceptual",
@@ -362,9 +571,9 @@ def test_conceptual_quiz_is_rejected_from_same_type_practice():
         "sympy_expected": "",
     }
     result = engine._verify_draft(state, draft)
-    assert result["passed"] is False
+    assert result["passed"] is True
     assert result["method"] == "conceptual"
-    assert "numeric" in result["message"]
+    assert "校验通过" in result["message"]
 
 
 def test_explicit_numeric_variant_request_is_classified_as_numeric():
@@ -604,6 +813,37 @@ def test_quiz_retrieval_discards_weakly_related_course_chunks():
 
     assert result["hits"] == []
     assert result["sources"] == []
+
+
+def test_non_numeric_quiz_types_use_task_specific_retrieval_language():
+    captured = []
+
+    class Retriever:
+        def search(self, query, *_args):
+            captured.append(query)
+            return []
+
+    class KnowledgeBases:
+        def get(self, _knowledge_base):
+            return Retriever()
+
+    engine = object.__new__(CircuitTutorEngine)
+    engine.knowledge_bases = KnowledgeBases()
+    expectations = {
+        "choice": "干扰项",
+        "true_false": "反例",
+        "short_answer": "因果关系",
+        "design": "参数设计",
+    }
+    for question_type, expected_term in expectations.items():
+        asyncio.run(engine._quiz_retrieve({
+            "knowledge_base": "course-a",
+            "knowledge_point": "负反馈",
+            "reference_question": "分析负反馈电路",
+            "quiz_type": question_type,
+        }))
+        assert expected_term in captured[-1]
+        assert "数值计算" not in captured[-1]
 
 
 def test_learning_plan_graph_has_analysis_retrieval_and_generation_nodes():
@@ -995,14 +1235,23 @@ def test_supervisor_invalid_model_output_calls_once_and_falls_back_to_answer():
     assert model.calls == 1
 
 
-def test_finalize_rejects_empty_agent_response():
+def test_finalize_fallback_on_empty_agent_response():
+    """空响应不再抛异常，主 Agent 会触发兜底生成友好回答。"""
+    class FallbackLLM:
+        model = "fallback-test"
+
+        async def chat(self, messages, temperature=0.1, **kwargs):
+            return "抱歉，当前无法处理你的请求。请稍后重试。"
+
     engine = object.__new__(CircuitTutorEngine)
-    try:
-        asyncio.run(engine._finalize({"intent": "answer", "response": "  "}))
-    except RuntimeError as exc:
-        assert "未生成有效响应" in str(exc)
-    else:
-        raise AssertionError("finalize should reject an empty response")
+    result = asyncio.run(engine._finalize({
+        "intent": "answer",
+        "response": "  ",
+        "message": "测试问题",
+        "llm": FallbackLLM(),
+    }))
+    assert result.get("response")
+    assert len(result["response"]) > 5
 
 
 def test_learning_plan_structure_scales_with_scope_without_time_arrangements():
@@ -1738,3 +1987,115 @@ def test_generated_opamp_focus_lets_agent_compare_stems_instead_of_tag_filtering
     assert "滞回比较器" in analysis["knowledge_points"]
     assert "积分" in analysis["circuit_functions"]
     assert result["recommendation"]["question_ref"]["question_id"] == "q-opamp"
+
+
+def test_model_semantic_request_is_primary_for_multi_question_summary():
+    engine = object.__new__(CircuitTutorEngine)
+    result = asyncio.run(engine._supervise({
+        "message": "把它们整理一下",
+        "mode": "quiz",
+        "semantic_request": {
+            "source": "model",
+            "operation": "summarize_questions",
+            "scope": "multiple",
+            "target_focus_ids": ["q1", "q2", "q3"],
+            "reason": "用户要求总结三道已选题目",
+        },
+    }))
+    assert result["intent"] == "answer"
+    assert result["answer_task"] == "summarize_questions"
+    assert result["supervisor_decision"]["context_policy"] == "selected_questions_and_global_summary"
+
+
+def test_chat_add_mistake_is_confirmation_action_for_resolved_old_question():
+    engine = object.__new__(CircuitTutorEngine)
+    routed = asyncio.run(engine._supervise({
+        "message": "处理一下第二个",
+        "mode": "auto",
+        "conversation_focus": {"id": "focus-2", "summary": "第二道题"},
+        "semantic_request": {
+            "source": "model",
+            "operation": "add_mistake",
+            "scope": "specific",
+            "target_focus_ids": ["focus-2"],
+            "reason": "用户要求把第二题加入错题本",
+        },
+    }))
+    action_result = asyncio.run(engine._run_answer_agent({
+        **routed,
+        "conversation_focus": {"id": "focus-2", "summary": "第二道题"},
+    }))
+    assert routed["answer_task"] == "add_mistake"
+    assert action_result["action"] == {
+        "operation": "add_mistake",
+        "focus_id": "focus-2",
+        "requires_confirmation": True,
+    }
+
+
+def test_model_routes_question_bank_metadata_without_keyword_match():
+    class MetadataService:
+        def metadata(self, **_kwargs):
+            return {
+                "bank_count": 3,
+                "ready_bank_count": 2,
+                "recommendation_bank_count": 2,
+                "question_count": 456,
+                "ready_question_count": 430,
+                "recommendable_question_count": 400,
+            }
+
+    engine = object.__new__(CircuitTutorEngine)
+    engine.recommendation_service = MetadataService()
+    result = asyncio.run(engine._run_recommend_agent({
+        "message": "介绍一下现有资源的总体规模",
+        "student_id": "student-meta-semantic",
+        "semantic_request": {
+            "source": "model",
+            "operation": "query_question_bank_metadata",
+            "scope": "global",
+        },
+    }))
+    assert result["recommendation"]["kind"] == "question_bank_metadata"
+    assert result["recommendation"]["question_count"] == 456
+
+
+def test_global_knowledge_query_does_not_inherit_active_question_text():
+    engine = object.__new__(CircuitTutorEngine)
+    result = asyncio.run(engine._rewrite_query({
+        "message": "什么是虚短和虚断？",
+        "answer_task": "knowledge_query",
+        "semantic_request": {"scope": "global", "source": "model"},
+        "attachment_context": "无关的当前题：求某滞回比较器的上下门限",
+    }))
+    assert "虚短和虚断" in result["rewritten_query"]
+    assert "无关的当前题" not in result["rewritten_query"]
+
+
+def test_quiz_type_and_difficulty_come_from_model_semantic_design():
+    class DesignModel:
+        model = "semantic-designer"
+
+        async def chat(self, _messages, **_kwargs):
+            return (
+                '{"knowledge_points":["滞回比较器","正反馈"],'
+                '"question_type":"choice","difficulty":"advanced",'
+                '"preserve":["反馈极性判断"],"vary":["设问方式"],'
+                '"requested_changes":["改为选择题","提高难度"],'
+                '"reasoning_goal":"根据回授路径判断反馈极性"}'
+            )
+
+    engine = object.__new__(CircuitTutorEngine)
+    result = asyncio.run(engine._extract_knowledge({
+        "message": "换个更有挑战的形式",
+        "history": [],
+        "attachment_context": "原题要求分析滞回比较器的上下门限",
+        "attachment_blueprint": {"knowledge_points": ["滞回比较器"]},
+        "semantic_request": {"source": "model", "operation": "generate_similar"},
+        "llm": DesignModel(),
+    }))
+    assert result["quiz_type"] == "choice"
+    assert "difficulty:advanced" in result["constraints"]
+    assert result["quiz_design"]["source"] == "model"
+    assert result["quiz_design"]["requested_changes"] == ["改为选择题", "提高难度"]
+    assert result["quiz_family"] == ""

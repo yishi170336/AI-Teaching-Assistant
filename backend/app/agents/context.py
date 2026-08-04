@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
@@ -18,7 +19,27 @@ _PRIVATE_FOCUS_FIELDS = {
     "solution_steps",
     "rubric",
     "reference_answer",
+    "assistant_answer",
 }
+
+_SEMANTIC_OPERATIONS = {
+    "solve",
+    "explain_answer",
+    "verify_answer",
+    "clarify_question",
+    "knowledge_query",
+    "general_answer",
+    "summarize_questions",
+    "compare_questions",
+    "conversation_navigation",
+    "generate_similar",
+    "retrieve_similar",
+    "query_question_bank_metadata",
+    "add_mistake",
+    "unknown",
+}
+
+_SEMANTIC_SCOPES = {"none", "current", "specific", "multiple", "global", "ambiguous"}
 
 
 def estimate_tokens(text: str) -> int:
@@ -140,6 +161,334 @@ def public_focus(focus: dict[str, Any] | None) -> dict[str, Any]:
     return _strip_private_focus_value(focus)
 
 
+def find_focus_by_question_ref(
+    focuses: list[dict[str, Any]], question_ref: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Return the newest exact focus for a server-validated question reference."""
+
+    if not isinstance(question_ref, dict) or not question_ref:
+        return None
+    expected = {
+        "kind": str(question_ref.get("kind", "")),
+        "question_bank_id": str(question_ref.get("question_bank_id", "")),
+        "question_id": str(question_ref.get("question_id", "")),
+    }
+    if not expected["question_bank_id"] or not expected["question_id"]:
+        return None
+    matched: dict[str, Any] | None = None
+    matched_at = ""
+    for item in focuses:
+        if not isinstance(item, dict):
+            continue
+        focus = item.get("conversation_focus")
+        if not isinstance(focus, dict):
+            focus = item if item.get("id") else None
+        if not isinstance(focus, dict):
+            continue
+        candidate = focus.get("question_ref")
+        if not isinstance(candidate, dict):
+            continue
+        normalized = {
+            "kind": str(candidate.get("kind", "")),
+            "question_bank_id": str(candidate.get("question_bank_id", "")),
+            "question_id": str(candidate.get("question_id", "")),
+        }
+        if normalized != expected:
+            continue
+        timestamp = str(
+            item.get("last_seen_at")
+            or item.get("created_at")
+            or item.get("first_seen_at")
+            or ""
+        )
+        if matched is None or timestamp >= matched_at:
+            matched = dict(focus)
+            matched_at = timestamp
+    return matched
+
+
+def _compact_selected_focus(focus: dict[str, Any], char_budget: int) -> str:
+    """Serialize one selected question fairly so an early long item cannot hide later ones."""
+
+    focus = public_focus(focus)
+    payload = {
+        key: focus.get(key)
+        for key in ("id", "kind", "label", "summary", "question_ref", "parent_focus_id")
+        if focus.get(key)
+    }
+    snapshot = focus.get("question_snapshot")
+    if isinstance(snapshot, dict):
+        payload["question_snapshot"] = {
+            key: snapshot.get(key)
+            for key in (
+                "question", "prompt", "question_stem", "question_parts", "subquestions",
+                "knowledge_point", "knowledge_points", "question_type", "difficulty",
+                "topology_signature", "component_types", "circuit_diagram",
+            )
+            if snapshot.get(key)
+        }
+    recognition = focus.get("recognition")
+    if isinstance(recognition, dict):
+        payload["recognition"] = {
+            key: recognition.get(key)
+            for key in (
+                "transcription", "knowledge_points", "component_types", "topology",
+                "knowns", "unknowns", "constraints",
+            )
+            if recognition.get(key)
+        }
+    serialized = json.dumps(payload, ensure_ascii=False)
+    if len(serialized) <= char_budget:
+        return serialized
+    # Preserve identity and summary even when the exact snapshot is unusually long.
+    compact = {
+        key: payload.get(key)
+        for key in ("id", "kind", "label", "summary", "question_ref", "parent_focus_id")
+        if payload.get(key)
+    }
+    remaining = max(160, char_budget - len(json.dumps(compact, ensure_ascii=False)) - 32)
+    detail = snapshot if isinstance(snapshot, dict) else recognition if isinstance(recognition, dict) else {}
+    compact["question_detail"] = json.dumps(detail, ensure_ascii=False)[:remaining]
+    return json.dumps(compact, ensure_ascii=False)[:char_budget]
+
+
+def build_focus_catalog(focuses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build a chronological, answer-free question registry for semantic reference resolution."""
+
+    entries: list[tuple[str, int, dict[str, Any]]] = []
+    for index, item in enumerate(focuses):
+        focus = item.get("conversation_focus") if isinstance(item, dict) else None
+        if not isinstance(focus, dict):
+            focus = item if isinstance(item, dict) and item.get("id") else None
+        if not isinstance(focus, dict) or not focus.get("id"):
+            continue
+        timestamp = str(
+            item.get("first_seen_at")
+            or item.get("created_at")
+            or item.get("last_seen_at")
+            or "9999"
+        )
+        entries.append((timestamp, index, dict(focus)))
+    entries.sort(key=lambda entry: (entry[0], entry[1]))
+
+    ordered: list[str] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    for _timestamp, _index, focus in entries:
+        focus_id = str(focus.get("id", "")).strip()
+        if not focus_id:
+            continue
+        if focus_id not in by_id:
+            ordered.append(focus_id)
+        by_id[focus_id] = dict(focus)
+
+    catalog: list[dict[str, Any]] = []
+    for sequence, focus_id in enumerate(ordered, start=1):
+        focus = public_focus(by_id[focus_id])
+        snapshot = focus.get("question_snapshot")
+        snapshot_summary: dict[str, Any] = {}
+        if isinstance(snapshot, dict):
+            snapshot_summary = {
+                key: snapshot.get(key)
+                for key in (
+                    "question", "prompt", "question_stem", "question_parts",
+                    "subquestions", "knowledge_point", "knowledge_points",
+                    "question_type", "difficulty", "circuit_diagram",
+                )
+                if snapshot.get(key)
+            }
+        catalog.append({
+            "sequence": sequence,
+            "id": focus_id,
+            "kind": str(focus.get("kind", "question")),
+            "label": str(focus.get("label", f"第 {sequence} 道题")),
+            "summary": str(focus.get("summary", ""))[:600],
+            "question_ref": focus.get("question_ref"),
+            "parent_focus_id": str(focus.get("parent_focus_id", "")),
+            "question_snapshot": snapshot_summary,
+        })
+    return catalog
+
+
+async def resolve_semantic_request(
+    *,
+    message: str,
+    mode: str,
+    active_focus: dict[str, Any] | None,
+    focus_catalog: list[dict[str, Any]],
+    client: Any | None,
+) -> dict[str, Any]:
+    """Use the model to resolve both the requested operation and its question scope.
+
+    IDs are validated deterministically after semantic interpretation. Keyword rules are
+    deliberately not used here; when the model is unavailable the caller receives a
+    conservative current/global fallback instead of a guessed historical question.
+    """
+
+    active_id = str((active_focus or {}).get("id", ""))
+    fallback_operation = {
+        "quiz": "generate_similar",
+        "recommend": "retrieve_similar",
+        "answer": "knowledge_query",
+    }.get(mode, "unknown")
+    fallback_scope = "current" if active_id else "global"
+    fallback = {
+        "operation": fallback_operation,
+        "scope": fallback_scope,
+        "target_focus_ids": [active_id] if active_id else [],
+        "target_step": "",
+        "confidence": 0.0,
+        "needs_clarification": False,
+        "reason": "语义解析模型不可用，保守保留显式当前焦点",
+        "source": "fallback",
+    }
+    if client is None:
+        return fallback
+
+    catalog_entries = [
+        {
+            "sequence": item.get("sequence"),
+            "id": item.get("id"),
+            "kind": item.get("kind"),
+            "label": item.get("label"),
+            "summary": str(item.get("summary", ""))[:420],
+            "question_ref": item.get("question_ref"),
+            "parent_focus_id": item.get("parent_focus_id"),
+        }
+        for item in focus_catalog
+    ]
+    compact_catalog = catalog_entries[-60:]
+    if len(catalog_entries) > 60 and callable(getattr(client, "chat", None)):
+        async def select_candidates(batch: list[dict[str, Any]]) -> list[str]:
+            candidate_prompt = (
+                "你是会话题目指代候选筛选器。根据学生原话判断这一批题目中哪些可能被指向。"
+                "要理解序号、题目描述、知识点、父子关系和‘刚才几道’等表达，不做关键词机械匹配。"
+                "只输出 JSON：{\"target_focus_ids\":[\"id\"]}；本批没有候选时返回空数组。"
+                f"\n学生原话：{message[:2400]}"
+                f"\n本批题目（sequence 是全会话序号）：{json.dumps(batch, ensure_ascii=False)[:18000]}"
+            )
+            try:
+                raw = await client.chat(
+                    [{"role": "user", "content": candidate_prompt}],
+                    temperature=0.0,
+                    json_mode=True,
+                    reasoning_budget=80,
+                )
+                text = re.sub(
+                    r"^```(?:json)?\s*|\s*```$", "", str(raw).strip(), flags=re.I | re.S
+                )
+                try:
+                    value = json.loads(text)
+                except json.JSONDecodeError:
+                    match = re.search(r"\{.*\}", text, re.S)
+                    value = json.loads(match.group(0)) if match else {}
+            except Exception:
+                return []
+            batch_ids = {str(item.get("id", "")) for item in batch}
+            values = value.get("target_focus_ids", []) if isinstance(value, dict) else []
+            return [str(item) for item in values if str(item) in batch_ids][:12]
+
+        batches = [catalog_entries[index:index + 40] for index in range(0, len(catalog_entries), 40)]
+        semaphore = asyncio.Semaphore(4)
+
+        async def limited_select(batch: list[dict[str, Any]]) -> list[str]:
+            async with semaphore:
+                return await select_candidates(batch)
+
+        selected_batches = await asyncio.gather(*(limited_select(batch) for batch in batches))
+        candidate_ids = list(dict.fromkeys(
+            focus_id for batch_ids in selected_batches for focus_id in batch_ids
+        ))[:24]
+        if active_id and active_id not in candidate_ids:
+            candidate_ids.append(active_id)
+        if candidate_ids:
+            by_id = {str(item.get("id", "")): item for item in catalog_entries}
+            compact_catalog = [by_id[focus_id] for focus_id in candidate_ids if focus_id in by_id]
+    prompt = (
+        "你是教学对话的语义理解主 Agent。请理解学生真正要执行的操作，以及他指向哪一道或哪几道题。"
+        "不要按关键词机械匹配，也不要解题。当前焦点只是候选，学生可能突然转问一般知识，也可能回指更早的题。"
+        "题目目录中的 sequence 是本会话题目出现顺序；可以根据序号、题目描述、知识点、来源和父子关系解析指代。"
+        "只输出合法 JSON："
+        '{"operation":"solve|explain_answer|verify_answer|clarify_question|knowledge_query|general_answer|summarize_questions|compare_questions|conversation_navigation|generate_similar|retrieve_similar|query_question_bank_metadata|add_mistake|unknown",'
+        '"scope":"none|current|specific|multiple|global|ambiguous",'
+        '"target_focus_ids":["目录中的id"],"target_step":"例如第3步或某公式",'
+        '"confidence":0.0,"needs_clarification":false,"reason":"简短理由"}。'
+        "规则：课程范围内的概念、原理、应用问题使用 knowledge_query；完全不属于当前课程的通用问题使用 general_answer。"
+        "二者若不依赖某题，scope=global 或 none，不得强绑当前题；"
+        "总结/比较多道题时选择所有相关 ID；要求解释某题答案的某一步时 operation=explain_answer 并填写 target_step；"
+        "同类生成、从题库检索相似题、查询题库数量/范围等元数据必须区分；‘加入错题本’只识别目标，不执行写入；"
+        "无法唯一确定目标时 scope=ambiguous、needs_clarification=true，禁止猜最近题。"
+        f"\n前端模式提示（仅作参考）：{mode}"
+        f"\n当前焦点 ID：{active_id or '无'}"
+        f"\n学生请求：{message[:2400]}"
+        f"\n题目目录：{json.dumps(compact_catalog, ensure_ascii=False)[:24000]}"
+    )
+    try:
+        raw = await client.chat(
+            [{"role": "user", "content": prompt}],
+            temperature=0.0,
+            json_mode=True,
+            reasoning_budget=180,
+        )
+        text = str(raw).strip()
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I | re.S)
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", text, re.S)
+            value = json.loads(match.group(0)) if match else {}
+    except Exception:
+        return fallback
+    if not isinstance(value, dict):
+        return fallback
+
+    operation = str(value.get("operation", "unknown")).strip()
+    scope = str(value.get("scope", "ambiguous")).strip()
+    if operation not in _SEMANTIC_OPERATIONS:
+        operation = "unknown"
+    if scope not in _SEMANTIC_SCOPES:
+        scope = "ambiguous"
+    valid_ids = {str(item.get("id", "")) for item in focus_catalog if item.get("id")}
+    requested_ids = value.get("target_focus_ids", [])
+    if not isinstance(requested_ids, list):
+        requested_ids = []
+    target_ids = list(dict.fromkeys(
+        str(item).strip() for item in requested_ids
+        if str(item).strip() in valid_ids
+    ))[:12]
+    if scope == "current":
+        target_ids = [active_id] if active_id else []
+    elif scope in {"none", "global"}:
+        target_ids = []
+    if operation == "general_answer":
+        # A general out-of-domain question is definitionally independent of
+        # any exercise focus, even if the model accidentally reports current.
+        scope = "global"
+        target_ids = []
+    needs_clarification = bool(value.get("needs_clarification"))
+    if scope in {"specific", "multiple"} and not target_ids:
+        scope = "ambiguous"
+        needs_clarification = True
+    if scope == "current" and not active_id:
+        scope = "ambiguous"
+        needs_clarification = True
+    try:
+        confidence = max(0.0, min(1.0, float(value.get("confidence", 0.0))))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if scope == "ambiguous" or (scope in {"specific", "multiple"} and confidence < 0.55):
+        needs_clarification = True
+    return {
+        "operation": operation,
+        "scope": scope,
+        "target_focus_ids": target_ids,
+        "target_step": str(value.get("target_step", "")).strip()[:160],
+        "confidence": confidence,
+        "needs_clarification": needs_clarification,
+        "reason": str(value.get("reason", "模型完成语义任务与题目指代解析"))[:240],
+        "source": "model",
+    }
+
+
 @dataclass(frozen=True)
 class ConversationContext:
     text: str
@@ -159,10 +508,29 @@ class ConversationContextBuilder:
         message: str,
         focus: dict[str, Any] | None = None,
         focus_chain: list[dict[str, Any]] | None = None,
+        focus_catalog: list[dict[str, Any]] | None = None,
+        selected_focuses: list[dict[str, Any]] | None = None,
+        semantic_request: dict[str, Any] | None = None,
         summary: dict[str, Any] | None = None,
     ) -> ConversationContext:
         focus = public_focus(focus)
         focus_chain = [public_focus(item) for item in (focus_chain or []) if isinstance(item, dict)]
+        focus_catalog = [dict(item) for item in (focus_catalog or []) if isinstance(item, dict)]
+        selected_focuses = [public_focus(item) for item in (selected_focuses or []) if isinstance(item, dict)]
+        semantic_request = dict(semantic_request or {})
+        semantic_operation = str(semantic_request.get("operation", ""))
+        semantic_scope = str(semantic_request.get("scope", ""))
+        isolated_knowledge_query = (
+            semantic_operation in {"knowledge_query", "general_answer"}
+            and semantic_scope in {"none", "global"}
+        )
+        if isolated_knowledge_query:
+            # Semantic resolution has already decided this is not a question
+            # follow-up. Do not leave the old focus catalog in the answer prompt.
+            focus = {}
+            focus_chain = []
+            focus_catalog = []
+            selected_focuses = []
         summary = summary or {}
         all_turns = _turns(history)
         query_words = _keywords(
@@ -193,6 +561,40 @@ class ConversationContextBuilder:
 
         selected = [item for turn in selected_turns for item in turn]
         sections: list[str] = ["[当前用户问题]\n" + message]
+        if semantic_request:
+            sections.append(
+                "[主 Agent 语义任务]\n"
+                + json.dumps(semantic_request, ensure_ascii=False)[:2200]
+            )
+        include_catalog = bool(focus_catalog) and (
+            semantic_request.get("source") != "model"
+            or semantic_operation in {"unknown", "conversation_navigation"}
+            and not selected_focuses
+        )
+        if include_catalog:
+            catalog_payload = [
+                {
+                    key: item.get(key)
+                    for key in ("sequence", "id", "kind", "label", "summary", "parent_focus_id")
+                    if item.get(key) not in (None, "")
+                }
+                for item in focus_catalog[-60:]
+            ]
+            sections.append(
+                "[会话题目目录]\nsequence 是本会话题目顺序；只用于解析用户指向，不代表当前题。\n"
+                + json.dumps(catalog_payload, ensure_ascii=False)[:12000]
+            )
+        if selected_focuses:
+            selected_focuses = selected_focuses[:12]
+            per_focus_budget = max(700, 8000 // max(1, len(selected_focuses)))
+            selected_payload = [
+                f"题目 {index}: {_compact_selected_focus(item, per_focus_budget)}"
+                for index, item in enumerate(selected_focuses, start=1)
+            ]
+            sections.append(
+                "[本轮语义选中的题目]\n这些题目由主 Agent 根据用户原话选择；多题总结或比较必须覆盖全部。\n"
+                + "\n".join(selected_payload)
+            )
         if focus.get("id"):
             focus_payload = {
                 key: focus.get(key)
@@ -236,6 +638,65 @@ class ConversationContextBuilder:
             remaining = self.token_budget - estimate_tokens(authoritative) - 4
             # Current question and active focus are never truncated. If they alone
             # exceed the soft budget, correctness takes priority over the budget.
+            text = authoritative
+            if optional and remaining > 0:
+                text += "\n\n" + _truncate_to_tokens(optional, remaining)
+            estimated = estimate_tokens(text)
+        return ConversationContext(text, selected, estimated, was_trimmed)
+
+    def build_global_plan(
+        self,
+        *,
+        history: list[dict[str, Any]],
+        message: str,
+        summary: dict[str, Any] | None = None,
+    ) -> ConversationContext:
+        """Build planning context from the learner's global record, without a bound question focus."""
+        summary = summary or {}
+        all_turns = _turns(history)
+        # A plan should reflect several recent learning activities instead of
+        # silently inheriting whichever single question happens to be active.
+        selected_turns = all_turns[-8:]
+        selected = [item for turn in selected_turns for item in turn]
+        sections: list[str] = ["[当前规划请求]\n" + message]
+        authoritative_count = len(sections)
+
+        summary_text = str(summary.get("summary", "")).strip()
+        facts = summary.get("confirmed_facts", [])
+        knowledge_points = summary.get("knowledge_points", [])
+        unresolved = summary.get("unresolved_questions", [])
+        if summary_text or facts or knowledge_points or unresolved:
+            sections.append(
+                "[全局学习画像]\n这是跨越多轮对话累积的知识覆盖全貌，规划时必须以此为纲。\n"
+                + (summary_text[:1800] if summary_text else "（暂无文字摘要）")
+                + ("\n已确认信息：" + "；".join(map(str, facts[:8])) if isinstance(facts, list) and facts else "")
+                + ("\n累积涉及知识点：" + "；".join(map(str, knowledge_points[:12])) if isinstance(knowledge_points, list) and knowledge_points else "")
+                + ("\n待解决问题：" + "；".join(map(str, unresolved[:6])) if isinstance(unresolved, list) and unresolved else "")
+            )
+        # Collect all unique knowledge points from individual turns for diversity
+        turn_knowledge: list[str] = []
+        for item in history:
+            if isinstance(item.get("knowledge_points"), list):
+                turn_knowledge.extend(str(p) for p in item["knowledge_points"] if str(p).strip())
+        unique_turn_knowledge = list(dict.fromkeys(turn_knowledge))[:16]
+        if unique_turn_knowledge:
+            sections.append(
+                "[对话全程涉及的知识点 — 规划应覆盖其中多个主题，不得只围绕最近一题]\n"
+                + "；".join(unique_turn_knowledge)
+            )
+        if selected:
+            sections.append(
+                "[近期学习记录]\n仅作参考，不要被其中单道题束缚。\n"
+                + "\n".join(_message_text(item) for item in selected)
+            )
+
+        text = "\n\n".join(sections)
+        estimated = estimate_tokens(text)
+        was_trimmed = estimated > self.token_budget
+        if was_trimmed:
+            authoritative = "\n\n".join(sections[:authoritative_count])
+            optional = "\n\n".join(sections[authoritative_count:])
+            remaining = self.token_budget - estimate_tokens(authoritative) - 4
             text = authoritative
             if optional and remaining > 0:
                 text += "\n\n" + _truncate_to_tokens(optional, remaining)

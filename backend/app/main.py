@@ -29,7 +29,10 @@ from backend.app.agents.workflow import (
     _json_object,
 )
 from backend.app.agents.context import (
+    build_focus_catalog,
+    find_focus_by_question_ref,
     normalize_summary,
+    resolve_semantic_request,
     summary_prompt,
     summary_update_due,
     uncovered_history,
@@ -192,6 +195,7 @@ def _run_question_bank_processing(
             homework_store,
             bank_id,
             knowledge_aligner=mistake_knowledge.align,
+            semantic_knowledge_inferer=mistake_knowledge.infer_points,
             cancel_requested=cancel_requested,
         )
     finally:
@@ -221,6 +225,131 @@ def _public_conversation_focus(focus: dict[str, Any] | None) -> dict[str, Any] |
         if focus.get(key):
             public[key] = focus[key]
     return public
+
+
+def _question_summary_from_context(
+    question_context: dict[str, Any] | None,
+    *,
+    include_answer_figures: bool = False,
+    student_id: str = "",
+) -> dict[str, Any] | None:
+    """Build the student-visible source card, including every question figure."""
+
+    if not isinstance(question_context, dict):
+        return None
+    bank = question_context.get("bank")
+    question = question_context.get("question")
+    if not isinstance(bank, dict) or not isinstance(question, dict):
+        return None
+    figures = []
+    for item in question.get("figures", []):
+        if not isinstance(item, dict) or not item.get("url"):
+            continue
+        figures.append({
+            key: item.get(key)
+            for key in (
+                "file", "name", "caption", "url", "page", "width", "height",
+                "content_type", "position",
+            )
+            if item.get(key) not in (None, "")
+        })
+    answer_figures = []
+    if include_answer_figures:
+        question_ref = question_context.get("question_ref")
+        bank_id = (
+            str(question_ref.get("question_bank_id", ""))
+            if isinstance(question_ref, dict)
+            else ""
+        )
+        reference = question_context.get("reference")
+        for item in reference.get("answer_figures", []) if isinstance(reference, dict) else []:
+            if not isinstance(item, dict) or not item.get("path") or not bank_id:
+                continue
+            asset_name = Path(str(item["path"])).name
+            answer_figures.append({
+                "file": asset_name,
+                "caption": str(item.get("caption", "")),
+                "url": (
+                    f"/api/question-banks/{bank_id}/assets/{asset_name}"
+                    + (f"?student_id={student_id}" if student_id else "")
+                ),
+                **({"position": item["position"]} if item.get("position") else {}),
+            })
+    return {
+        "bank_title": str(bank.get("title", "")),
+        "number": question.get("number"),
+        "prompt": str(question.get("prompt", ""))[:500],
+        "figures": figures[:12],
+        "answer_figures": answer_figures[:12],
+    }
+
+
+def _mistake_proposal_from_focus(
+    focus: dict[str, Any] | None,
+    reference_answer: dict[str, Any] | None,
+    attachment_items: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Create a confirmation-only mistake draft for the semantically selected question."""
+
+    if not isinstance(focus, dict) or not focus.get("id"):
+        return None
+    snapshot = focus.get("question_snapshot")
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    question = str(
+        snapshot.get("question")
+        or snapshot.get("prompt")
+        or snapshot.get("question_stem")
+        or focus.get("summary")
+        or ""
+    ).strip()
+    reference = reference_answer if isinstance(reference_answer, dict) else {}
+    answer = str(
+        snapshot.get("answer")
+        or reference.get("answer")
+        or focus.get("assistant_answer")
+        or snapshot.get("solution")
+        or ""
+    ).strip()
+    if not question or not answer:
+        return None
+    kind = str(focus.get("kind", "question"))
+    question_ref = focus.get("question_ref")
+    question_ref = question_ref if isinstance(question_ref, dict) else {}
+    if question_ref.get("kind") == "question_bank":
+        bank_id = str(question_ref.get("question_bank_id", ""))
+        question_id = str(question_ref.get("question_id", ""))
+        source = "question_bank"
+        question_bank_id = f"QB:{bank_id}:{question_id}"
+        source_ref = {
+            "kind": "question_bank",
+            "question_bank_id": bank_id,
+            "question_id": question_id,
+            "origin_question_id": question_id,
+        }
+        agent = "题库推荐 Agent" if kind == "recommended_question" else "答疑 Agent"
+    elif kind == "generated_practice":
+        source = "ai_generated"
+        question_bank_id = ""
+        source_ref = {"kind": "ai_practice", "practice_id": str(focus["id"])}
+        agent = "出题 Agent"
+    else:
+        source = "user_uploaded"
+        question_bank_id = ""
+        source_ref = {"kind": "photo" if kind == "photo_question" else "chat", "question_id": str(focus["id"])}
+        agent = "答疑 Agent"
+    return {
+        "question": question,
+        "answer": answer,
+        "agent": agent,
+        "attachments": attachment_items[:5],
+        "source": source,
+        "questionBankId": question_bank_id,
+        "sourceRef": source_ref,
+        "solution": {"answer": answer, "explanation": answer},
+        "recognition": focus.get("recognition") or {},
+        "suggestedReason": "bookmark",
+        "title": str(focus.get("label") or question[:80]),
+    }
 
 
 def _attachment_ids_from_items(items: Any) -> list[str]:
@@ -624,7 +753,7 @@ async def available_models() -> dict[str, Any]:
     default_provider, default_model = choose_default_model(
         model_health,
         ollama_model=settings.ollama_model,
-        qwen_model=settings.qwen_vision_model,
+        qwen_model=settings.qwen_chat_model,
         deepseek_model=settings.deepseek_model,
         qwen_configured=bool(settings.qwen_api_key),
         deepseek_configured=bool(settings.deepseek_api_key),
@@ -660,7 +789,7 @@ async def available_models() -> dict[str, Any]:
                 "description": "阿里云百炼文本与多模态 OpenAI 兼容接口",
                 "models": list(dict.fromkeys([*QWEN_MODELS, settings.qwen_vision_model])),
                 "model_options": QWEN_MODEL_OPTIONS,
-                "default_model": settings.qwen_vision_model,
+                "default_model": settings.qwen_chat_model,
                 "base_url": settings.qwen_base_url,
                 "requires_api_key": True,
                 "configured": bool(settings.qwen_api_key),
@@ -679,14 +808,9 @@ async def available_models() -> dict[str, Any]:
     }
 
 
-def _fallback_knowledge_points(content: str) -> list[str]:
-    candidates = (
-        "PN结", "二极管", "稳压二极管", "晶体管", "三极管", "场效应管", "静态工作点",
-        "共射放大电路", "相量", "复阻抗", "功率因数", "有功功率", "无功功率", "RLC",
-        "谐振", "KCL", "KVL", "戴维南定理", "诺顿定理",
-    )
-    matched = [point for point in candidates if point.lower() in content.lower()]
-    return matched[:8] or ["电路基础"]
+def _fallback_knowledge_points(content: str, knowledge_base: str = "default") -> list[str]:
+    """Use semantic course evidence; never invent a generic hard-coded category."""
+    return mistake_knowledge.infer_points(knowledge_base, content)
 
 
 def _validate_student_id(student_id: str) -> str:
@@ -718,17 +842,56 @@ async def _extract_mistake_metadata(payload: MistakeCreateRequest) -> tuple[list
             json_mode=True,
             reasoning_budget=96,
         )
-        match = re.search(r"\{.*\}", result_text, re.S)
-        value = json.loads(match.group(0) if match else result_text)
-        points = value.get("knowledge_points", [])
-        if not isinstance(points, list):
-            points = []
-        normalized = [str(point).strip() for point in points if str(point).strip()]
-        summary = str(value.get("summary", "")).strip()
-        return normalized[:8] or _fallback_knowledge_points(payload.question), summary or payload.question[:40]
+        def parse_metadata(text: str) -> tuple[list[str], str]:
+            match = re.search(r"\{.*\}", text, re.S)
+            value = json.loads(match.group(0) if match else text)
+            points = value.get("knowledge_points", [])
+            normalized = (
+                [str(point).strip() for point in points if str(point).strip()]
+                if isinstance(points, list)
+                else []
+            )
+            return normalized[:8], str(value.get("summary", "")).strip()
+
+        try:
+            normalized, summary = parse_metadata(result_text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            normalized, summary = [], ""
+        if not normalized:
+            repair_text = await client.chat(
+                [{
+                    "role": "user",
+                    "content": (
+                        "上一次知识点提取结果为空或 JSON 无效。请重新理解题目考查的电路对象、物理过程、"
+                        "分析方法和求解任务，不得按固定词表匹配。只输出合法 JSON："
+                        "knowledge_points（1-8项）、summary（40字内）。\n"
+                        f"题目：{payload.question[:12000]}\n答案（仅消歧）：{payload.answer[:4000]}"
+                    ),
+                }],
+                temperature=0.0,
+                json_mode=True,
+                reasoning_budget=160,
+            )
+            try:
+                normalized, repaired_summary = parse_metadata(repair_text)
+                summary = summary or repaired_summary
+            except (TypeError, ValueError, json.JSONDecodeError):
+                normalized = []
+        if not normalized:
+            normalized = await asyncio.to_thread(
+                _fallback_knowledge_points,
+                payload.question + "\n" + payload.answer[:4000],
+                payload.knowledge_base,
+            )
+        return normalized, summary or payload.question[:40]
     except Exception:
-        logger.warning("Mistake knowledge extraction fell back to local rules", exc_info=True)
-        return _fallback_knowledge_points(payload.question), payload.question.splitlines()[0][:40]
+        logger.warning("Mistake knowledge extraction fell back to semantic course evidence", exc_info=True)
+        points = await asyncio.to_thread(
+            _fallback_knowledge_points,
+            payload.question + "\n" + payload.answer[:4000],
+            payload.knowledge_base,
+        )
+        return points, payload.question.splitlines()[0][:40]
     finally:
         if should_close and client is not None:
             await client.close()
@@ -857,6 +1020,34 @@ async def create_mistake_candidate(
         _extract_mistake_metadata(payload),
         attachments.resolve(payload.session_id, payload.attachment_ids),
     )
+    # 题库来源的题目，把题库中存储的题图一并带入错题本
+    question_bank_figures: list[dict[str, Any]] = []
+    if source_ref.get("kind") == "question_bank":
+        try:
+            ctx = await asyncio.to_thread(
+                homework_store.get_question_answer_context,
+                source_ref["question_bank_id"],
+                source_ref.get("origin_question_id") or source_ref["question_id"],
+                student_id=payload.student_id,
+            )
+            raw_figures = ctx.get("question", {}).get("figures", [])
+            bank_id = source_ref["question_bank_id"]
+            for figure in raw_figures:
+                if not isinstance(figure, dict) or not figure.get("file"):
+                    continue
+                file_name = str(figure["file"])
+                suffix = Path(file_name).suffix.lower()
+                question_bank_figures.append({
+                    "id": f"qb:{bank_id}:{file_name}",
+                    "name": file_name,
+                    "content_type": mimetypes.guess_type(file_name)[0] or "image/png",
+                    "kind": "image",
+                    "url": figure.get("url", ""),
+                    "caption": str(figure.get("caption", "")),
+                })
+        except (ValueError, FileNotFoundError):
+            question_bank_figures = []
+    merged_attachments = [*resolved.items, *question_bank_figures]
     alignment = await asyncio.to_thread(
         mistake_knowledge.align, payload.knowledge_base, knowledge_points
     )
@@ -875,7 +1066,7 @@ async def create_mistake_candidate(
             "category_id": payload.category_id,
             "messages": [message.model_dump() for message in payload.messages],
             "attachment_ids": payload.attachment_ids,
-            "attachments": resolved.items,
+            "attachments": merged_attachments,
             "knowledge_tags": alignment["knowledge_tags"],
             "location": alignment["location"],
             "prerequisites": alignment["prerequisites"],
@@ -945,6 +1136,15 @@ async def confirm_mistake_candidate(
         )
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # 题库题图不属于聊天附件，无法通过 promote 复制；从候选记录中直接带入
+    candidate_attachments = candidate.get("attachments", [])
+    question_bank_figures = [
+        att for att in candidate_attachments
+        if isinstance(att, dict) and str(att.get("id", "")).startswith("qb:")
+    ]
+    if question_bank_figures:
+        promoted = promoted + question_bank_figures
 
     decision = {
         "reason": payload.reason,
@@ -1560,22 +1760,92 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 },
             )
             history = await memory.recent(payload.session_id)
-            full_history: list[dict[str, Any]] | None = None
+            # Exact question snapshots live in a separate focus registry, while
+            # full retained chat is used for semantic retrieval across older turns.
+            full_history = await memory.history(payload.session_id)
+            focus_records = await memory.focus_history(payload.session_id)
             conversation_summary = await memory.summary(payload.session_id)
-            requested_focus = _conversation_focus_from_history(history, payload.focus_id)
+            requested_focus = _conversation_focus_from_history(full_history, payload.focus_id)
             if payload.focus_id and requested_focus is None:
-                full_history = await memory.history(payload.session_id)
-                requested_focus = _conversation_focus_from_history(
-                    full_history, payload.focus_id
+                requested_focus = next(
+                    (
+                        dict(item["conversation_focus"])
+                        for item in reversed(focus_records)
+                        if isinstance(item.get("conversation_focus"), dict)
+                        and item["conversation_focus"].get("id") == payload.focus_id
+                    ),
+                    None,
                 )
             explicit_question_ref = payload.question_ref.model_dump() if payload.question_ref else None
-            if (
-                requested_focus
-                and explicit_question_ref
-                and requested_focus.get("question_ref") != explicit_question_ref
-            ):
+            if explicit_question_ref:
+                # A precise card action is stronger evidence than a stale focus
+                # left by scrolling or by another message. Resolve the matching
+                # historical focus before asking the model what operation to run.
+                referenced_focus = find_focus_by_question_ref(
+                    [*full_history, *focus_records], explicit_question_ref
+                )
+                if referenced_focus is not None:
+                    requested_focus = referenced_focus
+                elif (
+                    not requested_focus
+                    or requested_focus.get("question_ref") != explicit_question_ref
+                ):
+                    requested_focus = {
+                        "id": _focus_identifier(f"question-bank:{explicit_question_ref}"),
+                        "kind": "question_bank",
+                        "label": "当前选中的题库题目",
+                        "summary": "",
+                        "question_ref": dict(explicit_question_ref),
+                        "has_figure": False,
+                    }
+            focus_catalog = build_focus_catalog([
+                *full_history,
+                *focus_records,
+                *([requested_focus] if requested_focus else []),
+            ])
+            semantic_request = {
+                "operation": "unknown",
+                "scope": "current" if requested_focus else "global",
+                "target_focus_ids": [str(requested_focus.get("id", ""))] if requested_focus else [],
+                "target_step": "",
+                "confidence": 0.0,
+                "needs_clarification": False,
+                "reason": "尚未执行语义指代解析",
+                "source": "fallback",
+            }
+            is_new_photo = bool(payload.scene == "image_answer" and payload.attachment_ids)
+            if payload.scene != "quiz_grade" and not is_new_photo:
+                semantic_request = await resolve_semantic_request(
+                    message=payload.message or "请处理当前选中的题目。",
+                    mode=payload.mode,
+                    active_focus=requested_focus,
+                    focus_catalog=focus_catalog,
+                    client=selected_client,
+                )
+            focus_by_id = {
+                str(item["conversation_focus"].get("id")): dict(item["conversation_focus"])
+                for item in focus_records
+                if isinstance(item.get("conversation_focus"), dict)
+                and item["conversation_focus"].get("id")
+            }
+            for item in full_history:
+                focus = item.get("conversation_focus")
+                if isinstance(focus, dict) and focus.get("id"):
+                    focus_by_id[str(focus["id"])] = dict(focus)
+            if requested_focus and requested_focus.get("id"):
+                focus_by_id[str(requested_focus["id"])] = dict(requested_focus)
+            selected_focuses = [
+                focus_by_id[focus_id]
+                for focus_id in semantic_request.get("target_focus_ids", [])
+                if focus_id in focus_by_id
+            ]
+            semantic_scope = str(semantic_request.get("scope", "current"))
+            semantic_operation = str(semantic_request.get("operation", "unknown"))
+            if selected_focuses and semantic_scope in {"current", "specific"}:
+                requested_focus = dict(selected_focuses[-1])
+            elif semantic_scope in {"none", "global", "multiple", "ambiguous"}:
                 requested_focus = None
-            question_ref = explicit_question_ref or (
+            question_ref = (
                 dict(requested_focus["question_ref"])
                 if requested_focus and isinstance(requested_focus.get("question_ref"), dict)
                 else None
@@ -1595,11 +1865,12 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     ):
                         question_ref = dict(candidate)
                         break
-            if payload.scene == "image_answer" and payload.attachment_ids:
+            if is_new_photo:
                 # A newly uploaded problem image starts a new focus.  Do not let
                 # a stale question-bank reference make the visual input disappear.
                 question_ref = None
                 requested_focus = None
+                selected_focuses = []
             question_context: dict[str, Any] | None = None
             question_images: list[str] = []
             reference_images: list[str] = []
@@ -1637,15 +1908,19 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 if question_context
                 else "请识别并解答附件中的电路题。"
             )
-            inherited_attachment_ids = _inherited_attachment_ids_for_turn(
-                effective_message=effective_message,
-                history=history,
-                requested_focus=requested_focus,
-                has_bound_question=(
-                    question_context is not None
-                    or _focus_has_owned_circuit_reference(requested_focus)
-                ),
-                has_explicit_attachments=bool(payload.attachment_ids),
+            inherited_attachment_ids = (
+                []
+                if semantic_scope in {"none", "global", "multiple", "ambiguous"}
+                else _inherited_attachment_ids_for_turn(
+                    effective_message=effective_message,
+                    history=history,
+                    requested_focus=requested_focus,
+                    has_bound_question=(
+                        question_context is not None
+                        or _focus_has_owned_circuit_reference(requested_focus)
+                    ),
+                    has_explicit_attachments=bool(payload.attachment_ids),
+                )
             )
             resolved = await attachments.resolve(
                 payload.session_id,
@@ -1689,6 +1964,12 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                         for index, item in enumerate(answer_items)
                         if str(item).strip()
                     ]
+            elif str(active_focus.get("assistant_answer", "")).strip():
+                focus_reference_answer = {
+                    "answer": str(active_focus["assistant_answer"]),
+                    "answer_subquestions": [],
+                    "rubric": "这是该题此前的助教回答；仅在学生明确追问其答案或步骤时用于解释。",
+                }
             if question_context:
                 summary = str(question_context["question"].get("prompt", "")).strip()
                 active_focus = {
@@ -1714,10 +1995,10 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                         "recognition": reusable_recognition,
                         "has_figure": True,
                     }
-            focus_chain = _focus_chain_from_history(full_history or history, active_focus)
+            focus_history_source = [*focus_records, *full_history]
+            focus_chain = _focus_chain_from_history(focus_history_source, active_focus)
             if active_focus.get("parent_focus_id") and len(focus_chain) < 2:
-                full_history = full_history or await memory.history(payload.session_id)
-                focus_chain = _focus_chain_from_history(full_history, active_focus)
+                focus_chain = _focus_chain_from_history(focus_history_source, active_focus)
             needs_required_vision = bool(
                 resolved.images
                 and not reusable_recognition
@@ -1754,15 +2035,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     "status": "running",
                     "focus_id": str(active_focus.get("id", "")),
                     "question_ref": question_ref,
-                    "question_summary": (
-                        {
-                            "bank_title": question_context["bank"]["title"],
-                            "number": question_context["question"].get("number"),
-                            "prompt": str(question_context["question"].get("prompt", ""))[:500],
-                        }
-                        if question_context
-                        else None
-                    ),
+                    "question_summary": _question_summary_from_context(question_context),
                     "conversation_focus": active_focus or None,
                 },
             )
@@ -1784,7 +2057,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     scene=payload.scene,
                     recognition_confirmed=payload.recognition_confirmed,
                     knowledge_base=payload.knowledge_base,
-                    history=history,
+                    history=full_history,
                     attachment_text=resolved.text,
                     attachment_images=resolved.images,
                     attachment_names=attachment_names,
@@ -1803,6 +2076,9 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     focus_recognition=reusable_recognition,
                     conversation_focus=active_focus,
                     focus_chain=focus_chain,
+                    focus_catalog=focus_catalog,
+                    selected_focuses=selected_focuses,
+                    semantic_request=semantic_request,
                     conversation_summary=conversation_summary,
                     on_status=on_status,
                     on_delta=on_delta,
@@ -1843,7 +2119,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
             elif result.practice and str(result.practice.get("question", "")).strip():
                 practice_question = str(result.practice.get("question", "")).strip()
                 final_focus = {
-                    "id": _focus_identifier(f"practice:{practice_question}"),
+                    "id": _focus_identifier(f"practice:{turn_id}:{practice_question}"),
                     "kind": "generated_practice",
                     "label": "当前同类练习题",
                     "summary": practice_question[:500],
@@ -1854,6 +2130,42 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
             elif result.recognition and final_focus.get("kind") == "photo_question":
                 final_focus["recognition"] = result.recognition
                 final_focus["summary"] = str(result.recognition.get("transcription", ""))[:500]
+            semantic_operation = str(semantic_request.get("operation", "unknown"))
+            preserves_existing_answer = str(final_focus.get("assistant_answer", "")).strip()
+            answer_is_question_specific = (
+                result.intent == "answer"
+                and not result.action
+                and semantic_operation
+                not in {
+                    "knowledge_query",
+                    "general_answer",
+                    "summarize_questions",
+                    "compare_questions",
+                    "conversation_navigation",
+                    "add_mistake",
+                }
+            )
+            persisted_focus = dict(final_focus)
+            if (
+                persisted_focus.get("id")
+                and result.content
+                and answer_is_question_specific
+                and (
+                    not preserves_existing_answer
+                    or semantic_operation in {"solve", "verify_answer"}
+                )
+            ):
+                persisted_focus["assistant_answer"] = result.content
+            mistake_proposal = (
+                _mistake_proposal_from_focus(
+                    active_focus,
+                    question_context["reference"] if question_context else focus_reference_answer,
+                    resolved.items,
+                )
+                if isinstance(result.action, dict)
+                and result.action.get("operation") == "add_mistake"
+                else None
+            )
             yield sse(
                 "meta",
                 {
@@ -1870,19 +2182,18 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     "practice": result.practice,
                     "grading": result.grading,
                     "recommendation": result.recommendation,
+                    "mistake_proposal": mistake_proposal,
                     "question_ref": (
                         result.recommendation.get("question_ref")
                         if result.recommendation
                         else question_ref
                     ),
-                    "question_summary": (
-                        {
-                            "bank_title": question_context["bank"]["title"],
-                            "number": question_context["question"].get("number"),
-                            "prompt": str(question_context["question"].get("prompt", ""))[:500],
-                        }
-                        if question_context
-                        else None
+                    "question_summary": _question_summary_from_context(
+                        question_context,
+                        include_answer_figures=result.answer_task in {
+                            "solve_question", "explain_bound_answer", "verify_bound_answer",
+                        },
+                        student_id=payload.student_id,
                     ),
                     "conversation_focus": _public_conversation_focus(final_focus),
                 },
@@ -1917,16 +2228,17 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                         if result.recommendation
                         else question_ref
                     ),
-                    "question_summary": (
-                        {
-                            "bank_title": question_context["bank"]["title"],
-                            "number": question_context["question"].get("number"),
-                            "prompt": str(question_context["question"].get("prompt", ""))[:500],
-                        }
-                        if question_context
-                        else None
+                    "question_summary": _question_summary_from_context(
+                        question_context,
+                        include_answer_figures=result.answer_task in {
+                            "solve_question", "explain_bound_answer", "verify_bound_answer",
+                        },
+                        student_id=payload.student_id,
                     ),
-                    "conversation_focus": final_focus or None,
+                    "conversation_focus": persisted_focus or None,
+                    "semantic_request": semantic_request,
+                    "action": result.action,
+                    "mistake_proposal": mistake_proposal,
                 },
             )
             assistant_persisted = True
@@ -2206,6 +2518,7 @@ async def list_question_banks(
     await asyncio.to_thread(
         homework_store.backfill_question_bank_knowledge,
         mistake_knowledge.align,
+        mistake_knowledge.infer_points,
     )
     return {
         "question_banks": homework_store.list_question_banks(
@@ -2414,8 +2727,13 @@ async def create_question_bank_mistake_candidate(
     knowledge_points = (
         profile.get("knowledge_points")
         or question.get("knowledge_points")
-        or ["电路基础"]
     )
+    if not knowledge_points:
+        knowledge_points = await asyncio.to_thread(
+            mistake_knowledge.infer_points,
+            payload.knowledge_base,
+            question_text + "\n" + answer_text,
+        )
     alignment = await asyncio.to_thread(
         mistake_knowledge.align, payload.knowledge_base, knowledge_points
     )

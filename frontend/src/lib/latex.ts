@@ -21,6 +21,17 @@ export function normalizeLatex(input: string): string {
     protectedBlocks.push(block)
     return `@@MATH_BLOCK_${protectedBlocks.length - 1}@@`
   })
+
+  // Some imported question-bank answers place the opening `$` at the end of
+  // a prose line and the formula on the following line. Markdown does not
+  // consistently recognize that as inline math. More importantly, the
+  // variable/unit repair below would otherwise add another pair of `$` inside
+  // it and produce invalid nested math. Collapse only paired inline-math line
+  // breaks while display blocks are protected by placeholders.
+  text = text.replace(
+    /(?<!\\)\$(?!\$)([\s\S]*?)(?<!\\)\$(?!\$)/g,
+    (_, body) => `$${String(body).replace(/[ \t]*\n[ \t]*/g, ' ').trim()}$`,
+  )
   const singleDollarCount = (text.match(/(?<!\\)\$/g) || []).length
   if (singleDollarCount % 2 === 1) {
     const trailingBackslashes = text.match(/\\+$/)?.[0].length || 0
