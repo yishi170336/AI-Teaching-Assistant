@@ -3997,6 +3997,7 @@ function KnowledgeExplanationView({
   onPageCountChange,
   onImageModelChange,
   onSelect,
+  onBack,
   onDelete,
   deletingId,
 }: {
@@ -4007,6 +4008,7 @@ function KnowledgeExplanationView({
   onPageCountChange: (value: number | null) => void
   onImageModelChange: (value: KnowledgeImageModel) => void
   onSelect: (value: KnowledgeExplanation) => void
+  onBack: () => void
   onDelete: (value: KnowledgeExplanation) => Promise<void>
   deletingId: string
 }) {
@@ -4150,6 +4152,12 @@ function KnowledgeExplanationView({
             <p><InlineMath content={explanation.subtitle || explanation.question} /></p>
           </div>
           <div className="explanation-head-meta">
+            <Button
+              className="explanation-back-to-create"
+              type="text"
+              icon={<ChevronLeft size={14} />}
+              onClick={onBack}
+            >新建讲解</Button>
             <Tag color={explanation.status === 'completed' ? 'green' : explanation.status === 'error' ? 'red' : explanation.status === 'cancelled' ? 'default' : 'blue'}>
               {isActive && <LoaderCircle className="spin" size={12} />}
               {explanationStatusLabels[explanation.status]}
@@ -4644,11 +4652,13 @@ function StudentPageContent() {
   const clear = useChatStore((state) => state.clear)
   const { message: toast } = AntApp.useApp()
   const previousBuildStates = useRef<Record<string, KBStatus['state']>>({})
-  const previousExplanationState = useRef<{ id: string; status: KnowledgeExplanation['status'] } | undefined>(undefined)
   const handledMistakeProposalId = useRef<string>('')
   const activeBuilds = statuses.filter((item) => item.state === 'building' || item.state === 'cancelling')
   const hasActiveBuilds = activeBuilds.length > 0
-  const explanationBusy = activeExplanation?.status === 'planning' || activeExplanation?.status === 'generating'
+  const runningExplanation = explanationHistory.find(
+    (item) => item.status === 'planning' || item.status === 'generating',
+  )
+  const explanationBusy = Boolean(runningExplanation)
   const currentKbStatus = statuses.find((item) => item.id === knowledgeBase)
   const currentKbDisplayName = knowledgeBaseDisplayName(currentKbStatus, knowledgeBase)
   const deleteKbDisabledReason = !currentKbStatus
@@ -4746,31 +4756,28 @@ function StudentPageContent() {
   }, [])
 
   useEffect(() => {
-    if (!activeExplanation || !explanationBusy) return
-    const taskId = activeExplanation.id
+    if (!runningExplanation) return
+    const taskId = runningExplanation.id
+    const previousStatus = runningExplanation.status
     const poll = () => {
       void fetchKnowledgeExplanation(taskId, studentId)
         .then((next) => {
-          setActiveExplanation(next)
+          setActiveExplanation((current) => current?.id === next.id ? next : current)
           setExplanationHistory((current) => [next, ...current.filter((item) => item.id !== next.id)])
-          if (!['planning', 'generating'].includes(next.status)) void refreshExplanations()
+          if (!['planning', 'generating'].includes(next.status)) {
+            if (previousStatus === 'planning' || previousStatus === 'generating') {
+              if (next.status === 'completed') toast.success('知识讲解页面已全部生成')
+              if (next.status === 'error') toast.error(`知识讲解生成失败：${next.error || next.message}`)
+              if (next.status === 'cancelled') toast.info('知识讲解生成已取消，已完成页面仍可查看')
+            }
+            void refreshExplanations()
+          }
         })
         .catch(() => undefined)
     }
     const timer = window.setInterval(poll, 1500)
     return () => window.clearInterval(timer)
-  }, [activeExplanation?.id, activeExplanation?.status, studentId])
-
-  useEffect(() => {
-    if (!activeExplanation) return
-    const previous = previousExplanationState.current
-    if (previous?.id === activeExplanation.id && ['planning', 'generating'].includes(previous.status)) {
-      if (activeExplanation.status === 'completed') toast.success('知识讲解页面已全部生成')
-      if (activeExplanation.status === 'error') toast.error(`知识讲解生成失败：${activeExplanation.error || activeExplanation.message}`)
-      if (activeExplanation.status === 'cancelled') toast.info('知识讲解生成已取消，已完成页面仍可查看')
-    }
-    previousExplanationState.current = { id: activeExplanation.id, status: activeExplanation.status }
-  }, [activeExplanation?.id, activeExplanation?.status])
+  }, [runningExplanation?.id, runningExplanation?.status, studentId])
 
   useEffect(() => {
     if (modelModalOpen) void refreshModels()
@@ -4896,10 +4903,10 @@ function StudentPageContent() {
   }
 
   const stopKnowledgeExplanation = async () => {
-    if (!activeExplanation || !explanationBusy) return
+    if (!runningExplanation) return
     try {
-      const explanation = await cancelKnowledgeExplanation(activeExplanation.id, studentId)
-      setActiveExplanation(explanation)
+      const explanation = await cancelKnowledgeExplanation(runningExplanation.id, studentId)
+      setActiveExplanation((current) => current?.id === explanation.id ? explanation : current)
       setExplanationHistory((current) => [explanation, ...current.filter((item) => item.id !== explanation.id)])
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '知识讲解取消失败')
@@ -5404,6 +5411,7 @@ function StudentPageContent() {
                     onPageCountChange={setExplanationPageCount}
                     onImageModelChange={setExplanationImageModel}
                     onSelect={setActiveExplanation}
+                    onBack={() => setActiveExplanation(undefined)}
                     onDelete={removeKnowledgeExplanation}
                     deletingId={deletingExplanationId}
                   />

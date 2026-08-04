@@ -1694,9 +1694,10 @@ button { color: inherit; }
 .explanation-workbench-head > div:first-child { min-width: 0; }
 .explanation-workbench-head h1 { margin: 7px 0 4px; overflow: hidden; color: #102e5f; font-size: clamp(21px, 2.2vw, 31px); text-overflow: ellipsis; white-space: nowrap; }
 .explanation-workbench-head p { margin: 0; color: #768ba1; font-size: 11px; }
-.explanation-head-meta { display: flex; align-items: center; gap: 8px; }
+.explanation-head-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .explanation-head-meta .ant-tag { display: inline-flex; align-items: center; gap: 5px; margin: 0; border-radius: 999px; font-size: 10px; }
 .explanation-head-meta > span { color: #50708f; font-size: 10px; font-weight: 800; white-space: nowrap; }
+.explanation-back-to-create { height: 27px; padding-inline: 6px; color: #35698f; font-size: 10px; }
 .explanation-delete-current { height: 27px; padding-inline: 7px; font-size: 10px; }
 .explanation-progress-strip { display: grid; grid-template-columns: minmax(150px, 240px) minmax(0, 1fr) auto; align-items: center; gap: 12px; margin-bottom: 15px; padding: 8px 12px; color: #496b89; background: #f0f6fc; border: 1px solid #d9e7f4; border-radius: 10px; }
 .explanation-progress-strip.error { color: #a6534b; background: #fff4f2; border-color: #f2d3ce; }
