@@ -1894,9 +1894,11 @@ function Conversation({
             {message.role === 'assistant' && (
               <div className="message-agent">
                 <span>{message.agent || (streaming && index === messages.length - 1 ? stageAgent || '多智能体助教' : '多智能体助教')}</span>
-                <Tag bordered={false} title={`${providerLabels[message.provider || CHAT_MODEL_PROVIDER]} · ${message.model || ''}`}>
-                  {providerLabels[message.provider || CHAT_MODEL_PROVIDER]} · {message.model || CHAT_MODEL}
-                </Tag>
+                {message.model && (
+                  <Tag bordered={false} title={`${providerLabels[message.provider || CHAT_MODEL_PROVIDER]} · ${message.model}`}>
+                    {providerLabels[message.provider || CHAT_MODEL_PROVIDER]} · {message.model}
+                  </Tag>
+                )}
               </div>
             )}
             {message.attachments?.length ? (
@@ -1965,12 +1967,23 @@ function Conversation({
                   </div>
                 )
                 : <div className="user-message-content"><MathMarkdown content={message.content} /></div>
-            ) : (
+            ) : message.role === 'assistant'
+              && streaming
+              && index === messages.length - 1
+              && !['cancelled', 'failed', 'error'].includes(message.status || '') ? (
               <div className="thinking-placeholder">
                 <span className="thinking-dots"><i /><i /><i /></span>
                 <span>{stage || '正在准备…'}</span>
               </div>
-            )}
+            ) : message.role === 'assistant' ? (
+              <div className={`message-terminal-state ${message.status || 'empty'}`}>
+                {message.status === 'cancelled'
+                  ? '生成已取消'
+                  : message.status === 'failed' || message.status === 'error'
+                    ? '生成失败'
+                    : '本次回答未生成内容'}
+              </div>
+            ) : null}
             {message.role === 'assistant'
               && message.needsConfirmation
               && message.recognition

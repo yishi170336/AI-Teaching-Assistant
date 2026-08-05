@@ -8,6 +8,7 @@ export type ChatMessage = {
   id: string
   role: 'user' | 'assistant'
   content: string
+  status?: 'running' | 'completed' | 'cancelled' | 'failed' | 'error'
   agent?: string
   sources?: SourceInfo[]
   citedSources?: SourceInfo[]
@@ -370,7 +371,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         id: `history-${safeCreatedAt}-${index}`,
         role: item.role,
         content: item.content,
+        status: item.status,
         agent: item.agent,
+        failed: item.status === 'failed' || item.status === 'error',
         provider: item.provider,
         model: item.model,
         knowledgeBase: item.knowledge_base,
@@ -449,6 +452,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       id: assistantId,
       role: 'assistant',
       content: '',
+      status: 'running',
       model: selectedModel.model,
       provider: selectedModel.provider,
       knowledgeBase: get().knowledgeBase,
@@ -541,11 +545,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
               ),
             }))
           },
-          onDone: () => set({
+          onDone: () => set((state) => ({
             streaming: false,
             stage: '',
             stageAgent: '',
             controller: undefined,
+            messages: state.messages.map((item) =>
+              item.id === assistantId ? { ...item, status: 'completed' } : item,
+            ),
             ...(
               requestScene === 'quiz_grade'
                 ? { scene: 'chat' as ChatScene, activePractice: undefined }
@@ -553,7 +560,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   ? { scene: 'chat' as ChatScene }
                   : {}
             ),
-          }),
+          })),
           onError: (error) => {
             set((state) => ({
               streaming: false,
@@ -562,6 +569,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 item.id === assistantId
                   ? {
                       ...item,
+                      status: 'failed',
                       content: item.content
                         ? `${item.content}\n\n> ⚠️ 生成未完整结束：${error}`
                         : `生成失败：${error}`,
@@ -577,7 +585,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ streaming: false, stage: '', stageAgent: '', controller: undefined })
     } catch (error) {
       if ((error as Error).name === 'AbortError') {
-        set({ streaming: false, stage: '已停止生成', stageAgent: '', controller: undefined })
+        set((state) => ({
+          streaming: false,
+          stage: '',
+          stageAgent: '',
+          controller: undefined,
+          messages: state.messages.map((item) =>
+            item.id === assistantId ? { ...item, status: 'cancelled' } : item,
+          ),
+        }))
         return
       }
       const detail = error instanceof Error ? error.message : '未知错误'
@@ -589,6 +605,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           item.id === assistantId
             ? {
                 ...item,
+                status: 'failed',
                 content: item.content
                   ? `${item.content}\n\n> ⚠️ 回答连接提前结束：${detail}`
                   : `连接失败：${detail}`,

@@ -801,6 +801,7 @@ export type StoredMessage = {
   role: 'user' | 'assistant'
   content: string
   created_at: string
+  status?: 'running' | 'completed' | 'cancelled' | 'failed' | 'error'
   agent?: string
   provider?: ModelProviderId
   model?: string

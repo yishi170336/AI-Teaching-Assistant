@@ -416,6 +416,9 @@ button { color: inherit; }
 .message-agent { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; color: #385e5e; font-size: 11px; font-weight: 800; }
 .message-agent .ant-tag { margin: 0; padding: 1px 6px; color: #668985; background: #e9f2ef; font-size: 8px; line-height: 16px; }
 .thinking-placeholder { display: flex; align-items: center; gap: 10px; min-height: 40px; color: #7b9290; font-size: 11px; }
+.message-terminal-state { display: flex; align-items: center; min-height: 40px; color: #7b9290; font-size: 12px; }
+.message-terminal-state.failed,
+.message-terminal-state.error { color: #b94a48; }
 .thinking-dots { display: inline-flex; align-items: center; gap: 3px; }
 .thinking-dots i { width: 4px; height: 4px; background: #5eb7aa; border-radius: 50%; animation: pulse-dot 1.2s infinite ease-in-out; }
 .thinking-dots i:nth-child(2) { animation-delay: .15s; }
