@@ -1870,6 +1870,36 @@ def test_practice_grading_uses_latest_exercise_and_returns_actionable_feedback()
     assert "AI 批改反馈" in result["response"]
 
 
+def test_practice_grading_normalizes_structured_extracted_answer():
+    class Grader:
+        model = "grader"
+
+        async def chat(self, _messages, **_kwargs):
+            return (
+                '{"score":100,"is_correct":true,"summary":"正确。",'
+                '"extracted_answer":["（1）U=10V","（2）I=0.2A"],'
+                '"strengths":[],"issues":[],"next_steps":[]}'
+            )
+
+    engine = object.__new__(CircuitTutorEngine)
+    result = asyncio.run(engine._grade_practice({
+        "message": "（1）U=10V；（2）I=0.2A",
+        "attachment_context": "",
+        "llm": Grader(),
+        "history": [{
+            "role": "assistant",
+            "content": "同类型新题",
+            "practice": {
+                "question": "求 U 和 I。",
+                "answer": "U=10V，I=0.2A",
+                "solution": "应用欧姆定律。",
+            },
+        }],
+    }))
+
+    assert result["grading"]["extracted_answer"] == "（1）U=10V\n（2）I=0.2A"
+
+
 def test_recommended_original_question_can_be_graded_from_server_reference():
     class Grader:
         model = "grader"
