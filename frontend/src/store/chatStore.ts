@@ -17,6 +17,7 @@ export type ChatMessage = {
   model?: string
   provider?: ModelProviderId
   knowledgeBase?: string
+  practiceSessionId?: string
   recognition?: PhotoRecognition
   needsConfirmation?: boolean
   evidenceMode?: 'grounded' | 'mixed' | 'general_only'
@@ -204,6 +205,7 @@ type ChatState = {
   activeMessageId?: string
   pendingAttachments: PendingAttachment[]
   activePractice?: PracticeExercise
+  activePracticeSessionId?: string
   activeQuestionRef?: QuestionReference
   activeFocus?: ConversationFocus
   controller?: AbortController
@@ -244,6 +246,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   activeMessageId: undefined,
   pendingAttachments: [],
   activePractice: undefined,
+  activePracticeSessionId: undefined,
   activeQuestionRef: undefined,
   activeFocus: undefined,
   setMode: (mode) => set({ mode }),
@@ -251,7 +254,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     scene,
     ...(scene === 'quiz_grade' ? {} : { activePractice: undefined }),
   }),
-  setActivePractice: (activePractice) => set({ activePractice }),
+  setActivePractice: (activePractice) => set((state) => ({
+    activePractice,
+    ...(activePractice && !state.activePracticeSessionId
+      ? { activePracticeSessionId: `practice-${crypto.randomUUID()}` }
+      : {}),
+  })),
   setActiveQuestionRef: (activeQuestionRef) => set({ activeQuestionRef }),
   setActiveFocus: (activeFocus) => set({
     activeFocus,
@@ -377,6 +385,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         provider: item.provider,
         model: item.model,
         knowledgeBase: item.knowledge_base,
+        practiceSessionId: item.practice_session_id,
         attachments: item.attachments || [],
         sources,
         citedSources,
@@ -395,6 +404,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const latestAssistant = [...messages].reverse().find((item) => item.role === 'assistant')
     const latestQuestion = [...messages].reverse().find((item) => item.questionRef)?.questionRef
     const latestFocus = [...messages].reverse().find((item) => item.focus)?.focus
+    const latestPracticeSessionId = [...messages].reverse().find((item) => item.practiceSessionId)?.practiceSessionId
     set({
       sessionId,
       messages,
@@ -406,6 +416,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activeMessageId: latestAssistant?.id,
       pendingAttachments: [],
       activePractice: undefined,
+      activePracticeSessionId: latestPracticeSessionId,
       activeQuestionRef: latestFocus ? latestFocus.question_ref : latestQuestion,
       activeFocus: latestFocus,
       controller: undefined,
@@ -481,6 +492,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           student_id: get().studentId,
           question_ref: questionRef,
           focus_id: focusId,
+          practice_session_id: requestScene === 'quiz_grade'
+            ? get().activePracticeSessionId
+            : undefined,
           knowledge_base: get().knowledgeBase,
           attachment_ids: readyAttachments.map((item) => item.id),
           model_provider: selectedModel.provider,
@@ -634,6 +648,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activeMessageId: undefined,
       pendingAttachments: [],
       activePractice: undefined,
+      activePracticeSessionId: undefined,
       activeQuestionRef: undefined,
       activeFocus: undefined,
       controller: undefined,
