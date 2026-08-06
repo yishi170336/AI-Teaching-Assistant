@@ -72,6 +72,22 @@ export function normalizeLatex(input: string): string {
   // Two such ranges in one paragraph can be mistaken for GFM strikethrough.
   text = text.replace(/(\d)\s*~\s*(?=\d)/g, '$1～')
 
+  // Older grading snapshots may contain plain-text exponential notation such
+  // as `e^(-1/τ)` instead of delimited LaTeX. Render it consistently with the
+  // rest of the application while complete math spans remain protected.
+  const formatExponential = (prefix: string, exponent: string) => {
+    const normalizedExponent = exponent.trim().replace(/−/g, '-').replace(/τ/g, '\\tau')
+    return `${prefix}$e^{${normalizedExponent}}$`
+  }
+  text = text.replace(
+    /(^|[^A-Za-z0-9_$\\])e\s*\^\s*\(\s*([^()\n$]{1,80}?)\s*\)/g,
+    (_, prefix, exponent) => formatExponential(prefix, exponent),
+  )
+  text = text.replace(
+    /(^|[^A-Za-z0-9_$\\])e\s*\^\s*\{\s*([^{}\n$]{1,80}?)\s*\}/g,
+    (_, prefix, exponent) => formatExponential(prefix, exponent),
+  )
+
   // Model-authored Markdown often escapes an underscore to avoid emphasis,
   // for example `**u\_min**`.  In report labels that leaves a literal
   // underscore instead of mathematical notation. Convert only single-letter

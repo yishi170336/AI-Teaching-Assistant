@@ -120,11 +120,18 @@
 .answer-report-dimensions > div { display: flex; align-items: flex-start; gap: 7px; padding: 8px; background: #f1f7f5; border-radius: 7px; }
 .answer-report-dimensions strong { flex: 0 0 auto; color: #357068; font-size: 10px; }
 .answer-report-dimensions span { color: #657a76; font-size: 10px; line-height: 1.55; }
-.answer-report-steps { display: grid; gap: 7px; margin-top: 10px; }
-.answer-report-steps > div { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 7px 9px; padding: 10px; background: #f4f8f7; border-radius: 8px; }
-.answer-report-steps > div > strong { min-width: 0; color: #405f5a; font-size: 11px; line-height: 1.55; }
-.answer-report-steps .math-markdown, .answer-report-steps small { grid-column: 2; }
-.answer-report-steps small { color: #7d908c; font-size: 9px; line-height: 1.55; }
+.answer-report-steps { display: grid; gap: 11px; margin-top: 14px; }
+.answer-report-steps > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); overflow: hidden; background: #fff; border: 1px solid #dce7e4; border-radius: 11px; break-inside: avoid; }
+.answer-report-step-student, .answer-report-step-comment { min-width: 0; padding: 14px 16px; }
+.answer-report-step-student { background: #f2f7f5; }
+.answer-report-step-comment { background: #fffbf2; border-left: 3px solid #e8b654; }
+.answer-report-step-student > span, .answer-report-step-comment header > span { display: block; color: #66807b; font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+.answer-report-step-student > strong { display: block; margin-top: 8px; color: #345b55; font-size: 14px; line-height: 1.7; }
+.answer-report-step-comment header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
+.answer-report-step-comment header > span { color: #9a6a2d; }
+.answer-report-step-comment .math-markdown { color: #3f5551; font-size: 13px; line-height: 1.75; }
+.answer-report-step-comment .math-markdown p { margin: 0; }
+.answer-report-steps small { display: block; margin-top: 8px; padding-top: 7px; color: #788c87; border-top: 1px dashed #e5d9bc; font-size: 11px; line-height: 1.6; }
 .answer-report-steps small .math-markdown-inline { color: inherit; font-size: inherit; }
 .answer-report-limit { margin: 8px 0 0; color: #8b7551; font-size: 9px; }
 .answer-report-issues { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; margin-top: 10px; }
@@ -143,6 +150,8 @@
   .answer-report-toolbar, .answer-report-document-head { flex-direction: column; }
   .answer-report-score { width: 100%; height: 72px; }
   .answer-report-metrics { grid-template-columns: repeat(2, 1fr); }
+  .answer-report-steps > div { grid-template-columns: 1fr; }
+  .answer-report-step-comment { border-top: 2px solid #e8b654; border-left: 0; }
   .answer-report-panel-head { align-items: flex-start; }
   .answer-report-panel-actions { justify-content: flex-end; flex-wrap: wrap; }
   .answer-report-trend { align-items: flex-start; flex-direction: column; }

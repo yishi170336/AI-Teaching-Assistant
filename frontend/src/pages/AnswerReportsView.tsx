@@ -298,12 +298,20 @@ function ReportDocument({ report }: { report: AnswerReport }) {
                   <div className="answer-report-steps">
                     {attempt.grading.step_analyses.map((step, stepIndex) => (
                       <div key={`${step.step}-${stepIndex}`}>
-                        <Tag bordered={false} color={step.status === 'correct' ? 'success' : step.status === 'incorrect' ? 'error' : 'warning'}>
-                          {stepStatusLabels[step.status]}
-                        </Tag>
-                        <strong><InlineMath content={step.step} /></strong>
-                        <MathMarkdown content={step.feedback} />
-                        {step.evidence && <small><InlineMath content={`答案证据：${step.evidence}`} /></small>}
+                        <div className="answer-report-step-student">
+                          <span>学生作答原文</span>
+                          <strong><InlineMath content={step.step} /></strong>
+                        </div>
+                        <div className="answer-report-step-comment">
+                          <header>
+                            <span>对应批注</span>
+                            <Tag bordered={false} color={step.status === 'correct' ? 'success' : step.status === 'incorrect' ? 'error' : 'warning'}>
+                              {stepStatusLabels[step.status]}
+                            </Tag>
+                          </header>
+                          <MathMarkdown content={step.feedback} />
+                          {step.evidence && <small><InlineMath content={`核对证据：${step.evidence}`} /></small>}
+                        </div>
                       </div>
                     ))}
                   </div>

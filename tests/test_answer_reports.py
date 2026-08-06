@@ -387,6 +387,8 @@ def test_answer_report_print_contract_uses_persisted_report_and_safe_filename():
     assert "window.print()" in component
     assert "replace(/[^A-Za-z0-9\\u4e00-\\u9fff_-]+/g" in component
     assert "<InlineMath content={step.step}" in component
+    assert 'className="answer-report-step-student"' in component
+    assert 'className="answer-report-step-comment"' in component
     assert "items[0].completed_at" in component
     assert "orderedIssuePatterns(aggregate.issue_patterns)" in component
     assert "orderedAttemptIssues(attempt.grading.issues, issuePatterns)" in component

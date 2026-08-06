@@ -44,7 +44,17 @@ assert.equal(
   normalizeLatex('输出在 0~10ms 下降，再在 10~20ms 上升。'),
   '输出在 0～10ms 下降，再在 10～20ms 上升。',
 )
+const exponentialNotation = normalizeLatex(
+  '代入 τ=3.33ms，e^(-1/τ) = e^(−0.3) ≈ 0.7408，分母为 1 + e^{ -2/τ }。',
+)
+assert.equal(exponentialNotation.includes(String.raw`$e^{-1/\tau}$`), true)
+assert.equal(exponentialNotation.includes(String.raw`$e^{-0.3}$`), true)
+assert.equal(exponentialNotation.includes(String.raw`$e^{-2/\tau}$`), true)
+assert.equal(exponentialNotation.includes('e^('), false)
 for (const inline of [...escapedMarkdownNotation.matchAll(/\$([^$]+)\$/g)].map((match) => match[1])) {
+  katex.renderToString(inline, { strict: false, throwOnError: true })
+}
+for (const inline of [...exponentialNotation.matchAll(/\$([^$]+)\$/g)].map((match) => match[1])) {
   katex.renderToString(inline, { strict: false, throwOnError: true })
 }
 
