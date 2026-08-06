@@ -389,6 +389,7 @@ def test_answer_report_print_contract_uses_persisted_report_and_safe_filename():
     assert "<InlineMath content={step.step}" in component
     assert "items[0].completed_at" in component
     assert "orderedIssuePatterns(aggregate.issue_patterns)" in component
+    assert "orderedAttemptIssues(attempt.grading.issues, issuePatterns)" in component
     assert "singleTilde: false" in (
         main_module.settings.root_dir / "frontend" / "src" / "components" / "MathMarkdown.tsx"
     ).read_text(encoding="utf-8")

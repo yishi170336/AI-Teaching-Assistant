@@ -75,6 +75,27 @@ function orderedIssuePatterns(items: AnswerReport['aggregate']['issue_patterns']
   ))
 }
 
+function orderedAttemptIssues(
+  items: AnswerReport['attempts'][number]['grading']['issues'],
+  patterns: AnswerReport['aggregate']['issue_patterns'],
+) {
+  const typeRanks = new Map(patterns.map((item, index) => [item.type, index]))
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => {
+      const leftIsOther = left.item.type === 'other' || left.item.type_label === '其他' || left.item.title === '其他'
+      const rightIsOther = right.item.type === 'other' || right.item.type_label === '其他' || right.item.title === '其他'
+      if (leftIsOther !== rightIsOther) return Number(leftIsOther) - Number(rightIsOther)
+      const leftRank = left.item.type ? typeRanks.get(left.item.type) : undefined
+      const rightRank = right.item.type ? typeRanks.get(right.item.type) : undefined
+      if (leftRank != null || rightRank != null) {
+        return (leftRank ?? Number.MAX_SAFE_INTEGER) - (rightRank ?? Number.MAX_SAFE_INTEGER)
+      }
+      return left.index - right.index
+    })
+    .map(({ item }) => item)
+}
+
 function AttemptChoice({
   attempt,
   checked,
@@ -289,7 +310,7 @@ function ReportDocument({ report }: { report: AnswerReport }) {
                 ) : <p className="answer-report-limit">此历史批改未包含结构化步骤分析，保留原始问题与建议。</p>}
                 {attempt.grading.issues.length > 0 && (
                   <div className="answer-report-issues">
-                    {attempt.grading.issues.map((issue, issueIndex) => (
+                    {orderedAttemptIssues(attempt.grading.issues, issuePatterns).map((issue, issueIndex) => (
                       <div key={`${issue.title}-${issueIndex}`}>
                         <strong>{issue.type_label || issue.title}</strong>
                         <MathMarkdown content={`${issue.detail}${issue.suggestion ? `\n\n建议：${issue.suggestion}` : ''}`} />
