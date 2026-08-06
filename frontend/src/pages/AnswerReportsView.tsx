@@ -20,7 +20,7 @@ import {
   RefreshCw,
   Trash2,
 } from 'lucide-react'
-import MathMarkdown from '../components/MathMarkdown'
+import MathMarkdown, { InlineMath } from '../components/MathMarkdown'
 import {
   AnswerReport,
   AnswerReportSummary,
@@ -67,6 +67,14 @@ function percent(value: number | null | undefined) {
   return value == null ? '—' : `${Math.round(value * 1000) / 10}%`
 }
 
+function orderedIssuePatterns(items: AnswerReport['aggregate']['issue_patterns']) {
+  return [...items].sort((left, right) => (
+    Number(left.type === 'other') - Number(right.type === 'other')
+    || right.count - left.count
+    || left.label.localeCompare(right.label, 'zh-CN')
+  ))
+}
+
 function AttemptChoice({
   attempt,
   checked,
@@ -94,6 +102,7 @@ function AttemptChoice({
 
 function ReportDocument({ report }: { report: AnswerReport }) {
   const aggregate = report.aggregate
+  const issuePatterns = orderedIssuePatterns(aggregate.issue_patterns)
   return (
     <article className="answer-report-print">
       <header className="answer-report-document-head">
@@ -140,7 +149,7 @@ function ReportDocument({ report }: { report: AnswerReport }) {
             <h3>知识点表现</h3>
             {aggregate.knowledge_points.length ? aggregate.knowledge_points.map((item) => (
               <div className="answer-report-stat-row" key={item.knowledge_point}>
-                <span>{item.knowledge_point}{item.common_errors.length ? <small>常见：{item.common_errors.join('、')}</small> : null}</span>
+                <span><InlineMath content={item.knowledge_point} />{item.common_errors.length ? <small>常见：{item.common_errors.join('、')}</small> : null}</span>
                 <strong>{percent(item.average_score_rate)}</strong>
                 <Tag bordered={false}>{item.status}</Tag>
               </div>
@@ -148,7 +157,7 @@ function ReportDocument({ report }: { report: AnswerReport }) {
           </div>
           <div>
             <h3>错误模式</h3>
-            {aggregate.issue_patterns.length ? aggregate.issue_patterns.map((item) => (
+            {issuePatterns.length ? issuePatterns.map((item) => (
               <div className="answer-report-stat-row" key={item.type}>
                 <span title={item.examples.join('；')}>{item.label}<small>证据题号：{item.attempt_ids.map((id) => report.attempts.findIndex((attempt) => attempt.id === id) + 1).filter(Boolean).join('、')}</small></span>
                 <strong>{item.count} 次</strong>
@@ -162,7 +171,7 @@ function ReportDocument({ report }: { report: AnswerReport }) {
         <div className="answer-report-recommendations">
           <h3>后续建议</h3>
           {aggregate.recommendations.length
-            ? <ol>{aggregate.recommendations.map((item) => <li key={item}>{item}</li>)}</ol>
+            ? <ol>{aggregate.recommendations.map((item) => <li key={item}><MathMarkdown content={item} /></li>)}</ol>
             : <p>当前没有足够证据生成专项建议，可继续完成练习后创建新报告。</p>}
         </div>
         <div className="answer-report-trend">
@@ -175,13 +184,27 @@ function ReportDocument({ report }: { report: AnswerReport }) {
 
       <section className="answer-report-section">
         <h2>逐题证据</h2>
+        {report.attempts.length > 1 && (
+          <nav className="answer-report-question-index no-print" aria-label="报告题目导航">
+            <span>快速定位</span>
+            {report.attempts.map((attempt, index) => (
+              <button
+                type="button"
+                key={attempt.id}
+                onClick={() => document.getElementById(`answer-report-attempt-${attempt.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+              >
+                第 {index + 1} 题 · {attempt.grading.max_score > 0 ? `${attempt.grading.score}/${attempt.grading.max_score}` : '未评判'}
+              </button>
+            ))}
+          </nav>
+        )}
         <div className="answer-report-attempts">
           {report.attempts.map((attempt, index) => (
-            <article className="answer-report-attempt" key={attempt.id}>
+            <article className="answer-report-attempt" id={`answer-report-attempt-${attempt.id}`} key={attempt.id}>
               <header>
                 <div>
                   <span>第 {index + 1} 题</span>
-                  <Tag bordered={false}>{sourceLabels[attempt.question.source]}</Tag>
+                  <Tag bordered={false}>{sourceLabels[attempt.question.source] || attempt.question.source_label}</Tag>
                   <Tag bordered={false} color={attempt.reference.source === 'question_bank' ? 'green' : attempt.reference.source === 'unavailable' ? 'warning' : 'blue'}>
                     {attempt.reference.source_label}
                   </Tag>
@@ -189,7 +212,7 @@ function ReportDocument({ report }: { report: AnswerReport }) {
                 <strong>{attempt.grading.max_score > 0 ? `${attempt.grading.score} / ${attempt.grading.max_score}` : '未完成评判'}</strong>
               </header>
               <p className="answer-report-attempt-meta">
-                作答时间：{displayTime(attempt.completed_at)} · 难度：{attempt.question.difficulty || '未标注'} · 知识点：{attempt.knowledge_points.join('、') || '未标注'} · 提交方式：{attempt.answer.submission_mode === 'image' ? '手写图片' : attempt.answer.submission_mode === 'mixed' ? '文字 + 图片' : '文字'} · 批改置信度：{attempt.grading.confidence ? percent(attempt.grading.confidence) : '未提供'}
+                作答时间：{displayTime(attempt.completed_at)} · 难度：{attempt.question.difficulty || '未标注'} · 知识点：{attempt.knowledge_points.join('、') || '未标注'} · 提交方式：{attempt.answer.submission_mode === 'image' ? '手写图片' : attempt.answer.submission_mode === 'mixed' ? '文字 + 图片' : '文字'} · 批改置信度：{attempt.grading.confidence != null ? percent(attempt.grading.confidence) : '未提供'}
               </p>
               <div className="answer-report-question"><MathMarkdown content={attempt.question.text} /></div>
               {attempt.question.assets.length > 0 && (
@@ -209,7 +232,7 @@ function ReportDocument({ report }: { report: AnswerReport }) {
                   <p className="answer-report-reference-note">识别人工确认：{attempt.answer.recognition_confirmed ? '已确认' : '未确认或不适用'}</p>
                   {attempt.grading.recognition_warnings?.length ? (
                     <ul className="answer-report-recognition-warnings">
-                      {attempt.grading.recognition_warnings.map((item) => <li key={item}>{item}</li>)}
+                      {attempt.grading.recognition_warnings.map((item) => <li key={item}><MathMarkdown content={item} /></li>)}
                     </ul>
                   ) : null}
                   {attempt.answer.assets.length > 0 && (
@@ -242,7 +265,7 @@ function ReportDocument({ report }: { report: AnswerReport }) {
                     {Object.entries(attempt.grading.dimensions).map(([name, item]) => item && (
                       <div key={name}>
                         <strong>{dimensionLabels[name] || name}</strong>
-                        <span>{item.feedback || '未提供具体说明'}</span>
+                        <InlineMath content={item.feedback || '未提供具体说明'} />
                       </div>
                     ))}
                   </div>
@@ -257,9 +280,9 @@ function ReportDocument({ report }: { report: AnswerReport }) {
                         <Tag bordered={false} color={step.status === 'correct' ? 'success' : step.status === 'incorrect' ? 'error' : 'warning'}>
                           {stepStatusLabels[step.status]}
                         </Tag>
-                        <strong>{step.step}</strong>
+                        <strong><InlineMath content={step.step} /></strong>
                         <MathMarkdown content={step.feedback} />
-                        {step.evidence && <small>答案证据：{step.evidence}</small>}
+                        {step.evidence && <small><InlineMath content={`答案证据：${step.evidence}`} /></small>}
                       </div>
                     ))}
                   </div>
@@ -277,7 +300,7 @@ function ReportDocument({ report }: { report: AnswerReport }) {
                 <div className="answer-report-next-steps">
                   <strong>本题改进建议</strong>
                   {attempt.grading.next_steps.length
-                    ? <ul>{attempt.grading.next_steps.map((item) => <li key={item}>{item}</li>)}</ul>
+                    ? <ul>{attempt.grading.next_steps.map((item) => <li key={item}><MathMarkdown content={item} /></li>)}</ul>
                     : <p>当前没有额外建议。</p>}
                   {attempt.grading.max_score > 0 && attempt.grading.score < attempt.grading.max_score && (
                     <p>建议订正后重新练习；如需加入错题本，仍须由学生在现有错题确认流程中确认。</p>
@@ -314,6 +337,11 @@ export default function AnswerReportsView({ studentId }: { studentId: string }) 
       setAttempts(nextAttempts)
       setReports(nextReports)
       setSelectedIds((current) => current.filter((id) => nextAttempts.some((item) => item.id === id)))
+      setPracticeSessionId((current) => (
+        current === 'all' || nextAttempts.some((item) => item.practice_session_id === current)
+          ? current
+          : 'all'
+      ))
     } catch (error) {
       message.error(error instanceof Error ? error.message : '答案报告数据读取失败')
     } finally {
@@ -321,7 +349,13 @@ export default function AnswerReportsView({ studentId }: { studentId: string }) 
     }
   }, [message, studentId])
 
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    setActiveReport(undefined)
+    setSelectedIds([])
+    setPracticeSessionId('all')
+    setTitle('')
+    void refresh()
+  }, [refresh])
 
   const sessionOptions = useMemo(() => {
     const grouped = new Map<string, PracticeAttempt[]>()
@@ -333,7 +367,7 @@ export default function AnswerReportsView({ studentId }: { studentId: string }) 
       { value: 'all', label: `全部练习（${attempts.length} 题）` },
       ...[...grouped.entries()].map(([id, items], index) => ({
         value: id,
-        label: `练习组 ${index + 1} · ${displayTime(items[items.length - 1].completed_at)}（${items.length} 题）`,
+        label: `练习组 ${index + 1} · ${displayTime(items[0].completed_at)}（${items.length} 题）`,
       })),
     ]
   }, [attempts])
@@ -418,7 +452,10 @@ export default function AnswerReportsView({ studentId }: { studentId: string }) 
         <section className="answer-report-picker">
           <div className="answer-report-panel-head">
             <div><FilePlus2 size={18} /><span><strong>选择练习</strong><small>已选择 {selectedIds.length} 题</small></span></div>
-            <Button size="small" onClick={toggleAllVisible}>{visibleAttempts.every((item) => selectedIds.includes(item.id)) && visibleAttempts.length ? '取消本组全选' : '全选本组'}</Button>
+            <div className="answer-report-panel-actions">
+              {selectedIds.length > 0 && <Button size="small" type="text" onClick={() => setSelectedIds([])}>清空选择</Button>}
+              <Button size="small" onClick={toggleAllVisible}>{visibleAttempts.every((item) => selectedIds.includes(item.id)) && visibleAttempts.length ? '取消本组全选' : '全选本组'}</Button>
+            </div>
           </div>
           <Select
             value={practiceSessionId}

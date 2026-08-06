@@ -33,6 +33,21 @@ assert.equal(circuitNotation.includes('$R_{B1}$'), true)
 assert.equal(circuitNotation.includes('$60\\,\\mathrm{k}\\Omega$'), true)
 assert.equal(circuitNotation.includes('$A_{v1}$ = $v_{o}$ / $v_{i}$'), true)
 
+const escapedMarkdownNotation = normalizeLatex(
+  String.raw`**u\_min**、u\_o(t)、U_o,max 与 v_1 均应显示为数学符号。`,
+)
+assert.equal(escapedMarkdownNotation.includes(String.raw`**$u_{min}$**`), true)
+assert.equal(escapedMarkdownNotation.includes(String.raw`$u_{o}(t)$`), true)
+assert.equal(escapedMarkdownNotation.includes(String.raw`$U_{o,max}$`), true)
+assert.equal(escapedMarkdownNotation.includes(String.raw`$v_{1}$`), true)
+assert.equal(
+  normalizeLatex('输出在 0~10ms 下降，再在 10~20ms 上升。'),
+  '输出在 0～10ms 下降，再在 10～20ms 上升。',
+)
+for (const inline of [...escapedMarkdownNotation.matchAll(/\$([^$]+)\$/g)].map((match) => match[1])) {
+  katex.renderToString(inline, { strict: false, throwOnError: true })
+}
+
 const boundQuestionSummary = normalizeLatex(
   String.raw`主要参数为：$\beta_0=80$，$r_{b'e}=50\,\Omega$，$C_{b'e}=2\,\mathrm{pF}$，$f_T=400\,\mathrm{MHz}$。`,
 )

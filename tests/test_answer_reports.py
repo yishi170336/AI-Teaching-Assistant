@@ -199,6 +199,40 @@ def test_aggregate_requires_repeated_evidence_and_warns_for_low_samples():
     assert any("样本少于 3 题" in item for item in single["warnings"])
 
 
+def test_aggregate_places_other_issue_last_even_when_more_frequent():
+    attempts = extract_practice_attempts(
+        "conversation-a",
+        [
+            *turn("turn-1", issue_type="other"),
+            *turn("turn-2", issue_type="other"),
+            *turn("turn-3", issue_type="concept"),
+        ],
+    )
+
+    aggregate = aggregate_attempts(attempts)
+
+    assert [item["type"] for item in aggregate["issue_patterns"]] == ["concept", "other"]
+    assert aggregate["knowledge_points"][0]["common_errors"] == ["概念理解", "其他"]
+
+
+def test_aggregate_requires_complete_comparability_evidence_for_trend():
+    attempts = extract_practice_attempts(
+        "conversation-a",
+        [
+            *turn("turn-1", score=40),
+            *turn("turn-2", score=50),
+            *turn("turn-3", score=80),
+            *turn("turn-4", score=90),
+        ],
+    )
+    attempts[-1]["question"]["question_type"] = ""
+    attempts[-1]["knowledge_points"] = []
+
+    aggregate = aggregate_attempts(attempts)
+
+    assert aggregate["trend"]["status"] == "not_comparable"
+
+
 def test_aggregate_reports_failed_items_and_only_trends_comparable_ordered_work():
     comparable = extract_practice_attempts(
         "conversation-a",
@@ -244,11 +278,55 @@ def test_report_persists_single_and_multi_question_snapshots(tmp_path):
     assert asyncio.run(reloaded.delete("learner-a", multi["id"])) is True
 
 
+def test_multi_report_keeps_order_and_consistent_mixed_source_totals(tmp_path):
+    report_store = AnswerReportStore(tmp_path / "reports.json")
+    history = [
+        *turn("turn-1", source="question_bank", score=100, issue_type="unit"),
+        *turn("turn-2", source="user_uploaded", score=50, issue_type="calculation", with_image=True),
+        *turn("turn-3", source="ai_generated", score=50, issue_type="calculation"),
+        *turn("turn-4", source="ai_generated", score=0, issue_type="other"),
+    ]
+    failed = turn("turn-5", source="ai_generated")
+    failed[1]["status"] = "failed"
+    failed[1].pop("grading")
+    attempts = extract_practice_attempts("conversation-a", [*history, *failed])
+
+    report = asyncio.run(report_store.create(
+        student_id="learner-a",
+        attempts=list(reversed(attempts)),
+        title="混合来源阶段报告",
+    ))
+    aggregate = report["aggregate"]
+
+    assert [item["turn_id"] for item in report["attempts"]] == [
+        "turn-1", "turn-2", "turn-3", "turn-4", "turn-5",
+    ]
+    assert aggregate["attempt_count"] == 5
+    assert aggregate["scored_count"] == 4
+    assert aggregate["ungradable_count"] == 1
+    assert aggregate["correct_count"] == 1
+    assert aggregate["partial_correct_count"] == 2
+    assert aggregate["incorrect_count"] == 1
+    assert aggregate["source_counts"] == {
+        "question_bank": 1,
+        "user_uploaded": 1,
+        "ai_generated": 3,
+    }
+    assert aggregate["repeated_errors"][0]["type"] == "calculation"
+    assert len(aggregate["repeated_errors"][0]["attempt_ids"]) == 2
+    assert aggregate["issue_patterns"][-1]["type"] == "other"
+    assert aggregate["trend"]["status"] == "declining"
+
+
 def test_answer_report_api_enforces_student_ownership(tmp_path, monkeypatch):
     attempt_store = PracticeAttemptStore(tmp_path / "attempts.json")
     report_store = AnswerReportStore(tmp_path / "reports.json")
     attempt = extract_practice_attempts("conversation-a", turn("turn-1"))[0]
-    asyncio.run(attempt_store.upsert_many([attempt]))
+    second_attempt = extract_practice_attempts(
+        "conversation-b",
+        turn("turn-2", source="user_uploaded", with_image=True),
+    )[0]
+    asyncio.run(attempt_store.upsert_many([attempt, second_attempt]))
 
     class EmptyMemory:
         async def list_sessions(self, limit=30):
@@ -261,7 +339,9 @@ def test_answer_report_api_enforces_student_ownership(tmp_path, monkeypatch):
 
     listed = client.get("/api/practice-attempts", params={"student_id": "learner-a"})
     assert listed.status_code == 200
-    assert listed.json()["attempts"][0]["id"] == attempt["id"]
+    assert [item["id"] for item in listed.json()["attempts"]] == [
+        second_attempt["id"], attempt["id"],
+    ]
 
     forbidden = client.post("/api/answer-reports", json={
         "student_id": "learner-b",
@@ -279,10 +359,12 @@ def test_answer_report_api_enforces_student_ownership(tmp_path, monkeypatch):
 
     created = client.post("/api/answer-reports", json={
         "student_id": "learner-a",
-        "attempt_ids": [attempt["id"]],
+        "attempt_ids": [second_attempt["id"], attempt["id"]],
     })
     assert created.status_code == 200
     report_id = created.json()["report"]["id"]
+    assert created.json()["report"]["attempt_ids"] == [attempt["id"], second_attempt["id"]]
+    assert created.json()["report"]["aggregate"]["attempt_count"] == 2
     assert client.get(
         f"/api/answer-reports/{report_id}",
         params={"student_id": "learner-b"},
@@ -304,5 +386,12 @@ def test_answer_report_print_contract_uses_persisted_report_and_safe_filename():
     assert "fetchAnswerReport(studentId, reportId)" in component
     assert "window.print()" in component
     assert "replace(/[^A-Za-z0-9\\u4e00-\\u9fff_-]+/g" in component
+    assert "<InlineMath content={step.step}" in component
+    assert "items[0].completed_at" in component
+    assert "orderedIssuePatterns(aggregate.issue_patterns)" in component
+    assert "singleTilde: false" in (
+        main_module.settings.root_dir / "frontend" / "src" / "components" / "MathMarkdown.tsx"
+    ).read_text(encoding="utf-8")
     assert ".answer-report-print, .answer-report-print *" in styles
+    assert ".answer-report-print .no-print" in styles
     assert "break-inside: avoid" in styles

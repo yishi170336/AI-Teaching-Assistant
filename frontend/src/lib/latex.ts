@@ -68,9 +68,33 @@ export function normalizeLatex(input: string): string {
     return `@@PROTECTEDMATH${completeMath.length - 1}@@`
   })
 
+  // Outside math, model output commonly uses `0~10ms` for a numeric range.
+  // Two such ranges in one paragraph can be mistaken for GFM strikethrough.
+  text = text.replace(/(\d)\s*~\s*(?=\d)/g, '$1～')
+
+  // Model-authored Markdown often escapes an underscore to avoid emphasis,
+  // for example `**u\_min**`.  In report labels that leaves a literal
+  // underscore instead of mathematical notation. Convert only single-letter
+  // circuit variables while complete math spans are protected above.
+  const formatCircuitVariable = (
+    prefix: string,
+    base: string,
+    subscript: string,
+    prime?: string,
+    argument?: string,
+  ) => {
+    const argumentBelongsToSubscript = Boolean(argument && /^[A-Z]/.test(base) && /^[A-Z]/.test(subscript))
+    const normalizedSubscript = argumentBelongsToSubscript ? `${subscript}${argument}` : subscript
+    const trailingArgument = argumentBelongsToSubscript ? '' : (argument || '')
+    return `${prefix}$${base}_{${normalizedSubscript}}${prime ? "'" : ''}${trailingArgument}$`
+  }
   text = text.replace(
-    /(^|[^A-Za-z0-9_$\\])([A-Za-z])_([A-Za-z][A-Za-z0-9]*(?:\([A-Za-z]+\))?)(['′])?(?=$|[^A-Za-z0-9_])/g,
-    (_, prefix, base, subscript, prime) => `${prefix}$${base}_{${subscript}}${prime ? "'" : ''}$`,
+    /(^|[^A-Za-z0-9_$\\])([A-Za-z])\\_([A-Za-z0-9]+(?:,[A-Za-z0-9]+)*)(['′])?(\([A-Za-z]+\))?(?=$|[^A-Za-z0-9_])/g,
+    (_, prefix, base, subscript, prime, argument) => formatCircuitVariable(prefix, base, subscript, prime, argument),
+  )
+  text = text.replace(
+    /(^|[^A-Za-z0-9_$\\])([A-Za-z])_([A-Za-z0-9]+(?:,[A-Za-z0-9]+)*)(['′])?(\([A-Za-z]+\))?(?=$|[^A-Za-z0-9_])/g,
+    (_, prefix, base, subscript, prime, argument) => formatCircuitVariable(prefix, base, subscript, prime, argument),
   )
   text = text.replace(
     /(^|[^A-Za-z0-9_$\\])(β|ω)(?=$|[^A-Za-z0-9_])/g,

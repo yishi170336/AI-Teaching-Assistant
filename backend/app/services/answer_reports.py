@@ -465,12 +465,23 @@ def aggregate_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
                 GRADING_ISSUE_TYPE_LABELS[kind]
                 for kind, _count in sorted(
                     point_issues.get(point, {}).items(),
-                    key=lambda pair: (-pair[1], GRADING_ISSUE_TYPE_LABELS[pair[0]]),
+                    key=lambda pair: (
+                        pair[0] == "other",
+                        -pair[1],
+                        GRADING_ISSUE_TYPE_LABELS[pair[0]],
+                    ),
                 )[:3]
             ],
         })
     knowledge.sort(key=lambda item: (item["average_score_rate"], -item["attempt_count"], item["knowledge_point"]))
-    issues = sorted(issue_stats.values(), key=lambda item: (-item["count"], item["label"]))
+    issues = sorted(
+        issue_stats.values(),
+        key=lambda item: (
+            item["type"] == "other",
+            -item["count"],
+            item["label"],
+        ),
+    )
     repeated = [item for item in issues if len(item["attempt_ids"]) >= 2]
     recommendations: list[str] = []
     for item in repeated[:3]:
@@ -493,19 +504,26 @@ def aggregate_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
         for item, rate in scored
     )
     ordered_scored = sorted(scored, key=lambda pair: str(pair[0].get("completed_at", "")))
-    question_types = {
+    question_type_values = [
         str(item.get("question", {}).get("question_type", "")).strip()
         for item, _ in ordered_scored
-        if str(item.get("question", {}).get("question_type", "")).strip()
-    }
+    ]
     point_sets = [
         set(_string_list(item.get("knowledge_points"), 12))
         for item, _ in ordered_scored
-        if _string_list(item.get("knowledge_points"), 12)
     ]
+    comparable_by_type = (
+        bool(question_type_values)
+        and all(question_type_values)
+        and len(set(question_type_values)) == 1
+    )
+    comparable_by_point = (
+        bool(point_sets)
+        and all(point_sets)
+        and bool(set.intersection(*point_sets))
+    )
     comparable = bool(ordered_scored) and (
-        len(question_types) == 1
-        or bool(point_sets and set.intersection(*point_sets))
+        comparable_by_type or comparable_by_point
     )
     trend: dict[str, Any] = {
         "status": "insufficient_data",

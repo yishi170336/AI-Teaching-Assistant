@@ -4,7 +4,10 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import { normalizeLatex } from '../lib/latex'
 
-const markdownPlugins = [remarkGfm, remarkMath]
+const markdownPlugins: Parameters<typeof ReactMarkdown>[0]['remarkPlugins'] = [
+  [remarkGfm, { singleTilde: false }],
+  remarkMath,
+]
 const katexPlugins: Parameters<typeof ReactMarkdown>[0]['rehypePlugins'] = [
   [rehypeKatex, { strict: false, throwOnError: false, trust: false }],
 ]
@@ -36,4 +39,3 @@ export function InlineMath({ content, className = '' }: { content: string; class
     </span>
   )
 }
-
