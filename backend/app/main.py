@@ -41,6 +41,7 @@ from backend.app.config import settings
 from backend.app.rag.manager import KnowledgeBaseManager
 from backend.app.rag.multimodal import BuildModelConfig
 from backend.app.schemas import (
+    AnswerReportCreateRequest,
     ChatRequest,
     HomeworkFromQuestionBankRequest,
     HomeworkQuestionUpdateRequest,
@@ -60,6 +61,11 @@ from backend.app.schemas import (
     ScheduleItemStatusRequest,
 )
 from backend.app.services.memory import ConversationMemory
+from backend.app.services.answer_reports import (
+    AnswerReportStore,
+    PracticeAttemptStore,
+    extract_practice_attempts,
+)
 from backend.app.services.ollama_client import OllamaClient
 from backend.app.services.openai_compatible_client import OpenAICompatibleClient
 from backend.app.services.attachments import ALLOWED_ATTACHMENT_SUFFIXES, AttachmentStore
@@ -138,6 +144,8 @@ question_recommendations = QuestionRecommendationService(homework_store)
 engine = CircuitTutorEngine(ollama, knowledge_bases, question_recommendations)
 knowledge_explanation_store = KnowledgeExplanationStore()
 knowledge_explanations = KnowledgeExplanationService(knowledge_explanation_store)
+practice_attempts = PracticeAttemptStore()
+answer_reports = AnswerReportStore()
 knowledge_explanation_tasks: dict[str, asyncio.Task[Any]] = {}
 
 
@@ -698,6 +706,87 @@ async def delete_knowledge_base(knowledge_base: str) -> dict[str, Any]:
 @app.get("/api/sessions")
 async def conversation_sessions() -> dict[str, Any]:
     return {"sessions": await memory.list_sessions()}
+
+
+def _validate_student_identifier(student_id: str) -> str:
+    normalized = student_id.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", normalized):
+        raise HTTPException(status_code=400, detail="学生标识不合法")
+    return normalized
+
+
+async def _sync_student_practice_attempts(student_id: str) -> None:
+    """Backfill historical grading turns without changing their snapshots."""
+
+    discovered: list[dict[str, Any]] = []
+    for summary in await memory.list_sessions(limit=500):
+        session_id = str(summary.get("session_id", ""))
+        if not session_id:
+            continue
+        history = await memory.history(session_id)
+        discovered.extend(
+            attempt
+            for attempt in extract_practice_attempts(session_id, history)
+            if attempt.get("student_id") == student_id
+        )
+    await practice_attempts.upsert_many(discovered)
+
+
+@app.get("/api/practice-attempts")
+async def list_practice_attempts(
+    student_id: str,
+    practice_session_id: str = "",
+) -> dict[str, Any]:
+    student_id = _validate_student_identifier(student_id)
+    if practice_session_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", practice_session_id):
+        raise HTTPException(status_code=400, detail="练习组标识不合法")
+    await _sync_student_practice_attempts(student_id)
+    return {
+        "attempts": await practice_attempts.list(student_id, practice_session_id),
+    }
+
+
+@app.post("/api/answer-reports")
+async def create_answer_report(payload: AnswerReportCreateRequest) -> dict[str, Any]:
+    await _sync_student_practice_attempts(payload.student_id)
+    try:
+        selected = await practice_attempts.get_many(payload.student_id, payload.attempt_ids)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+    return {
+        "report": await answer_reports.create(
+            student_id=payload.student_id,
+            attempts=selected,
+            title=payload.title,
+        )
+    }
+
+
+@app.get("/api/answer-reports")
+async def list_answer_reports(student_id: str) -> dict[str, Any]:
+    student_id = _validate_student_identifier(student_id)
+    return {"reports": await answer_reports.list(student_id)}
+
+
+@app.get("/api/answer-reports/{report_id}")
+async def get_answer_report(report_id: str, student_id: str) -> dict[str, Any]:
+    student_id = _validate_student_identifier(student_id)
+    if not re.fullmatch(r"[a-f0-9]{32}", report_id):
+        raise HTTPException(status_code=400, detail="报告标识不合法")
+    report = await answer_reports.get(student_id, report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="报告不存在或不属于当前学生")
+    return {"report": report}
+
+
+@app.delete("/api/answer-reports/{report_id}")
+async def delete_answer_report(report_id: str, student_id: str) -> dict[str, Any]:
+    student_id = _validate_student_identifier(student_id)
+    if not re.fullmatch(r"[a-f0-9]{32}", report_id):
+        raise HTTPException(status_code=400, detail="报告标识不合法")
+    if not await answer_reports.delete(student_id, report_id):
+        raise HTTPException(status_code=404, detail="报告不存在或不属于当前学生")
+    return {"ok": True, "report_id": report_id}
 
 
 @app.get("/api/sessions/{session_id}")
@@ -2051,6 +2140,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     "attachments": resolved.items if payload.attachment_ids else [],
                     "knowledge_base": payload.knowledge_base,
                     "scene": payload.scene,
+                    "practice_session_id": payload.practice_session_id,
                     "recognition_confirmed": payload.recognition_confirmed,
                     "student_id": payload.student_id,
                     "turn_id": turn_id,
@@ -2138,7 +2228,11 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     "has_figure": bool(recommendation_question.get("figures")),
                     **({"parent_focus_id": active_focus["id"]} if active_focus.get("id") else {}),
                 }
-            elif result.practice and str(result.practice.get("question", "")).strip():
+            elif (
+                result.practice
+                and not result.grading
+                and str(result.practice.get("question", "")).strip()
+            ):
                 practice_question = str(result.practice.get("question", "")).strip()
                 final_focus = {
                     "id": _focus_identifier(f"practice:{turn_id}:{practice_question}"),
@@ -2234,6 +2328,8 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     "provider": selected_provider,
                     "model": selected_model,
                     "knowledge_base": payload.knowledge_base,
+                    "student_id": payload.student_id,
+                    "practice_session_id": payload.practice_session_id,
                     "turn_id": turn_id,
                     "status": "completed",
                     "focus_id": str(final_focus.get("id", "")),
@@ -2266,6 +2362,12 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
             assistant_persisted = True
             await memory.update_turn_status(payload.session_id, turn_id, "completed")
             updated_history = await memory.history(payload.session_id)
+            if result.grading:
+                await practice_attempts.upsert_many([
+                    attempt
+                    for attempt in extract_practice_attempts(payload.session_id, updated_history)
+                    if attempt.get("turn_id") == turn_id
+                ])
             await _update_conversation_summary(
                 session_id=payload.session_id,
                 history=updated_history,

@@ -32,6 +32,7 @@ class ChatRequest(BaseModel):
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     question_ref: QuestionReference | None = None
     focus_id: str = Field(default="", max_length=32)
+    practice_session_id: str = Field(default="", max_length=96)
     model_provider: Literal["ollama", "deepseek", "qwen", "custom"] = "qwen"
     model: str = Field(default="qwen3.7-plus", min_length=1, max_length=128)
     api_key: str = Field(default="", max_length=512)
@@ -40,7 +41,7 @@ class ChatRequest(BaseModel):
     vision_api_key: str = Field(default="", max_length=512)
     vision_base_url: str = Field(default="", max_length=512)
 
-    @field_validator("session_id", "student_id", "knowledge_base")
+    @field_validator("session_id", "student_id", "knowledge_base", "practice_session_id")
     @classmethod
     def safe_identifier(cls, value: str) -> str:
         value = value.strip()
@@ -101,6 +102,33 @@ class ChatRequest(BaseModel):
         if self.model_provider == "custom" and (not self.api_key or not self.base_url):
             raise ValueError("自定义 API 必须填写 API Key 和 Base URL")
         return self
+
+
+class AnswerReportCreateRequest(BaseModel):
+    student_id: str = Field(min_length=1, max_length=96)
+    attempt_ids: list[str] = Field(min_length=1, max_length=50)
+    title: str = Field(default="", max_length=120)
+
+    @field_validator("student_id")
+    @classmethod
+    def safe_report_student_id(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", value):
+            raise ValueError("学生标识不合法")
+        return value
+
+    @field_validator("attempt_ids")
+    @classmethod
+    def safe_report_attempt_ids(cls, values: list[str]) -> list[str]:
+        normalized = list(dict.fromkeys(value.strip() for value in values))
+        if not normalized or any(not re.fullmatch(r"[a-f0-9]{32}", value) for value in normalized):
+            raise ValueError("练习记录标识不合法")
+        return normalized
+
+    @field_validator("title")
+    @classmethod
+    def strip_report_title(cls, value: str) -> str:
+        return value.strip()
 
 
 class SourceInfo(BaseModel):

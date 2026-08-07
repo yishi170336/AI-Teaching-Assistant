@@ -781,9 +781,18 @@ export type PracticeExercise = {
 }
 
 export type PracticeGradingIssue = {
+  type?: 'concept' | 'setup' | 'calculation' | 'unit' | 'sign_direction' | 'conclusion' | 'recognition' | 'incomplete' | 'other'
+  type_label?: string
   title: string
   detail: string
   suggestion: string
+}
+
+export type PracticeStepAnalysis = {
+  step: string
+  status: 'correct' | 'partial' | 'incorrect' | 'unverifiable'
+  feedback: string
+  evidence: string
 }
 
 export type PracticeGrading = {
@@ -795,6 +804,125 @@ export type PracticeGrading = {
   strengths: string[]
   issues: PracticeGradingIssue[]
   next_steps: string[]
+  knowledge_points?: string[]
+  step_analyses?: PracticeStepAnalysis[]
+  recognition_warnings?: string[]
+  confidence?: number
+  reference_answer_source?: 'question_bank' | 'teacher_provided' | 'ai_inferred' | 'unavailable'
+  reference_answer_note?: string
+  submission_mode?: 'text' | 'image' | 'mixed'
+  dimensions?: Partial<Record<'correctness' | 'completeness' | 'logic' | 'notation', {
+    status: 'good' | 'mixed' | 'needs_improvement' | 'unverifiable'
+    feedback: string
+  }>>
+  final_conclusion_correct?: boolean | null
+}
+
+export type PracticeAttempt = {
+  id: string
+  schema_version: string
+  student_id: string
+  practice_session_id: string
+  conversation_session_id: string
+  turn_id: string
+  evaluation_status: 'completed' | 'failed' | 'cancelled' | 'error'
+  question: {
+    text: string
+    question_type: string
+    difficulty: string
+    parts: string[]
+    source: 'question_bank' | 'ai_generated' | 'user_uploaded'
+    source_label: string
+    question_ref?: QuestionReference | null
+    assets: AttachmentInfo[]
+  }
+  answer: {
+    text: string
+    submitted_text: string
+    submission_mode: 'text' | 'image' | 'mixed'
+    assets: AttachmentInfo[]
+    recognition?: PhotoRecognition | Record<string, unknown>
+    recognition_confirmed: boolean
+  }
+  reference: {
+    source: 'question_bank' | 'teacher_provided' | 'ai_inferred' | 'unavailable'
+    source_label: string
+    coverage: 'full_steps' | 'final_answer_only' | 'unavailable'
+    answer: string
+    answer_items: string[]
+    solution: string
+    solution_steps: string[]
+    note: string
+  }
+  knowledge_points: string[]
+  grading: PracticeGrading
+  model: { provider: string; name: string }
+  created_at: string
+  completed_at: string
+}
+
+export type AnswerReportAggregate = {
+  attempt_count: number
+  scored_count: number
+  ungradable_count: number
+  correct_count: number
+  partial_correct_count: number
+  incorrect_count: number
+  average_score_rate: number | null
+  overall_performance: string
+  source_counts: Record<string, number>
+  reference_counts: { with_reference: number; without_reference: number }
+  knowledge_points: Array<{
+    knowledge_point: string
+    attempt_count: number
+    average_score_rate: number
+    status: string
+    common_errors: string[]
+  }>
+  issue_patterns: Array<{
+    type: string
+    label: string
+    count: number
+    attempt_ids: string[]
+    examples: string[]
+  }>
+  repeated_errors: Array<{
+    type: string
+    label: string
+    count: number
+    attempt_ids: string[]
+    examples: string[]
+  }>
+  recommendations: string[]
+  trend: {
+    status: 'insufficient_data' | 'not_comparable' | 'improving' | 'declining' | 'stable'
+    label: string
+    score_rate_change: number | null
+    note: string
+  }
+  warnings: string[]
+  data_quality: {
+    structured_step_attempts: number
+    recognition_warning_count: number
+  }
+}
+
+export type AnswerReportSummary = {
+  id: string
+  schema_version: string
+  report_version: string
+  status: 'completed'
+  student_id: string
+  title: string
+  attempt_ids: string[]
+  practice_session_ids: string[]
+  aggregate: AnswerReportAggregate
+  created_at: string
+  updated_at: string
+}
+
+export type AnswerReport = AnswerReportSummary & {
+  attempts: PracticeAttempt[]
 }
 
 export type StoredMessage = {
@@ -806,6 +934,7 @@ export type StoredMessage = {
   provider?: ModelProviderId
   model?: string
   knowledge_base?: string
+  practice_session_id?: string
   attachments?: AttachmentInfo[]
   sources?: SourceInfo[]
   cited_sources?: SourceInfo[]
@@ -853,6 +982,7 @@ export async function streamChat(
     student_id: string
     question_ref?: QuestionReference
     focus_id?: string
+    practice_session_id?: string
     model_provider: ModelProviderId
     model: string
     api_key: string
@@ -907,6 +1037,58 @@ export async function streamChat(
   if (!receivedTerminalEvent && !signal?.aborted) {
     throw new Error('回答连接提前结束，已保留收到的内容，请重新生成')
   }
+}
+
+export async function fetchPracticeAttempts(
+  studentId: string,
+  practiceSessionId = '',
+): Promise<PracticeAttempt[]> {
+  const query = new URLSearchParams({ student_id: studentId })
+  if (practiceSessionId) query.set('practice_session_id', practiceSessionId)
+  const response = await fetch(`/api/practice-attempts?${query.toString()}`)
+  const result = await response.json()
+  if (!response.ok) throw new Error(apiErrorMessage(result, '练习记录读取失败'))
+  return result.attempts || []
+}
+
+export async function fetchAnswerReports(studentId: string): Promise<AnswerReportSummary[]> {
+  const response = await fetch(`/api/answer-reports?student_id=${encodeURIComponent(studentId)}`)
+  const result = await response.json()
+  if (!response.ok) throw new Error(apiErrorMessage(result, '历史报告读取失败'))
+  return result.reports || []
+}
+
+export async function fetchAnswerReport(
+  studentId: string,
+  reportId: string,
+): Promise<AnswerReport> {
+  const response = await fetch(`/api/answer-reports/${encodeURIComponent(reportId)}?student_id=${encodeURIComponent(studentId)}`)
+  const result = await response.json()
+  if (!response.ok) throw new Error(apiErrorMessage(result, '报告读取失败'))
+  return result.report
+}
+
+export async function createAnswerReport(
+  studentId: string,
+  attemptIds: string[],
+  title = '',
+): Promise<AnswerReport> {
+  const response = await fetch('/api/answer-reports', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ student_id: studentId, attempt_ids: attemptIds, title }),
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(apiErrorMessage(result, '报告生成失败'))
+  return result.report
+}
+
+export async function deleteAnswerReport(studentId: string, reportId: string): Promise<void> {
+  const response = await fetch(`/api/answer-reports/${encodeURIComponent(reportId)}?student_id=${encodeURIComponent(studentId)}`, {
+    method: 'DELETE',
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(apiErrorMessage(result, '报告删除失败'))
 }
 
 export async function fetchModels(): Promise<ModelCatalog> {

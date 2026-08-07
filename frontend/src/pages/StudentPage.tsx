@@ -85,6 +85,7 @@ import {
 } from 'lucide-react'
 import MathMarkdown, { InlineMath } from '../components/MathMarkdown'
 import HomeworkView from './HomeworkView'
+import AnswerReportsView from './AnswerReportsView'
 import {
   addMistakeAnnotation,
   addScheduleItem,
@@ -161,7 +162,7 @@ import {
 import { CHAT_MODEL, CHAT_MODEL_PROVIDER, ChatMessage, ChatMode, useChatStore } from '../store/chatStore'
 
 const { TextArea } = Input
-type WorkspaceView = 'chat' | 'graph' | 'question-bank' | 'homework' | 'mistakes' | 'schedule'
+type WorkspaceView = 'chat' | 'graph' | 'question-bank' | 'homework' | 'mistakes' | 'reports' | 'schedule'
 
 const mistakeSourceLabels: Record<MistakeSource, string> = {
   question_bank: '题库',
@@ -368,6 +369,10 @@ function Sidebar({
           <button className={`nav-item ${activeView === 'mistakes' ? 'active' : ''}`} onClick={() => onView('mistakes')}>
             <Layers3 size={17} />
             <span>错题本</span>
+          </button>
+          <button className={`nav-item ${activeView === 'reports' ? 'active' : ''}`} onClick={() => onView('reports')}>
+            <FileText size={17} />
+            <span>答案分析报告</span>
           </button>
           <button className={`nav-item ${activeView === 'schedule' ? 'active' : ''}`} onClick={() => onView('schedule')}>
             <CalendarDays size={17} />
@@ -5361,7 +5366,7 @@ function StudentPageContent() {
             <button className="menu-button" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu size={19} /></button>
             <div>
               <span className="breadcrumb">学生工作台 /</span>
-              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'question-bank' ? '题库' : activeView === 'homework' ? '我的作业' : activeView === 'mistakes' ? '错题本' : activeView === 'schedule' ? '学习日历' : mode === 'recommend' ? '题库推荐' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'explain' ? '知识讲解' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
+              <strong>{activeView === 'graph' ? '知识图谱' : activeView === 'question-bank' ? '题库' : activeView === 'homework' ? '我的作业' : activeView === 'mistakes' ? '错题本' : activeView === 'reports' ? '答案分析报告' : activeView === 'schedule' ? '学习日历' : mode === 'recommend' ? '题库推荐' : mode === 'quiz' ? '同类题生成' : mode === 'answer' ? '课程答疑' : mode === 'explain' ? '知识讲解' : mode === 'plan' ? '学习规划' : '智能学习'}</strong>
             </div>
           </div>
           <div className="topbar-actions">
@@ -5485,6 +5490,8 @@ function StudentPageContent() {
             onToggle={(item) => void toggleScheduleItem(item)}
             onDelete={(id) => void removeScheduleItem(id)}
           />
+        ) : activeView === 'reports' ? (
+          <AnswerReportsView studentId={studentId} />
         ) : (
           <HomeworkView
             studentId={studentId}

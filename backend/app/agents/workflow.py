@@ -35,6 +35,11 @@ from backend.app.agents.context import (
     explicitly_requests_question_bank_retrieval,
 )
 from backend.app.config import settings
+from backend.app.grading_contract import (
+    GRADING_DIMENSION_STATUSES,
+    GRADING_ISSUE_TYPE_LABELS,
+    GRADING_STEP_STATUSES,
+)
 from backend.app.rag.manager import KnowledgeBaseManager
 from backend.app.rag.models import RetrievalHit
 from backend.app.services.ollama_client import OllamaClient
@@ -1474,20 +1479,75 @@ def _normalize_grading(value: dict[str, Any]) -> dict[str, Any]:
     for item in value.get("issues", []) if isinstance(value.get("issues"), list) else []:
         if not isinstance(item, dict):
             continue
+        issue_type = str(item.get("type", "other")).strip()
+        if issue_type not in GRADING_ISSUE_TYPE_LABELS:
+            issue_type = "other"
         issues.append({
+            "type": issue_type,
             "title": str(item.get("title", "需要改进"))[:120],
             "detail": str(item.get("detail", ""))[:1200],
             "suggestion": str(item.get("suggestion", ""))[:1200],
         })
+    step_analyses: list[dict[str, str]] = []
+    for item in value.get("step_analyses", []) if isinstance(value.get("step_analyses"), list) else []:
+        if not isinstance(item, dict) or not str(item.get("step", "")).strip():
+            continue
+        status = str(item.get("status", "unverifiable")).strip()
+        if status not in GRADING_STEP_STATUSES:
+            status = "unverifiable"
+        step_analyses.append({
+            "step": str(item.get("step", "")).strip()[:120],
+            "status": status,
+            "feedback": str(item.get("feedback", "")).strip()[:1600],
+            "evidence": str(item.get("evidence", "")).strip()[:1200],
+        })
+    try:
+        confidence = max(0.0, min(1.0, round(float(value.get("confidence", 0)), 3)))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    dimensions: dict[str, dict[str, str]] = {}
+    raw_dimensions = value.get("dimensions") if isinstance(value.get("dimensions"), dict) else {}
+    for name in ("correctness", "completeness", "logic", "notation"):
+        item = raw_dimensions.get(name)
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status", "unverifiable")).strip()
+        if status not in GRADING_DIMENSION_STATUSES:
+            status = "unverifiable"
+        dimensions[name] = {
+            "status": status,
+            "feedback": str(item.get("feedback", "")).strip()[:1200],
+        }
+    final_value = value.get("final_conclusion_correct")
+    final_conclusion_correct = final_value if isinstance(final_value, bool) else None
+    extracted_value = value.get("extracted_answer", "")
+    if isinstance(extracted_value, list):
+        extracted_answer = "\n".join(
+            str(item).strip() for item in extracted_value if str(item).strip()
+        )
+    elif isinstance(extracted_value, dict):
+        extracted_answer = "\n".join(
+            f"{key}: {item}"
+            for key, item in extracted_value.items()
+            if str(item).strip()
+        )
+    else:
+        extracted_answer = str(extracted_value).strip()
     return {
         "score": score,
         "max_score": 100,
         "is_correct": bool(value.get("is_correct", score >= 90)),
         "summary": str(value.get("summary", "已完成批改。")).strip()[:2000],
-        "extracted_answer": str(value.get("extracted_answer", "")).strip()[:12000],
+        "extracted_answer": extracted_answer[:12000],
         "strengths": _string_list(value.get("strengths"), 8),
         "issues": issues[:8],
         "next_steps": _string_list(value.get("next_steps"), 6),
+        "knowledge_points": _string_list(value.get("knowledge_points"), 12),
+        "step_analyses": step_analyses[:16],
+        "recognition_warnings": _string_list(value.get("recognition_warnings"), 10),
+        "confidence": confidence,
+        "dimensions": dimensions,
+        "final_conclusion_correct": final_conclusion_correct,
     }
 
 
@@ -3918,19 +3978,48 @@ class CircuitTutorEngine:
         if not student_text and not attachment_context:
             raise RuntimeError("请填写答案或上传作答图片后再提交批改。")
 
+        reference_available = bool(
+            str(practice.get("answer", "")).strip()
+            or str(practice.get("solution", "")).strip()
+            or practice.get("answer_items")
+            or practice.get("solution_steps")
+        )
+        reference_source = (
+            "question_bank"
+            if structured.get("prompt") and reference_available
+            else "ai_inferred"
+            if reference_available
+            else "unavailable"
+        )
+        reference_label = {
+            "question_bank": "题库参考答案",
+            "ai_inferred": "AI 推断参考（非教师标准答案）",
+            "unavailable": "无可用参考答案",
+        }[reference_source]
+
         client = state.get("llm") or self.ollama
         await _emit(state, "grade", "正在逐步核对你的解答", "批改 Agent")
         prompt = (
-            "你是大学电路课程助教。请依据题目、标准答案和解题步骤批改学生作答。"
+            f"你是大学电路课程助教。请依据题目和“{reference_label}”批改学生作答。"
             "不得因为最终答案碰巧正确而忽略错误推导；也不得因表述不同而扣除正确的等价解法。"
             "重点检查：条件使用、公式适用性、关键步骤、代数与数值、正负号、单位、参考方向、最终结论。"
             "图片转写中标注为不确定的内容不得擅自补全，应在反馈中说明。"
             "只输出合法 JSON，不要 Markdown。字段为：score（0到100）、is_correct、summary、"
-            "extracted_answer、strengths（数组）、issues（数组，每项含 title、detail、suggestion）、"
-            "next_steps（数组）。反馈应具体指出哪一步有问题以及如何修改，但不要输出模型私有思维过程。\n\n"
+            "extracted_answer、strengths（数组）、knowledge_points（数组）、confidence（0到1）、"
+            "dimensions（对象，含 correctness、completeness、logic、notation；每项含 status 和 feedback，"
+            "status 只能是 good、mixed、needs_improvement、unverifiable）、final_conclusion_correct（布尔值或 null）、"
+            "issues（数组，每项含 type、title、detail、suggestion；type 只能是 concept、setup、"
+            "calculation、unit、sign_direction、conclusion、recognition、incomplete、other）、"
+            "step_analyses（数组，每项含 step、status、feedback、evidence；status 只能是 correct、"
+            "partial、incorrect、unverifiable）、recognition_warnings（数组）、next_steps（数组）。"
+            "步骤 evidence 只能引用学生答案中可见内容；看不清时必须标记 unverifiable，不得猜测。"
+            "反馈应具体指出哪一步有问题以及如何修改，但不要输出模型私有思维过程。\n\n"
             f"[统一会话上下文]\n{state.get('conversation_context', '')[:6000]}\n\n"
             f"[题目]\n{practice.get('question', '')}\n\n"
+            # Keep the legacy section token for existing prompt-contract tests
+            # and older model tuning, then state its authority explicitly.
             f"[标准答案]\n{practice.get('answer', '')}\n"
+            f"[答案依据]\n{reference_label}\n"
             f"{json.dumps(practice.get('answer_items', []), ensure_ascii=False)}\n\n"
             f"[参考步骤]\n{practice.get('solution', '')}\n"
             f"{json.dumps(practice.get('solution_steps', []), ensure_ascii=False)}\n\n"
@@ -3948,6 +4037,21 @@ class CircuitTutorEngine:
         if not grading_raw:
             raise RuntimeError("批改模型未返回有效结果，请重试。")
         grading = _normalize_grading(grading_raw)
+        grading["reference_answer_source"] = reference_source
+        grading["reference_answer_note"] = (
+            "来自已解析题库的参考答案。"
+            if reference_source == "question_bank"
+            else "由 AI 基于题目生成或推断，仅作学习参考。"
+            if reference_source == "ai_inferred"
+            else "本次批改没有可核验的参考答案，结论置信度受限。"
+        )
+        grading["submission_mode"] = (
+            "mixed" if student_text and attachment_context
+            else "image" if attachment_context
+            else "text"
+        )
+        if not grading["knowledge_points"]:
+            grading["knowledge_points"] = _string_list(practice.get("knowledge_point"), 12)
         issue_lines = "\n".join(
             f"- **{item['title']}**：{item['detail']}"
             + (f"\n  - 修改建议：{item['suggestion']}" if item.get("suggestion") else "")
@@ -3958,6 +4062,7 @@ class CircuitTutorEngine:
         response = (
             f"## AI 批改反馈\n\n"
             f"### 得分：{grading['score']:g} / 100\n\n"
+            f"> 参考依据：{reference_label}\n\n"
             f"{grading['summary']}\n\n"
             f"### 做得好的地方\n\n{strength_lines}\n\n"
             f"### 需要改进\n\n{issue_lines}\n\n"

@@ -17,6 +17,7 @@
 - 左侧“最近学习”读取持久化会话列表，支持点击恢复历史对话；刷新页面后会自动恢复当前会话。
 - 学生端知识图谱默认展示聚合后的“教材—页面—知识点—电路图—去重元件”语义关系；公式、文本片段和网络节点保留在底层图中作为检索证据，不直接铺到画布上。
 - 答疑、AI 出题和外部题库内容均可加入持久化错题本；支持来源追踪、分类、批注、知识图谱对齐、章节/前置知识定位和确定性薄弱点学习规划。实现、接口与迁移约定见 [错题本集成说明](docs/MISTAKE_BOOK.md)。
+- 学生可从已完成的刷题批改中选择 `1..N` 道题生成持久化答案分析报告，查看逐步证据、跨题统计和历史版本，并通过打印视图保存为 PDF。数据口径与接口见 [学生答案分析报告](docs/ANSWER_REPORTS.md)。
 - 教师可上传试卷、课后习题、学习指导书、图片或扫描版习题册；`qwen3-vl-flash` 联合 PDF-Extract-Kit 过滤目录、知识讲解等非题目内容，按题提取题号、共同题干、分层小问、选项、所属插图、参考答案与评分点，并重排为可打印的作业内容和参考答案。
 - 学生端“我的作业”支持多张作答照片提交；`qwen3-vl-flash` 识别手写内容并评分，`qwen3-vl-8b-instruct` 独立复核漏题、错读、步骤分与总分，疑点会标记为教师复查。
 - 学生交互栏新增“知识讲解”：文本模型先按具体问题动态规划 4–7 页大纲并逐页完成教学文案，再根据整组内容独立设计每页主视觉、区域占比与阅读动线，最后编译专属提示词交给 `qwen-image-2.0` 生成 16:9 中文信息图；前端展示实时进度、页面大纲、缩略图、大图预览、下载与最近记录。
@@ -263,6 +264,10 @@ docker compose up -d qdrant redis
 - `PATCH /api/mistakes/{mistake_id}?student_id=...`
 - `DELETE /api/mistakes/{mistake_id}?student_id=...`
 - `GET /api/mistakes/analysis?student_id=...`
+- `GET /api/practice-attempts?student_id=...&practice_session_id=...`
+- `POST /api/answer-reports`（从选定的稳定作答记录生成并保存报告）
+- `GET /api/answer-reports?student_id=...`
+- `GET|DELETE /api/answer-reports/{report_id}?student_id=...`
 - `GET|POST /api/mistakes/categories`
 - `PATCH|DELETE /api/mistakes/categories/{category_id}`
 - `POST /api/mistakes/{mistake_id}/annotations`
