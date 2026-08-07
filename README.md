@@ -289,9 +289,3 @@ python scripts/ollama_smoke_test.py
 ```
 
 后端日志写入 `logs/backend.log`。
-
-## 贡献者
-
-- [yishi170336](https://github.com/yishi170336)
-- [linear-20](https://github.com/linear-20)
-- [Jason-W-js](https://github.com/Jason-W-js)
