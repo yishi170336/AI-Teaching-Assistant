@@ -33,6 +33,7 @@ from backend.app.agents.context import (
     ConversationContextBuilder,
     explicitly_requests_current_question_knowledge,
     explicitly_requests_question_bank_retrieval,
+    explicitly_requests_submission_grading,
 )
 from backend.app.config import settings
 from backend.app.grading_contract import (
@@ -981,6 +982,8 @@ def _explicit_interaction_intent(message: str) -> str:
         return "answer"
     if _is_question_bank_metadata_query(message):
         return "recommend"
+    if explicitly_requests_submission_grading(message):
+        return "grade"
     if any(marker in normalized for marker in (
         "从题库", "题库检索", "题库里找", "推荐一道", "推荐一题", "找一道类似",
     )):
@@ -2153,6 +2156,7 @@ class CircuitTutorEngine:
     async def _supervise(self, state: AgentState) -> AgentState:
         await _emit(state, "supervisor", "主 Agent 正在分析学习意图与上下文", "主 Agent")
         reason = "规则回退到答疑"
+        semantic = state.get("semantic_request", {})
         if state.get("message", "").startswith("【学习批注追问】"):
             return self._supervisor_result(
                 "answer",
@@ -2160,10 +2164,39 @@ class CircuitTutorEngine:
                 "annotation_followup",
             )
         if state.get("scene") == "quiz_grade":
+            if (
+                isinstance(semantic, dict)
+                and semantic.get("operation") == "grade_submission"
+                and semantic.get("needs_clarification")
+            ):
+                return self._supervisor_result(
+                    "answer",
+                    str(semantic.get("reason", "批改请求尚未绑定到唯一题目"))[:160],
+                    "clarify_focus",
+                )
             intent = "grade"
             reason = "当前场景为练习批改"
             return self._supervisor_result(intent, reason)
-        semantic = state.get("semantic_request", {})
+        if explicitly_requests_submission_grading(state.get("message", "")):
+            if isinstance(semantic, dict) and semantic.get("needs_clarification"):
+                return self._supervisor_result(
+                    "answer",
+                    str(semantic.get("reason", "批改请求尚未绑定到唯一题目"))[:160],
+                    "clarify_focus",
+                )
+            if (
+                state.get("conversation_focus")
+                or state.get("structured_question")
+            ):
+                return self._supervisor_result(
+                    "grade",
+                    "学生明确提交自己的答案并要求批改",
+                )
+            return self._supervisor_result(
+                "answer",
+                "已识别批改请求，但当前会话没有可绑定的题目",
+                "clarify_focus",
+            )
         if isinstance(semantic, dict) and semantic.get("source") == "model":
             operation = str(semantic.get("operation", "unknown"))
             reason = str(semantic.get("reason", "主 Agent 已完成语义任务解析"))[:160]
@@ -2189,6 +2222,7 @@ class CircuitTutorEngine:
                 "solve": ("answer", "solve_question"),
                 "explain_answer": ("answer", "explain_bound_answer"),
                 "verify_answer": ("answer", "verify_bound_answer"),
+                "grade_submission": ("grade", ""),
                 "clarify_question": ("answer", "clarify_question"),
                 "knowledge_query": ("answer", "knowledge_query"),
                 "general_answer": ("answer", "general_answer"),
@@ -2260,10 +2294,12 @@ class CircuitTutorEngine:
         client = state.get("llm") or self.ollama
         router_prompt = (
             "你是学生学习请求的主 Agent。只输出合法 JSON："
-            "{\"intent\":\"answer|quiz|plan|recommend\","
+            "{\"intent\":\"answer|quiz|grade|plan|recommend\","
             "\"answer_task\":\"solve_question|explain_bound_answer|verify_bound_answer|clarify_question|annotation_followup|conversation_meta|question_knowledge|knowledge_query|summarize_questions|compare_questions|general_answer\","
             "\"reason\":\"简短理由\"}。"
             "answer=概念解释、解题、追问；quiz=要求生成练习题或同类题；"
+            "grade=学生提交自己的文字或图片答案，要求批改、纠错、打分或检查正确性；"
+            "复核助教或参考答案仍属于 answer，不属于 grade；"
             "recommend=明确要求从现有题库检索或推荐一道原书题；"
             "plan=要求制定学习路线、复习安排、知识补全、备考计划，或明显需要跨多个知识点的系统学习方案。"
             f"\n共享会话上下文：{state.get('conversation_context', '')[:5000]}"
@@ -2279,7 +2315,7 @@ class CircuitTutorEngine:
                 )
             )
             routed = routed_result.get("intent")
-            if routed in {"answer", "quiz", "plan", "recommend"}:
+            if routed in {"answer", "quiz", "grade", "plan", "recommend"}:
                 answer_task = ""
                 candidate_task = str(routed_result.get("answer_task", "")).strip()
                 if routed == "answer" and candidate_task in {
@@ -2361,7 +2397,9 @@ class CircuitTutorEngine:
             "agent": agent_names.get(intent, "答疑 Agent"),
             "reason": reason,
             "context_policy": (
-                "bound_question_and_reference_answer"
+                "bound_question_and_submission"
+                if intent == "grade"
+                else "bound_question_and_reference_answer"
                 if answer_task in {"explain_bound_answer", "verify_bound_answer"}
                 else "bound_question"
                 if answer_task in {

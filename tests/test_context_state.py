@@ -8,6 +8,8 @@ from backend.app.context_state import (
     continuation_mode,
     default_context_state,
     public_context_state,
+    resolve_attachment_role,
+    resolve_turn_scene,
 )
 from backend.app.schemas import ChatRequest
 from backend.app.services.memory import ConversationMemory
@@ -138,3 +140,11 @@ def test_chat_request_accepts_explicit_context_bindings():
 
     assert payload.submission_target_focus_id == focus_id
     assert payload.expected_context_revision == 3
+
+
+def test_semantic_grading_promotes_chat_scene_and_answer_attachment_role():
+    scene = resolve_turn_scene("chat", "grade_submission")
+
+    assert scene == "quiz_grade"
+    assert resolve_attachment_role(scene, "auto") == "answer"
+    assert resolve_turn_scene("chat", "verify_answer") == "chat"

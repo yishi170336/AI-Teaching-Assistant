@@ -46,6 +46,7 @@ from backend.app.context_state import (
     executed_operation,
     public_context_state,
     resolve_attachment_role,
+    resolve_turn_scene,
 )
 from backend.app.rag.manager import KnowledgeBaseManager
 from backend.app.rag.multimodal import BuildModelConfig
@@ -1901,7 +1902,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 )
             explicit_target_focus_id = (
                 payload.submission_target_focus_id
-                if payload.scene == "quiz_grade" and payload.submission_target_focus_id
+                if payload.submission_target_focus_id
                 else payload.target_focus_id or payload.focus_id
             )
             requested_focus_id = (
@@ -1954,8 +1955,14 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 "target_focus_ids": [str(requested_focus.get("id", ""))] if requested_focus else [],
                 "target_step": "",
                 "confidence": 0.0,
-                "needs_clarification": False,
-                "reason": "尚未执行语义指代解析",
+                "needs_clarification": bool(
+                    payload.scene == "quiz_grade" and not requested_focus
+                ),
+                "reason": (
+                    "批改请求尚未绑定到唯一题目"
+                    if payload.scene == "quiz_grade" and not requested_focus
+                    else "尚未执行语义指代解析"
+                ),
                 "source": "fallback",
             }
             inherited_mode, inherited_task_id = continuation_mode(
@@ -1992,6 +1999,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
             ]
             semantic_scope = str(semantic_request.get("scope", "current"))
             semantic_operation = str(semantic_request.get("operation", "unknown"))
+            effective_scene = resolve_turn_scene(payload.scene, semantic_operation)
             if selected_focuses and semantic_scope in {"current", "specific"}:
                 requested_focus = dict(selected_focuses[-1])
             elif semantic_scope in {"none", "global", "multiple", "ambiguous"}:
@@ -2052,7 +2060,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                         reference_images.append(base64.b64encode(path.read_bytes()).decode("ascii"))
             effective_message = payload.message or (
                 "请批改我上传的作答，并指出具体错误和改进方法。"
-                if payload.scene == "quiz_grade"
+                if effective_scene == "quiz_grade"
                 else "请根据附件中的原题生成一道同类型新题。"
                 if payload.mode == "quiz"
                 else "请解答选中的题库题目。"
@@ -2077,7 +2085,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 payload.session_id,
                 payload.attachment_ids or inherited_attachment_ids,
             )
-            attachment_role = resolve_attachment_role(payload.scene, payload.attachment_role)
+            attachment_role = resolve_attachment_role(effective_scene, payload.attachment_role)
             attachment_names = [item["name"] for item in resolved.items]
             resolved_attachment_ids = _attachment_ids_from_items(resolved.items)
             focused_attachment_ids = _attachment_ids_from_items(
@@ -2162,7 +2170,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 semantic_request=semantic_request,
                 bound_focus_id=str(active_focus.get("id", "")),
                 mode=semantic_mode,
-                scene=payload.scene,
+                scene=effective_scene,
                 attachment_role=attachment_role,
                 continuation_task_id=inherited_task_id,
                 explicit_binding=explicit_binding,
@@ -2174,7 +2182,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
             needs_required_vision = bool(
                 resolved.images
                 and not reusable_recognition
-                and (not question_context or payload.scene == "quiz_grade")
+                and (not question_context or effective_scene == "quiz_grade")
             )
             if needs_required_vision:
                 # A newly uploaded question/answer image really must be read before
@@ -2200,7 +2208,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 {
                     "attachments": resolved.items if payload.attachment_ids else [],
                     "knowledge_base": payload.knowledge_base,
-                    "scene": payload.scene,
+                    "scene": effective_scene,
                     "practice_session_id": payload.practice_session_id,
                     "recognition_confirmed": payload.recognition_confirmed,
                     "attachment_role": attachment_role,
@@ -2229,7 +2237,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     message=effective_message,
                     mode=semantic_mode,
                     student_id=payload.student_id,
-                    scene=payload.scene,
+                    scene=effective_scene,
                     recognition_confirmed=payload.recognition_confirmed,
                     knowledge_base=payload.knowledge_base,
                     history=full_history,
@@ -2379,7 +2387,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 previous_focus=active_focus,
                 final_focus=final_focus,
                 mode=semantic_mode,
-                scene=payload.scene,
+                scene=effective_scene,
                 attachment_role=attachment_role,
                 attachment_ids=payload.attachment_ids,
                 continuation_of_task_id=inherited_task_id,

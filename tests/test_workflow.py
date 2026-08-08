@@ -27,6 +27,12 @@ def test_meta_questions_and_question_bank_metadata_have_explicit_routes():
     assert _explicit_interaction_intent("题库有多少道题？") == "recommend"
 
 
+def test_student_submission_grading_has_an_explicit_route():
+    assert _explicit_interaction_intent("这是我的答案，帮我审查") == "grade"
+    assert _explicit_interaction_intent("请批改我的作答并指出错误") == "grade"
+    assert _explicit_interaction_intent("请审查你刚才给出的答案") == ""
+
+
 def test_quiz_adjustments_inherit_previous_question_and_change_preferences():
     history = [{
         "role": "assistant",
@@ -967,6 +973,76 @@ def test_explicit_user_action_overrides_stale_ui_mode():
         "llm": object(),
     }))
     assert routed["intent"] == "recommend"
+
+
+def test_explicit_submission_grading_routes_without_quiz_grade_ui_scene():
+    engine = object.__new__(CircuitTutorEngine)
+    routed = asyncio.run(engine._supervise({
+        "message": "这是我的答案，帮我审查",
+        "scene": "chat",
+        "mode": "answer",
+        "conversation_focus": {
+            "id": "grade-focus-1",
+            "kind": "generated_practice",
+            "question_snapshot": {"question": "求输出电压", "answer": "5V"},
+        },
+        "semantic_request": {
+            "operation": "grade_submission",
+            "scope": "current",
+            "target_focus_ids": ["grade-focus-1"],
+            "needs_clarification": False,
+            "source": "model",
+        },
+        "llm": object(),
+    }))
+
+    assert routed["intent"] == "grade"
+    assert routed["supervisor_decision"]["agent"] == "批改 Agent"
+    assert routed["supervisor_decision"]["context_policy"] == "bound_question_and_submission"
+
+
+def test_submission_grading_without_bound_question_asks_for_focus():
+    engine = object.__new__(CircuitTutorEngine)
+    routed = asyncio.run(engine._supervise({
+        "message": "这是我的答案，请帮我批改",
+        "scene": "chat",
+        "mode": "answer",
+        "conversation_focus": {},
+        "semantic_request": {
+            "operation": "grade_submission",
+            "scope": "ambiguous",
+            "target_focus_ids": [],
+            "needs_clarification": True,
+            "reason": "没有可唯一绑定的题目",
+            "source": "model",
+        },
+        "llm": object(),
+    }))
+
+    assert routed["intent"] == "answer"
+    assert routed["answer_task"] == "clarify_focus"
+    assert routed["supervisor_decision"]["agent"] == "答疑 Agent"
+
+
+def test_promoted_grading_scene_still_respects_ambiguous_question_guard():
+    engine = object.__new__(CircuitTutorEngine)
+    routed = asyncio.run(engine._supervise({
+        "message": "这是我的答案，请帮我批改",
+        "scene": "quiz_grade",
+        "mode": "answer",
+        "semantic_request": {
+            "operation": "grade_submission",
+            "scope": "ambiguous",
+            "target_focus_ids": [],
+            "needs_clarification": True,
+            "reason": "批改请求尚未绑定到唯一题目",
+            "source": "model",
+        },
+        "llm": object(),
+    }))
+
+    assert routed["intent"] == "answer"
+    assert routed["answer_task"] == "clarify_focus"
 
 
 def test_supervisor_marks_bound_reference_answer_followup_as_explanation():

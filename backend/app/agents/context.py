@@ -26,6 +26,7 @@ _SEMANTIC_OPERATIONS = {
     "solve",
     "explain_answer",
     "verify_answer",
+    "grade_submission",
     "clarify_question",
     "knowledge_query",
     "general_answer",
@@ -47,6 +48,52 @@ def explicitly_requests_question_bank_retrieval(message: str) -> bool:
     normalized = re.sub(r"\s+", "", str(message))
     return "题库" in normalized and any(
         marker in normalized for marker in ("推荐", "检索", "查找", "找一道", "选一道", "挑一道")
+    )
+
+
+def explicitly_requests_submission_grading(message: str) -> bool:
+    """Detect an explicit request to grade the student's own submission.
+
+    Reviewing an assistant/reference answer remains an answer-verification task.  The
+    stronger student-ownership check for generic words such as ``审查`` and ``检查``
+    prevents an old active question from turning unrelated review requests into grades.
+    """
+
+    normalized = re.sub(r"\s+", "", str(message))
+    if not normalized:
+        return False
+    if any(marker in normalized for marker in (
+        "批改功能", "批改怎么用", "怎么使用批改", "如何使用批改", "如何批改作业",
+    )):
+        return False
+    student_markers = (
+        "我的答案", "我的作答", "我的解答", "我的解题", "我的过程",
+        "我写的", "我做的", "我算的", "我算得", "我认为", "我选择",
+        "这是我的", "答案如下", "作答如下", "解答如下", "提交的答案",
+    )
+    assistant_markers = (
+        "你的答案", "你刚才的答案", "你给的答案", "助教答案", "模型答案",
+        "参考答案", "标准答案", "题库答案",
+    )
+    owns_submission = any(marker in normalized for marker in student_markers)
+    if any(marker in normalized for marker in assistant_markers) and not owns_submission:
+        return False
+    strong_grading_markers = (
+        "批改", "评分", "打分", "判分", "判卷", "纠错", "找出错误", "指出错误",
+    )
+    review_markers = (
+        "审查", "检查", "核对", "帮我看看", "帮我看一下", "对不对", "正确吗", "有错吗",
+    )
+    grading_target_markers = (
+        "答案", "作答", "解答", "解题", "步骤", "过程", "计算", "结论", "答题",
+    )
+    strong_request = any(marker in normalized for marker in strong_grading_markers)
+    has_grading_target = owns_submission or any(
+        marker in normalized for marker in grading_target_markers
+    )
+    return (
+        (strong_request and (has_grading_target or "帮我批改" in normalized or "请批改" in normalized))
+        or (owns_submission and any(marker in normalized for marker in review_markers))
     )
 
 
@@ -360,20 +407,29 @@ async def resolve_semantic_request(
     """
 
     active_id = str((active_focus or {}).get("id", ""))
+    explicit_grading = explicitly_requests_submission_grading(message)
     fallback_operation = {
         "quiz": "generate_similar",
         "recommend": "retrieve_similar",
         "answer": "knowledge_query",
     }.get(mode, "unknown")
-    fallback_scope = "current" if active_id else "global"
+    if explicit_grading:
+        fallback_operation = "grade_submission"
+    fallback_scope = (
+        "current" if active_id else "ambiguous" if explicit_grading else "global"
+    )
     fallback = {
         "operation": fallback_operation,
         "scope": fallback_scope,
         "target_focus_ids": [active_id] if active_id else [],
         "target_step": "",
         "confidence": 0.0,
-        "needs_clarification": False,
-        "reason": "语义解析模型不可用，保守保留显式当前焦点",
+        "needs_clarification": bool(explicit_grading and not active_id),
+        "reason": (
+            "已识别批改请求，但没有可唯一绑定的题目"
+            if explicit_grading and not active_id
+            else "语义解析模型不可用，保守保留显式当前焦点"
+        ),
         "source": "fallback",
     }
     if client is None:
@@ -443,7 +499,7 @@ async def resolve_semantic_request(
         "不要按关键词机械匹配，也不要解题。当前焦点只是候选，学生可能突然转问一般知识，也可能回指更早的题。"
         "题目目录中的 sequence 是本会话题目出现顺序；可以根据序号、题目描述、知识点、来源和父子关系解析指代。"
         "只输出合法 JSON："
-        '{"operation":"solve|explain_answer|verify_answer|clarify_question|knowledge_query|general_answer|summarize_questions|compare_questions|conversation_navigation|generate_similar|retrieve_similar|query_question_bank_metadata|add_mistake|unknown",'
+        '{"operation":"solve|explain_answer|verify_answer|grade_submission|clarify_question|knowledge_query|general_answer|summarize_questions|compare_questions|conversation_navigation|generate_similar|retrieve_similar|query_question_bank_metadata|add_mistake|unknown",'
         '"scope":"none|current|specific|multiple|global|ambiguous",'
         '"target_focus_ids":["目录中的id"],"target_step":"例如第3步或某公式",'
         '"confidence":0.0,"needs_clarification":false,"reason":"简短理由"}。'
@@ -452,6 +508,9 @@ async def resolve_semantic_request(
         "询问‘这道题/本题/上面的题考什么、包含哪些知识点、什么最重要’时，仍使用 knowledge_query，"
         "但 scope 必须为 current 并选择当前焦点；这是分析指定题目，不是概括整门课程。"
         "总结/比较多道题时选择所有相关 ID；要求解释某题答案的某一步时 operation=explain_answer 并填写 target_step；"
+        "学生提交自己的文字或图片答案并要求批改、审查、纠错、打分或判断对错时使用 grade_submission；"
+        "复核题库参考答案、标准答案或助教刚才给出的答案使用 verify_answer，不能使用 grade_submission；"
+        "grade_submission 必须选择唯一一道被作答的题，无法确定题目时必须要求澄清；"
         "同类生成、从题库检索相似题、查询题库数量/范围等元数据必须区分；"
         "只要学生明确说从/去/在题库中推荐、检索、查找或选择题目，就必须使用 retrieve_similar，"
         "即使他说了‘根据这个知识’‘类似’‘同类’也不能改成 generate_similar；"
@@ -498,6 +557,13 @@ async def resolve_semantic_request(
         value["reason"] = (
             "学生明确限定从现有题库推荐题目；已将生成新题纠正为题库检索"
         )
+    if explicit_grading:
+        operation = "grade_submission"
+        value["reason"] = "学生明确要求审查或批改自己的作答"
+        if scope in {"none", "global", "ambiguous"} and active_id:
+            scope = "current"
+            value["target_focus_ids"] = [active_id]
+            value["needs_clarification"] = False
     if scope not in _SEMANTIC_SCOPES:
         scope = "ambiguous"
     valid_ids = {str(item.get("id", "")) for item in focus_catalog if item.get("id")}
@@ -518,6 +584,13 @@ async def resolve_semantic_request(
         scope = "global"
         target_ids = []
     needs_clarification = bool(value.get("needs_clarification"))
+    if operation == "grade_submission":
+        if len(target_ids) != 1:
+            scope = "ambiguous"
+            target_ids = []
+            needs_clarification = True
+        else:
+            scope = "current" if target_ids == [active_id] else "specific"
     if scope in {"specific", "multiple"} and not target_ids:
         scope = "ambiguous"
         needs_clarification = True

@@ -4,6 +4,7 @@ from backend.app.agents.context import (
     ConversationContextBuilder,
     build_focus_catalog,
     estimate_tokens,
+    explicitly_requests_submission_grading,
     find_focus_by_question_ref,
     resolve_semantic_request,
     summary_prompt,
@@ -20,6 +21,15 @@ class _SemanticFocusClient:
     async def chat(self, messages, **_kwargs):
         self.prompt = messages[0]["content"]
         return self.payload
+
+
+def test_student_submission_grading_is_distinct_from_reference_answer_review():
+    assert explicitly_requests_submission_grading("这是我的答案，帮我审查") is True
+    assert explicitly_requests_submission_grading("我的答案是 5V，帮我看看对不对") is True
+    assert explicitly_requests_submission_grading("请批改并指出我的计算错误") is True
+    assert explicitly_requests_submission_grading("请检查你刚才给出的答案") is False
+    assert explicitly_requests_submission_grading("参考答案为什么这样写？") is False
+    assert explicitly_requests_submission_grading("批改功能怎么用？") is False
 
 
 def _turn(index: int, topic: str, status: str = "completed") -> list[dict]:
@@ -168,6 +178,55 @@ def test_model_resolves_second_question_and_specific_answer_step():
     assert result["target_focus_ids"] == ["b" * 32]
     assert result["target_step"] == "第3步"
     assert "不要按关键词机械匹配" in client.prompt
+
+
+def test_explicit_student_answer_review_overrides_model_answer_route():
+    focus = {
+        "id": "grade-focus-1",
+        "kind": "question_bank",
+        "label": "第 13 题",
+        "summary": "分析桥式整流电路输出波形",
+    }
+    client = _SemanticFocusClient(
+        '{"operation":"verify_answer","scope":"current",'
+        '"target_focus_ids":["grade-focus-1"],"target_step":"",'
+        '"confidence":0.91,"needs_clarification":false,"reason":"误判为参考答案复核"}'
+    )
+
+    result = asyncio.run(resolve_semantic_request(
+        message="这是我的答案，帮我审查",
+        mode="answer",
+        active_focus=focus,
+        focus_catalog=build_focus_catalog([focus]),
+        client=client,
+    ))
+
+    assert result["operation"] == "grade_submission"
+    assert result["scope"] == "current"
+    assert result["target_focus_ids"] == ["grade-focus-1"]
+    assert result["needs_clarification"] is False
+    assert "grade_submission" in client.prompt
+
+
+def test_submission_grading_without_a_question_requests_clarification():
+    client = _SemanticFocusClient(
+        '{"operation":"grade_submission","scope":"none","target_focus_ids":[],'
+        '"target_step":"","confidence":0.95,"needs_clarification":false,'
+        '"reason":"用户要求批改"}'
+    )
+
+    result = asyncio.run(resolve_semantic_request(
+        message="这是我的作答，请帮我批改",
+        mode="answer",
+        active_focus=None,
+        focus_catalog=[],
+        client=client,
+    ))
+
+    assert result["operation"] == "grade_submission"
+    assert result["scope"] == "ambiguous"
+    assert result["target_focus_ids"] == []
+    assert result["needs_clarification"] is True
 
 
 def test_model_can_unbind_current_question_for_general_knowledge():

@@ -177,6 +177,14 @@ def resolve_attachment_role(scene: str, requested_role: str = "auto") -> str:
     return requested_role
 
 
+def resolve_turn_scene(scene: str, operation: str) -> str:
+    """Promote an explicitly inferred grading request to the grading pipeline."""
+
+    if scene == "quiz_grade" or operation == "grade_submission":
+        return "quiz_grade"
+    return scene
+
+
 def is_continuation_request(message: str) -> bool:
     normalized = re.sub(r"\s+", "", str(message))
     return any(marker in normalized for marker in (
