@@ -38,6 +38,15 @@ from backend.app.agents.context import (
     uncovered_history,
 )
 from backend.app.config import settings
+from backend.app.context_state import (
+    ContextRevisionConflict,
+    apply_turn_result,
+    build_context_envelope,
+    continuation_mode,
+    executed_operation,
+    public_context_state,
+    resolve_attachment_role,
+)
 from backend.app.rag.manager import KnowledgeBaseManager
 from backend.app.rag.multimodal import BuildModelConfig
 from backend.app.schemas import (
@@ -803,7 +812,11 @@ async def conversation_session(session_id: str) -> dict[str, Any]:
         legacy_focus = _legacy_conversation_focus(messages[: index + 1])
         if legacy_focus:
             item["conversation_focus"] = _public_conversation_focus(legacy_focus)
-    return {"session_id": session_id, "messages": restored}
+    return {
+        "session_id": session_id,
+        "messages": restored,
+        "context_state": public_context_state(await memory.context_state(session_id)),
+    }
 
 
 @app.delete("/api/sessions/{session_id}")
@@ -1819,12 +1832,14 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
         vision_client: Any | None = None
         close_vision_client = False
         workflow_task: asyncio.Task[Any] | None = None
-        session_lock: asyncio.Lock | None = None
+        session_lock: Any | None = None
         lock_acquired = False
         turn_id = uuid4().hex
         user_persisted = False
         assistant_persisted = False
         active_focus: dict[str, Any] = {}
+        session_context_state: dict[str, Any] = {}
+        context_envelope: dict[str, Any] = {}
         selected_provider = payload.model_provider
         selected_model = canonical_model_id(payload.model_provider, payload.model)
 
@@ -1876,14 +1891,33 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
             full_history = await memory.history(payload.session_id)
             focus_records = await memory.focus_history(payload.session_id)
             conversation_summary = await memory.summary(payload.session_id)
-            requested_focus = _conversation_focus_from_history(full_history, payload.focus_id)
-            if payload.focus_id and requested_focus is None:
+            session_context_state = await memory.context_state(payload.session_id)
+            if (
+                payload.expected_context_revision is not None
+                and payload.expected_context_revision != session_context_state["revision"]
+            ):
+                raise ContextRevisionConflict(
+                    "会话上下文已在其他窗口更新，请刷新会话后重试。"
+                )
+            explicit_target_focus_id = (
+                payload.submission_target_focus_id
+                if payload.scene == "quiz_grade" and payload.submission_target_focus_id
+                else payload.target_focus_id or payload.focus_id
+            )
+            requested_focus_id = (
+                explicit_target_focus_id
+                or str(session_context_state.get("active_subject_focus_id", ""))
+            )
+            requested_focus = _conversation_focus_from_history(
+                full_history, requested_focus_id
+            )
+            if requested_focus_id and requested_focus is None:
                 requested_focus = next(
                     (
                         dict(item["conversation_focus"])
                         for item in reversed(focus_records)
                         if isinstance(item.get("conversation_focus"), dict)
-                        and item["conversation_focus"].get("id") == payload.focus_id
+                        and item["conversation_focus"].get("id") == requested_focus_id
                     ),
                     None,
                 )
@@ -1915,7 +1949,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 *([requested_focus] if requested_focus else []),
             ])
             semantic_request = {
-                "operation": "unknown",
+                "operation": "grade_submission" if payload.scene == "quiz_grade" else "unknown",
                 "scope": "current" if requested_focus else "global",
                 "target_focus_ids": [str(requested_focus.get("id", ""))] if requested_focus else [],
                 "target_step": "",
@@ -1924,11 +1958,17 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 "reason": "尚未执行语义指代解析",
                 "source": "fallback",
             }
+            inherited_mode, inherited_task_id = continuation_mode(
+                session_context_state,
+                payload.message,
+                payload.continuation_task_id,
+            )
+            semantic_mode = inherited_mode or payload.mode
             is_new_photo = bool(payload.scene == "image_answer" and payload.attachment_ids)
             if payload.scene != "quiz_grade" and not is_new_photo:
                 semantic_request = await resolve_semantic_request(
                     message=payload.message or "请处理当前选中的题目。",
-                    mode=payload.mode,
+                    mode=semantic_mode,
                     active_focus=requested_focus,
                     focus_catalog=focus_catalog,
                     client=selected_client,
@@ -2037,6 +2077,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 payload.session_id,
                 payload.attachment_ids or inherited_attachment_ids,
             )
+            attachment_role = resolve_attachment_role(payload.scene, payload.attachment_role)
             attachment_names = [item["name"] for item in resolved.items]
             resolved_attachment_ids = _attachment_ids_from_items(resolved.items)
             focused_attachment_ids = _attachment_ids_from_items(
@@ -2106,6 +2147,26 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                         "recognition": reusable_recognition,
                         "has_figure": True,
                     }
+            explicit_binding = (
+                "question_ref" if explicit_question_ref
+                else "submission_target_focus_id" if payload.submission_target_focus_id
+                else "target_focus_id" if payload.target_focus_id
+                else "focus_id" if payload.focus_id
+                else "continuation_task" if inherited_task_id
+                else "session_active_subject" if session_context_state.get("active_subject_focus_id")
+                else "semantic"
+            )
+            context_envelope = build_context_envelope(
+                turn_id=turn_id,
+                state=session_context_state,
+                semantic_request=semantic_request,
+                bound_focus_id=str(active_focus.get("id", "")),
+                mode=semantic_mode,
+                scene=payload.scene,
+                attachment_role=attachment_role,
+                continuation_task_id=inherited_task_id,
+                explicit_binding=explicit_binding,
+            )
             focus_history_source = [*focus_records, *full_history]
             focus_chain = _focus_chain_from_history(focus_history_source, active_focus)
             if active_focus.get("parent_focus_id") and len(focus_chain) < 2:
@@ -2142,6 +2203,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     "scene": payload.scene,
                     "practice_session_id": payload.practice_session_id,
                     "recognition_confirmed": payload.recognition_confirmed,
+                    "attachment_role": attachment_role,
                     "student_id": payload.student_id,
                     "turn_id": turn_id,
                     "status": "running",
@@ -2149,6 +2211,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     "question_ref": question_ref,
                     "question_summary": _question_summary_from_context(question_context),
                     "conversation_focus": active_focus or None,
+                    "resolved_context": context_envelope,
                 },
             )
             user_persisted = True
@@ -2164,7 +2227,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
             workflow_task = asyncio.create_task(
                 engine.run(
                     message=effective_message,
-                    mode=payload.mode,
+                    mode=semantic_mode,
                     student_id=payload.student_id,
                     scene=payload.scene,
                     recognition_confirmed=payload.recognition_confirmed,
@@ -2191,6 +2254,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     focus_catalog=focus_catalog,
                     selected_focuses=selected_focuses,
                     semantic_request=semantic_request,
+                    context_envelope=context_envelope,
                     conversation_summary=conversation_summary,
                     on_status=on_status,
                     on_delta=on_delta,
@@ -2282,6 +2346,51 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 and result.action.get("operation") == "add_mistake"
                 else None
             )
+            actual_operation = executed_operation(
+                semantic_request, result.intent, result.answer_task
+            )
+            context_envelope["executed"] = {
+                "operation": actual_operation,
+                "intent": result.intent,
+                "answer_task": result.answer_task,
+                "agent": result.agent,
+            }
+            task_parameters: dict[str, Any] = {
+                "request": effective_message[:1200],
+                "knowledge_base": payload.knowledge_base,
+            }
+            if isinstance(result.recommendation, dict):
+                task_parameters.update({
+                    "question_ref": result.recommendation.get("question_ref"),
+                    "profile": result.recommendation.get("profile"),
+                    "requirements": result.recommendation.get("requirements"),
+                })
+            if isinstance(result.practice, dict):
+                task_parameters.update({
+                    "question_type": result.practice.get("question_type"),
+                    "difficulty": result.practice.get("difficulty"),
+                    "knowledge_point": result.practice.get("knowledge_point"),
+                })
+            proposed_context_state = apply_turn_result(
+                state=session_context_state,
+                turn_id=turn_id,
+                operation=actual_operation,
+                semantic_request=semantic_request,
+                previous_focus=active_focus,
+                final_focus=final_focus,
+                mode=semantic_mode,
+                scene=payload.scene,
+                attachment_role=attachment_role,
+                attachment_ids=payload.attachment_ids,
+                continuation_of_task_id=inherited_task_id,
+                task_parameters=task_parameters,
+            )
+            session_context_state = await memory.save_context_state(
+                payload.session_id,
+                proposed_context_state,
+                expected_revision=int(session_context_state.get("revision", 0)),
+            )
+            context_envelope["state_revision_after"] = session_context_state["revision"]
             yield sse(
                 "meta",
                 {
@@ -2312,6 +2421,8 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                         student_id=payload.student_id,
                     ),
                     "conversation_focus": _public_conversation_focus(final_focus),
+                    "resolved_context": context_envelope,
+                    "context_state": public_context_state(session_context_state),
                 },
             )
             if not streamed_answer:
@@ -2355,6 +2466,8 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     ),
                     "conversation_focus": persisted_focus or None,
                     "semantic_request": semantic_request,
+                    "resolved_context": context_envelope,
+                    "context_state": public_context_state(session_context_state),
                     "action": result.action,
                     "mistake_proposal": mistake_proposal,
                 },
@@ -2405,7 +2518,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     await selected_client.close()
             finally:
                 if lock_acquired and session_lock is not None:
-                    session_lock.release()
+                    await session_lock.release()
 
     return StreamingResponse(
         event_stream(),

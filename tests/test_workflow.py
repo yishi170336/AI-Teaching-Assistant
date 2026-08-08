@@ -2293,6 +2293,98 @@ def test_recommend_again_excludes_current_bound_question_from_agent_candidates()
     assert result["recommendation"]["question_ref"]["question_id"] == "q-new"
 
 
+def test_explicit_continuation_task_overrides_a_newer_unrelated_recommendation():
+    old_requirements = {
+        "agent_analysis": {
+            "intent_summary": "继续练习旧题的稳压管知识",
+            "knowledge_points": ["稳压二极管"],
+        },
+        "chapter_scope": [{"chapter": "第1章", "score": 0.92}],
+    }
+    old_ref = {
+        "kind": "question_bank",
+        "question_bank_id": "book",
+        "question_id": "q-old",
+    }
+
+    class RecommendationLLM:
+        model = "continuation-test"
+
+        async def chat(self, messages, **_kwargs):
+            assert '"question_id": "q-new"' in messages[0]["content"]
+            return (
+                '{"question_id":"q-new","reason":"延续旧题训练目标",'
+                '"evidence":["同属稳压分析"],"tradeoffs":[],'
+                '"fit_dimensions":["知识点"]}'
+            )
+
+    class RecommendationService:
+        def __init__(self):
+            self.shortlist_kwargs = {}
+            self.recommend_kwargs = {}
+
+        def shortlist(self, **kwargs):
+            self.shortlist_kwargs = kwargs
+            return [{"question_id": "q-new", "prompt": "另一道稳压管题"}]
+
+        def recommend(self, **kwargs):
+            self.recommend_kwargs = kwargs
+            return {
+                "question_ref": {
+                    "kind": "question_bank",
+                    "question_bank_id": "book",
+                    "question_id": "q-new",
+                },
+                "selection_method": "agent_rerank",
+            }
+
+    engine = object.__new__(CircuitTutorEngine)
+    service = RecommendationService()
+    engine.recommendation_service = service
+    result = asyncio.run(engine._run_recommend_agent({
+        "message": "再来一道",
+        "student_id": "student-branch",
+        "history": [{
+            "role": "assistant",
+            "recommendation": {
+                "question_ref": {
+                    "kind": "question_bank",
+                    "question_bank_id": "book",
+                    "question_id": "q-latest",
+                },
+                "requirements": {
+                    "agent_analysis": {
+                        "intent_summary": "更新的三极管训练",
+                        "knowledge_points": ["三极管"],
+                    },
+                },
+            },
+        }],
+        "semantic_request": {
+            "source": "model",
+            "operation": "retrieve_similar",
+            "scope": "current",
+        },
+        "context_envelope": {
+            "task": {
+                "continuation_of_task_id": "old-task",
+                "inherited_parameters": {
+                    "requirements": old_requirements,
+                    "question_ref": old_ref,
+                },
+            },
+        },
+        "question_ref": old_ref,
+        "conversation_focus": {"question_ref": old_ref},
+        "attachment_context": "旧题稳压管分析",
+        "llm": RecommendationLLM(),
+    }))
+
+    assert service.shortlist_kwargs["inherited_requirements"] == old_requirements
+    assert service.shortlist_kwargs["chapter_scope"] == old_requirements["chapter_scope"]
+    assert result["recommendation"]["question_ref"]["question_id"] == "q-new"
+
+
 def test_generated_opamp_focus_lets_agent_compare_stems_instead_of_tag_filtering():
     class RecommendationLLM:
         model = "test-source-aware-recommender"
@@ -2505,3 +2597,59 @@ def test_quiz_type_and_difficulty_come_from_model_semantic_design():
     assert result["quiz_design"]["source"] == "model"
     assert result["quiz_design"]["requested_changes"] == ["改为选择题", "提高难度"]
     assert result["quiz_family"] == ""
+
+
+def test_grading_uses_explicitly_bound_generated_focus_instead_of_latest_history():
+    class GradingModel:
+        model = "grading-test"
+
+        def __init__(self):
+            self.prompt = ""
+
+        async def chat(self, messages, **_kwargs):
+            self.prompt = messages[0]["content"]
+            return (
+                '{"score":100,"is_correct":true,"summary":"作答正确",'
+                '"extracted_answer":"2 A","strengths":[],"knowledge_points":[],'
+                '"confidence":0.98,"dimensions":{},"issues":[],'
+                '"step_analyses":[],"recognition_warnings":[],"next_steps":[]}'
+            )
+
+    engine = object.__new__(CircuitTutorEngine)
+    model = GradingModel()
+    selected = {
+        "question": "旧题：求支路电流 I_old",
+        "answer": "I_old = 2 A",
+        "solution": "使用 KCL",
+        "solution_steps": ["列节点方程"],
+        "answer_items": ["2 A"],
+        "knowledge_point": "KCL",
+    }
+    result = asyncio.run(engine._grade_practice({
+        "message": "我的答案是 2 A",
+        "history": [{
+            "role": "assistant",
+            "practice": {
+                "question": "最新题：求电压 U_new",
+                "answer": "U_new = 5 V",
+                "solution": "使用 KVL",
+            },
+        }],
+        "structured_question": {},
+        "reference_answer": {
+            "answer": selected["answer"],
+            "rubric": selected["solution"],
+        },
+        "conversation_focus": {
+            "id": "selected-old-focus",
+            "kind": "generated_practice",
+            "question_snapshot": selected,
+        },
+        "attachment_context": "",
+        "conversation_context": "绑定目标为 selected-old-focus",
+        "llm": model,
+    }))
+
+    assert result["practice"]["question"] == selected["question"]
+    assert selected["question"] in model.prompt
+    assert "最新题：求电压 U_new" not in model.prompt

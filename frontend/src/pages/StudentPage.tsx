@@ -1511,7 +1511,7 @@ function RecommendationCard({
   disabled: boolean
   onSimilar: (reference: QuestionReference) => void
   onBookmark: (reference: QuestionReference) => void
-  onAnother: () => void
+  onAnother: (reference: QuestionReference) => void
   onStart: (recommendation: QuestionRecommendation) => void
   onHint: (reference: QuestionReference, level: 'direction' | 'formula') => void
 }) {
@@ -1641,7 +1641,7 @@ function RecommendationCard({
           <Button disabled={disabled} type="primary" onClick={() => onStart(recommendation)}>开始作答</Button>
           <Button disabled={disabled} onClick={() => onHint(recommendation.question_ref, 'direction')}>给点提示</Button>
           <Button disabled={disabled} onClick={() => onHint(recommendation.question_ref, 'formula')}>关键公式</Button>
-          <Button disabled={disabled} icon={<RotateCcw size={14} />} onClick={onAnother}>再来一道</Button>
+          <Button disabled={disabled} icon={<RotateCcw size={14} />} onClick={() => onAnother(recommendation.question_ref)}>再来一道</Button>
           <Button disabled={disabled} icon={<WandSparkles size={14} />} onClick={() => onSimilar(recommendation.question_ref)}>同类出题</Button>
           <Button disabled={disabled} icon={<BookmarkPlus size={14} />} onClick={() => onBookmark(recommendation.question_ref)}>收藏错题</Button>
         </div>
@@ -1715,11 +1715,11 @@ function Conversation({
 }: {
   onAddMistake: (draft: MistakeCandidateDraft) => void
   onConfirmPhoto: (content: string) => void
-  onStartPractice: (practice: PracticeExercise) => void
-  onGenerateSimilar: () => void
+  onStartPractice: (practice: PracticeExercise, focus?: ConversationFocus) => void
+  onGenerateSimilar: (focus?: ConversationFocus) => void
   onRecommendationSimilar: (reference: QuestionReference) => void
   onRecommendationBookmark: (reference: QuestionReference) => void
-  onRecommendationAnother: () => void
+  onRecommendationAnother: (reference: QuestionReference, continuationTaskId?: string, focus?: ConversationFocus) => void
   onRecommendationStart: (recommendation: QuestionRecommendation) => void
   onRecommendationHint: (reference: QuestionReference, level: 'direction' | 'formula') => void
 }) {
@@ -2011,7 +2011,7 @@ function Conversation({
                   disabled={streaming}
                   onSimilar={onRecommendationSimilar}
                   onBookmark={onRecommendationBookmark}
-                  onAnother={onRecommendationAnother}
+                  onAnother={(reference) => onRecommendationAnother(reference, message.resolvedContext?.turn_id, message.focus)}
                   onStart={onRecommendationStart}
                   onHint={onRecommendationHint}
                 />
@@ -2025,8 +2025,8 @@ function Conversation({
                   practice={message.practice}
                   grading={message.grading}
                   disabled={streaming}
-                  onStart={onStartPractice}
-                  onGenerateSimilar={onGenerateSimilar}
+                  onStart={(practice) => onStartPractice(practice, message.focus)}
+                  onGenerateSimilar={() => onGenerateSimilar(message.focus)}
                 />
               )}
             {message.content
@@ -2036,7 +2036,7 @@ function Conversation({
               && !(streaming && index === messages.length - 1) && (
               <div className="message-tools">
                 {message.agent === '答疑 Agent' && (
-                  <button type="button" disabled={streaming} onClick={onGenerateSimilar}>
+                  <button type="button" disabled={streaming} onClick={() => onGenerateSimilar(message.focus)}>
                     <WandSparkles size={14} /> 生成同类题
                   </button>
                 )}
@@ -5020,7 +5020,8 @@ function StudentPageContent() {
     ).then(() => refreshSessions())
   }
 
-  const startPracticeAnswer = (practice: PracticeExercise) => {
+  const startPracticeAnswer = (practice: PracticeExercise, focus?: ConversationFocus) => {
+    if (focus) setActiveFocus(focus)
     setMode('quiz')
     setActivePractice(practice)
     setScene('quiz_grade')
@@ -5032,7 +5033,8 @@ function StudentPageContent() {
     }, 0)
   }
 
-  const generateAnotherPractice = () => {
+  const generateAnotherPractice = (focus?: ConversationFocus) => {
+    if (focus) setActiveFocus(focus)
     ask('请基于刚才这道题再生成一道同构变式题，保持知识点、拓扑和待求量结构，只调整情境或参数。', 'quiz')
   }
 
@@ -5045,10 +5047,11 @@ function StudentPageContent() {
     }).then(() => refreshSessions())
   }
 
-  const recommendAnother = () => {
+  const recommendAnother = (reference: QuestionReference, continuationTaskId?: string, focus?: ConversationFocus) => {
+    if (focus) setActiveFocus(focus)
     setMode('recommend')
     setScene('chat')
-    void send('再来一道')
+    void send('再来一道', { questionRef: reference, continuationTaskId })
       .then(() => refreshSessions())
   }
 

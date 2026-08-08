@@ -91,6 +91,7 @@ class AgentState(TypedDict, total=False):
     focus_catalog: list[dict[str, Any]]
     selected_focuses: list[dict[str, Any]]
     semantic_request: dict[str, Any]
+    context_envelope: dict[str, Any]
     attachment_context: str
     attachment_blueprint: dict[str, Any]
     needs_confirmation: bool
@@ -1687,6 +1688,7 @@ class CircuitTutorEngine:
         focus_catalog: list[dict[str, Any]] | None = None,
         selected_focuses: list[dict[str, Any]] | None = None,
         semantic_request: dict[str, Any] | None = None,
+        context_envelope: dict[str, Any] | None = None,
         conversation_summary: dict[str, Any] | None = None,
         llm: Any | None = None,
         vision_llm: Any | None = None,
@@ -1716,6 +1718,7 @@ class CircuitTutorEngine:
             "focus_catalog": focus_catalog or [],
             "selected_focuses": selected_focuses or [],
             "semantic_request": semantic_request or {},
+            "context_envelope": context_envelope or {},
             "conversation_summary": conversation_summary or {},
             "llm": llm or self.ollama,
             "vision_llm": vision_llm or llm or self.ollama,
@@ -1743,6 +1746,7 @@ class CircuitTutorEngine:
             focus_catalog=focus_catalog,
             selected_focuses=selected_focuses,
             semantic_request=semantic_request,
+            context_envelope=context_envelope,
             summary=conversation_summary,
         ).text
         result: AgentState = await self.graph.ainvoke(initial)
@@ -2543,6 +2547,28 @@ class CircuitTutorEngine:
                 if isinstance(recommendation.get("question_ref"), dict):
                     inherited_ref = recommendation["question_ref"]
                 break
+        envelope_task = (
+            state.get("context_envelope", {}).get("task", {})
+            if isinstance(state.get("context_envelope"), dict)
+            else {}
+        )
+        inherited_parameters = (
+            envelope_task.get("inherited_parameters", {})
+            if isinstance(envelope_task, dict)
+            else {}
+        )
+        if isinstance(inherited_parameters, dict):
+            task_requirements = inherited_parameters.get("requirements")
+            task_reference = inherited_parameters.get("question_ref")
+            has_explicit_continuation = bool(envelope_task.get("continuation_of_task_id"))
+            if isinstance(task_requirements, dict) and (
+                has_explicit_continuation or inherited is None
+            ):
+                inherited = task_requirements
+            if isinstance(task_reference, dict) and (
+                has_explicit_continuation or inherited_ref is None
+            ):
+                inherited_ref = task_reference
         active_ref = (
             state.get("conversation_focus", {}).get("question_ref", {})
             if isinstance(state.get("conversation_focus"), dict)
@@ -2551,9 +2577,14 @@ class CircuitTutorEngine:
         if isinstance(semantic, dict) and semantic.get("source") == "model":
             continuation_requested = bool(
                 semantic.get("operation") == "retrieve_similar"
-                and inherited_ref
-                and isinstance(active_ref, dict)
-                and active_ref == inherited_ref
+                and (
+                    bool(envelope_task.get("continuation_of_task_id"))
+                    or (
+                        inherited_ref
+                        and isinstance(active_ref, dict)
+                        and active_ref == inherited_ref
+                    )
+                )
             )
         else:
             continuation_requested = bool(
@@ -4031,6 +4062,17 @@ class CircuitTutorEngine:
                 "answer_items": answer_items,
                 "common_mistakes": [],
             }
+        focus = state.get("conversation_focus", {})
+        focus_snapshot = focus.get("question_snapshot", {}) if isinstance(focus, dict) else {}
+        if (
+            practice is None
+            and isinstance(focus_snapshot, dict)
+            and str(focus_snapshot.get("question", "")).strip()
+        ):
+            # The explicitly bound focus is authoritative. Falling back to the
+            # newest practice can grade an older selected exercise against the
+            # wrong answer key when the conversation has branched.
+            practice = dict(focus_snapshot)
         if practice is None:
             practice = _latest_practice(state.get("history", []))
         if not practice:

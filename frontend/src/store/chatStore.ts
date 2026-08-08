@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { AttachmentInfo, ConversationFocus, KBStatus, MistakeCandidateDraft, ModelConfig, ModelProviderId, PhotoRecognition, PracticeExercise, PracticeGrading, QuestionRecommendation, QuestionReference, QuestionSummary, SourceInfo, StoredMessage, streamChat, uploadChatAttachment, VisionModelConfig } from '../lib/api'
+import { AttachmentInfo, ContextStateSummary, ConversationFocus, KBStatus, MistakeCandidateDraft, ModelConfig, ModelProviderId, PhotoRecognition, PracticeExercise, PracticeGrading, QuestionRecommendation, QuestionReference, QuestionSummary, ResolvedContext, SourceInfo, StoredMessage, streamChat, uploadChatAttachment, VisionModelConfig } from '../lib/api'
 
 export type ChatMode = 'auto' | 'answer' | 'quiz' | 'plan' | 'recommend' | 'explain'
 export type ChatScene = 'chat' | 'image_answer' | 'quiz_grade'
@@ -27,6 +27,8 @@ export type ChatMessage = {
   questionSummary?: QuestionSummary
   recommendation?: QuestionRecommendation
   focus?: ConversationFocus
+  resolvedContext?: ResolvedContext
+  contextState?: ContextStateSummary
   mistakeProposal?: MistakeCandidateDraft
 }
 
@@ -155,6 +157,16 @@ function getDefaultKnowledgeBase(): string {
 
 const initialKnowledgeBase = getDefaultKnowledgeBase()
 
+const emptyContextState = (): ContextStateSummary => ({
+  schema_version: 1,
+  revision: 0,
+  active_subject_focus_id: '',
+  active_task_id: '',
+  continuation_task_id: '',
+  focus_stack: [],
+  tasks: {},
+})
+
 function legacySourcesFromContent(content: string): SourceInfo[] {
   const sources: SourceInfo[] = []
   const pattern = /^-\s+\[资料(\d+)\]\s+(.+?)\s+·\s+(.+?)\s+·\s+第\s*(\d+)(?:[–-](\d+))?\s*页\s*$/gm
@@ -208,6 +220,7 @@ type ChatState = {
   activePracticeSessionId?: string
   activeQuestionRef?: QuestionReference
   activeFocus?: ConversationFocus
+  contextState: ContextStateSummary
   controller?: AbortController
   setMode: (mode: ChatMode) => void
   setScene: (scene: ChatScene) => void
@@ -223,7 +236,7 @@ type ChatState = {
   removeAttachment: (localId: string) => void
   activateMessage: (messageId: string, bindFocus?: boolean) => void
   loadSession: (sessionId: string, messages: StoredMessage[]) => void
-  send: (message: string, options?: { recognitionConfirmed?: boolean; questionRef?: QuestionReference; focusId?: string }) => Promise<void>
+  send: (message: string, options?: { recognitionConfirmed?: boolean; questionRef?: QuestionReference; focusId?: string; continuationTaskId?: string; attachmentRole?: 'auto' | 'question' | 'answer' | 'reference' }) => Promise<void>
   stop: () => void
   clear: () => void
 }
@@ -249,6 +262,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   activePracticeSessionId: undefined,
   activeQuestionRef: undefined,
   activeFocus: undefined,
+  contextState: emptyContextState(),
   setMode: (mode) => set({ mode }),
   setScene: (scene) => set({
     scene,
@@ -398,6 +412,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         questionSummary: item.question_summary,
         recommendation: item.recommendation,
         focus: item.conversation_focus,
+        resolvedContext: item.resolved_context,
+        contextState: item.context_state,
         mistakeProposal: item.mistake_proposal,
       }
     })
@@ -405,6 +421,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const latestQuestion = [...messages].reverse().find((item) => item.questionRef)?.questionRef
     const latestFocus = [...messages].reverse().find((item) => item.focus)?.focus
     const latestPracticeSessionId = [...messages].reverse().find((item) => item.practiceSessionId)?.practiceSessionId
+    const latestContextState = [...messages].reverse().find((item) => item.contextState)?.contextState
     set({
       sessionId,
       messages,
@@ -419,6 +436,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activePracticeSessionId: latestPracticeSessionId,
       activeQuestionRef: latestFocus ? latestFocus.question_ref : latestQuestion,
       activeFocus: latestFocus,
+      contextState: latestContextState || emptyContextState(),
       controller: undefined,
     })
   },
@@ -456,6 +474,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
     const assistantId = crypto.randomUUID()
     const requestScene = get().scene
+    const requestContextState = get().contextState
     const selectedModel = get().modelConfig
     const selectedVisionModel = get().visionModelConfig
     const sharesQwenCredentials = selectedModel.provider === 'qwen'
@@ -492,6 +511,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
           student_id: get().studentId,
           question_ref: questionRef,
           focus_id: focusId,
+          target_focus_id: focusId,
+          submission_target_focus_id: requestScene === 'quiz_grade' ? focusId : undefined,
+          continuation_task_id: options?.continuationTaskId,
+          attachment_role: options?.attachmentRole || (
+            requestScene === 'quiz_grade' ? 'answer'
+              : requestScene === 'image_answer' ? 'question'
+                : 'auto'
+          ),
+          expected_context_revision: requestContextState.revision,
           practice_session_id: requestScene === 'quiz_grade'
             ? get().activePracticeSessionId
             : undefined,
@@ -540,7 +568,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
                         questionRef: data.question_ref,
                         questionSummary: data.question_summary,
                         recommendation: data.recommendation,
-                        focus: data.conversation_focus,
+                        focus: data.conversation_focus || undefined,
+                        resolvedContext: data.resolved_context,
+                        contextState: data.context_state,
                         mistakeProposal: data.mistake_proposal,
                       }
                     : item,
@@ -549,6 +579,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 activeQuestionRef: data.conversation_focus
                   ? data.conversation_focus.question_ref
                   : data.question_ref || state.activeQuestionRef,
+                contextState: data.context_state || state.contextState,
               }
             })
           },
@@ -651,6 +682,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activePracticeSessionId: undefined,
       activeQuestionRef: undefined,
       activeFocus: undefined,
+      contextState: emptyContextState(),
       controller: undefined,
     })
   },

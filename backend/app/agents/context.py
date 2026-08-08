@@ -564,6 +564,7 @@ class ConversationContextBuilder:
         focus_catalog: list[dict[str, Any]] | None = None,
         selected_focuses: list[dict[str, Any]] | None = None,
         semantic_request: dict[str, Any] | None = None,
+        context_envelope: dict[str, Any] | None = None,
         summary: dict[str, Any] | None = None,
     ) -> ConversationContext:
         focus = public_focus(focus)
@@ -571,6 +572,7 @@ class ConversationContextBuilder:
         focus_catalog = [dict(item) for item in (focus_catalog or []) if isinstance(item, dict)]
         selected_focuses = [public_focus(item) for item in (selected_focuses or []) if isinstance(item, dict)]
         semantic_request = dict(semantic_request or {})
+        context_envelope = dict(context_envelope or {})
         semantic_operation = str(semantic_request.get("operation", ""))
         semantic_scope = str(semantic_request.get("scope", ""))
         isolated_knowledge_query = (
@@ -618,6 +620,12 @@ class ConversationContextBuilder:
             sections.append(
                 "[主 Agent 语义任务]\n"
                 + json.dumps(semantic_request, ensure_ascii=False)[:2200]
+            )
+        if context_envelope:
+            sections.append(
+                "[结构化上下文协议]\n"
+                "本节是服务端校验后的本轮对象、任务和附件角色绑定，优先于聊天文本中的隐式猜测。\n"
+                + json.dumps(context_envelope, ensure_ascii=False)[:3200]
             )
         include_catalog = bool(focus_catalog) and (
             semantic_request.get("source") != "model"

@@ -758,6 +758,68 @@ export type ConversationFocus = {
   has_figure?: boolean
 }
 
+export type ContextTaskSummary = {
+  task_id: string
+  operation: string
+  target_focus_ids: string[]
+  status: string
+  continuation_of_task_id?: string
+  result_focus_id?: string
+  mode?: string
+  scene?: string
+  created_at?: string
+}
+
+export type ContextStateSummary = {
+  schema_version: number
+  revision: number
+  active_subject_focus_id: string
+  active_task_id: string
+  continuation_task_id: string
+  focus_stack: string[]
+  tasks: Record<string, ContextTaskSummary>
+  updated_at?: string
+}
+
+export type ResolvedContext = {
+  schema_version: number
+  turn_id: string
+  state_revision: number
+  state_revision_after?: number
+  request: {
+    mode: string
+    scene: string
+    attachment_role: 'auto' | 'question' | 'answer' | 'reference'
+    explicit_binding: string
+  }
+  resolved: {
+    operation: string
+    scope: string
+    target_focus_ids: string[]
+    target_step?: string
+    confidence: number
+    needs_clarification: boolean
+    source: string
+  }
+  subject: {
+    active_subject_focus_id: string
+    bound_focus_id: string
+  }
+  task: {
+    continuation_of_task_id?: string
+    inherited_operation?: string
+    inherited_target_focus_ids?: string[]
+    inherited_result_focus_id?: string
+    inherited_parameters?: Record<string, unknown>
+  }
+  executed?: {
+    operation: string
+    intent: string
+    answer_task?: string
+    agent: string
+  }
+}
+
 export type PracticeExercise = {
   question_type: string
   question: string
@@ -949,12 +1011,14 @@ export type StoredMessage = {
   question_summary?: QuestionSummary
   recommendation?: QuestionRecommendation
   conversation_focus?: ConversationFocus
+  resolved_context?: ResolvedContext
+  context_state?: ContextStateSummary
   mistake_proposal?: MistakeCandidateDraft
 }
 
 type SSECallbacks = {
   onStatus: (data: { stage: string; message: string; agent: string }) => void
-  onMeta: (data: { intent: string; agent: string; provider: ModelProviderId; model: string; sources: SourceInfo[]; cited_sources: SourceInfo[]; verification?: Record<string, unknown>; recognition?: PhotoRecognition; needs_confirmation?: boolean; evidence_mode?: 'grounded' | 'mixed' | 'general_only'; review?: AnswerReview; practice?: PracticeExercise; grading?: PracticeGrading; question_ref?: QuestionReference; question_summary?: QuestionSummary; recommendation?: QuestionRecommendation; conversation_focus?: ConversationFocus; mistake_proposal?: MistakeCandidateDraft }) => void
+  onMeta: (data: { intent: string; agent: string; provider: ModelProviderId; model: string; sources: SourceInfo[]; cited_sources: SourceInfo[]; verification?: Record<string, unknown>; recognition?: PhotoRecognition; needs_confirmation?: boolean; evidence_mode?: 'grounded' | 'mixed' | 'general_only'; review?: AnswerReview; practice?: PracticeExercise; grading?: PracticeGrading; question_ref?: QuestionReference; question_summary?: QuestionSummary; recommendation?: QuestionRecommendation; conversation_focus?: ConversationFocus | null; resolved_context?: ResolvedContext; context_state?: ContextStateSummary; mistake_proposal?: MistakeCandidateDraft }) => void
   onDelta: (content: string) => void
   onDone: () => void
   onError: (message: string) => void
@@ -983,6 +1047,11 @@ export async function streamChat(
     student_id: string
     question_ref?: QuestionReference
     focus_id?: string
+    target_focus_id?: string
+    submission_target_focus_id?: string
+    continuation_task_id?: string
+    attachment_role?: 'auto' | 'question' | 'answer' | 'reference'
+    expected_context_revision?: number
     practice_session_id?: string
     model_provider: ModelProviderId
     model: string
@@ -1107,7 +1176,15 @@ export async function fetchSessions(): Promise<SessionSummary[]> {
 export async function fetchSession(sessionId: string): Promise<StoredMessage[]> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`)
   if (!response.ok) throw new Error('无法恢复历史会话')
-  return (await response.json()).messages || []
+  const result = await response.json()
+  const messages: StoredMessage[] = result.messages || []
+  if (result.context_state && messages.length) {
+    messages[messages.length - 1] = {
+      ...messages[messages.length - 1],
+      context_state: result.context_state,
+    }
+  }
+  return messages
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {

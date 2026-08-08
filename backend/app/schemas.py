@@ -32,6 +32,11 @@ class ChatRequest(BaseModel):
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     question_ref: QuestionReference | None = None
     focus_id: str = Field(default="", max_length=32)
+    target_focus_id: str = Field(default="", max_length=32)
+    submission_target_focus_id: str = Field(default="", max_length=32)
+    continuation_task_id: str = Field(default="", max_length=96)
+    attachment_role: Literal["auto", "question", "answer", "reference"] = "auto"
+    expected_context_revision: int | None = Field(default=None, ge=0)
     practice_session_id: str = Field(default="", max_length=96)
     model_provider: Literal["ollama", "deepseek", "qwen", "custom"] = "qwen"
     model: str = Field(default="qwen3.7-plus", min_length=1, max_length=128)
@@ -41,7 +46,10 @@ class ChatRequest(BaseModel):
     vision_api_key: str = Field(default="", max_length=512)
     vision_base_url: str = Field(default="", max_length=512)
 
-    @field_validator("session_id", "student_id", "knowledge_base", "practice_session_id")
+    @field_validator(
+        "session_id", "student_id", "knowledge_base", "practice_session_id",
+        "continuation_task_id",
+    )
     @classmethod
     def safe_identifier(cls, value: str) -> str:
         value = value.strip()
@@ -74,7 +82,7 @@ class ChatRequest(BaseModel):
                 raise ValueError("附件标识不合法")
         return values
 
-    @field_validator("focus_id")
+    @field_validator("focus_id", "target_focus_id", "submission_target_focus_id")
     @classmethod
     def safe_focus_id(cls, value: str) -> str:
         value = value.strip()
