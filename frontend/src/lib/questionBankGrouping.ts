@@ -8,6 +8,7 @@ export type QuestionBankQuestionGroup = {
 
 export type QuestionBankQuestionLayout = {
   grouped: boolean
+  paper: boolean
   groups: QuestionBankQuestionGroup[]
 }
 
@@ -100,23 +101,27 @@ export function groupQuestionBankQuestions(
   questions: HomeworkQuestion[],
   sourceOrigin = '',
   bankLabel = '',
+  documentKind = '',
 ): QuestionBankQuestionLayout {
   const flatLayout: QuestionBankQuestionLayout = {
     grouped: false,
+    paper: false,
     groups: [{ key: 'all-questions', title: '', questions }],
   }
-  const paperSectionPattern = /(?:选择|填空|判断|简答|计算|论述|作图|综合)题/u
+  const paperSectionPattern = /(?:选择|填空|判断|简答|计算|论述|作图|综合|分析|设计).*题/u
   const hasFlatPaperSection = questions.some((question) => (
     paperSectionPattern.test(question.section_title || '')
     && !questionChapter({ ...question, number: '' })
   ))
   const hasPaperLabel = /(?:测试题|考试|测验|模拟卷|期中|期末|[a-zＡ-Ｚ]卷)/iu.test(bankLabel)
-  if (
-    !questions.length
+  const isPaper = documentKind === 'paper'
     || (sourceOrigin || '').trim().toLowerCase() === 'photo_answer'
     || hasFlatPaperSection
     || hasPaperLabel
-  ) return flatLayout
+  if (
+    !questions.length
+    || isPaper
+  ) return { ...flatLayout, paper: isPaper }
 
   const chapters = questions.map(questionChapter)
   if (!chapters.some(Boolean)) return flatLayout
@@ -134,5 +139,5 @@ export function groupQuestionBankQuestions(
     group.questions.push(question)
   })
 
-  return { grouped: true, groups }
+  return { grouped: true, paper: false, groups }
 }

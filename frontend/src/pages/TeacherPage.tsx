@@ -123,6 +123,7 @@ function QuestionManagementList({
   groupByChapter = false,
   sourceOrigin = '',
   bankLabel = '',
+  documentKind = '',
   onEditQuestion,
   onDeleteQuestion,
 }: {
@@ -131,19 +132,22 @@ function QuestionManagementList({
   groupByChapter?: boolean
   sourceOrigin?: string
   bankLabel?: string
+  documentKind?: string
   onEditQuestion: (question: HomeworkQuestion) => void
   onDeleteQuestion?: (questionId: string) => void
 }) {
   const questionLayout = groupByChapter
-    ? groupQuestionBankQuestions(questions, sourceOrigin, bankLabel)
-    : { grouped: false, groups: [{ key: 'all-questions', title: '', questions }] }
+    ? groupQuestionBankQuestions(questions, sourceOrigin, bankLabel, documentKind)
+    : { grouped: false, paper: false, groups: [{ key: 'all-questions', title: '', questions }] }
   const renderQuestions = (items: HomeworkQuestion[]) => items.map((question) => (
     <article key={question.id}>
       <div className="question-bank-manage-number">{question.number}</div>
       <div className="question-bank-manage-copy">
         <span>
           {question.source_kind === 'example' ? '例题' : question.source_kind === 'exercise' ? '习题' : '题目'}
-          {' · '}{question.section_title || '题目'} · {questionTypeLabel(question.question_type)}
+          {questionLayout.paper
+            ? ` · ${questionTypeLabel(question.question_type)}`
+            : ` · ${question.section_title || '题目'} · ${questionTypeLabel(question.question_type)}`}
         </span>
         <MathMarkdown content={question.prompt || '未识别到题干'} />
         <small>{question.figures?.length || 0} 张题图 · {question.answer_figures?.length || 0} 张答案图 · {question.answer || question.answer_subquestions?.length ? '含参考答案' : '未识别到答案'}</small>
@@ -388,6 +392,7 @@ function QuestionBankPreview({
         groupByChapter
         sourceOrigin={bank.source_origin}
         bankLabel={`${bank.title} ${bank.source_name}`}
+        documentKind={bank.document_kind}
         onEditQuestion={onEditQuestion}
         onDeleteQuestion={onDeleteQuestion}
       />
@@ -1159,6 +1164,7 @@ export default function TeacherPage() {
                   bank.questions,
                   bank.source_origin,
                   `${bank.title} ${bank.source_name}`,
+                  bank.document_kind,
                 )
                 const renderQuestions = (questions: HomeworkQuestion[]) => questions.map((question) => {
                   const key = bankQuestionKey(bank.id, question.id)
@@ -1172,7 +1178,7 @@ export default function TeacherPage() {
                           : keys.filter((value) => value !== key))}
                       />
                       <div>
-                        <span>{question.section_title || '题目'} · 第 {question.number} 题</span>
+                        <span>{questionLayout.paper ? questionTypeLabel(question.question_type) : question.section_title || '题目'} · 第 {question.number} 题</span>
                         <MathMarkdown content={question.prompt || '未识别到题干'} />
                         <small>{question.options?.length ? `${question.options.length} 个选项 · ` : ''}{question.subquestions?.length ? `${question.subquestions.length} 个小问 · ` : ''}{question.answer || question.answer_figures?.length ? '含参考答案' : '暂无参考答案'}</small>
                       </div>

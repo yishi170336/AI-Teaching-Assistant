@@ -2743,11 +2743,13 @@ function QuestionBankFigureGallery({
 
 function QuestionBankQuestionCard({
   question,
+  paper = false,
   deleting,
   onDelete,
   onAsk,
 }: {
   question: HomeworkQuestion
+  paper?: boolean
   deleting: boolean
   onDelete: () => void
   onAsk: () => void
@@ -2762,12 +2764,15 @@ function QuestionBankQuestionCard({
   const displayedTitle = question.source_kind === 'example' && String(displayedNumber).startsWith('例')
     ? displayedNumber
     : `第 ${displayedNumber} 题`
+  const metadata = paper
+    ? `${sourceKindLabel} · ${questionTypeName(question.question_type)}`
+    : `${sourceKindLabel} · ${question.section_title || '题目'} · ${questionTypeName(question.question_type)}`
   return (
     <article className="student-bank-question">
       <header className="student-bank-question-head">
         <span className="student-bank-question-number">{question.number || question.sequence}</span>
         <div>
-          <small>{sourceKindLabel} · {question.section_title || '题目'} · {questionTypeName(question.question_type)}</small>
+          <small>{metadata}</small>
           <strong>{displayedTitle}</strong>
         </div>
         <div className="student-bank-question-actions">
@@ -2914,6 +2919,12 @@ function PhotoPdfQuestionPickerModal({
       && (!readiness || question.answer_readiness?.status === readiness)
   })
   const visible = filtered.slice((page - 1) * pageSize, page * pageSize)
+  const questionLayout = groupQuestionBankQuestions(
+    questions,
+    bank?.source_origin,
+    `${bank?.title || ''} ${bank?.source_name || ''}`,
+    bank?.document_kind,
+  )
 
   return (
     <Modal
@@ -2957,7 +2968,7 @@ function PhotoPdfQuestionPickerModal({
                     {question.answer_readiness?.status === 'needs_confirmation' ? '需确认' : '可直接答疑'}
                   </Tag>
                 </div>
-                <strong>{question.section_title || '未定位章节'}</strong>
+                <strong>{questionLayout.paper ? questionTypeName(question.question_type) : question.section_title || '未定位章节'}</strong>
                 <MathMarkdown content={question.prompt || '未识别到题干'} />
                 <Button type="primary" onClick={() => onAsk(bank, question)}>AI 答疑</Button>
               </article>
@@ -3005,6 +3016,7 @@ function QuestionBankView({
     selectedBank?.questions || [],
     selectedBank?.source_origin,
     `${selectedBank?.title || ''} ${selectedBank?.source_name || ''}`,
+    selectedBank?.document_kind,
   )
 
   const loadBanks = useCallback(async (withSpinner = false) => {
@@ -3350,6 +3362,7 @@ function QuestionBankView({
                           <QuestionBankQuestionCard
                             key={question.id}
                             question={question}
+                            paper={questionLayout.paper}
                             deleting={deletingQuestionId === question.id}
                             onDelete={() => void removeQuestion(selectedBank.id, question.id)}
                             onAsk={() => onAskQuestion(selectedBank, question)}
@@ -3361,6 +3374,7 @@ function QuestionBankView({
                     <QuestionBankQuestionCard
                       key={question.id}
                       question={question}
+                      paper={questionLayout.paper}
                       deleting={deletingQuestionId === question.id}
                       onDelete={() => void removeQuestion(selectedBank.id, question.id)}
                       onAsk={() => onAskQuestion(selectedBank, question)}

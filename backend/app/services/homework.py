@@ -485,6 +485,99 @@ def _question_type(value: Any) -> str:
     return aliases.get(raw, raw if raw in allowed else "other")
 
 
+_PAPER_DOCUMENT_PATTERN = re.compile(
+    r"(?:测试题|考试|测验|模拟卷|期中|期末|[a-zＡ-Ｚ]卷)",
+    re.IGNORECASE,
+)
+_PAPER_SECTION_PATTERN = re.compile(
+    r"(?:选择|填空|判断|简答|计算|论述|作图|综合|分析|设计).*题"
+)
+_EXPLICIT_CHAPTER_PATTERN = re.compile(
+    r"第\s*[0-9零〇一二两三四五六七八九十百]+\s*章"
+)
+_QUESTION_TYPE_SECTION_TITLES = {
+    "choice": "选择题",
+    "fill_blank": "填空题",
+    "true_false": "判断题",
+    "calculation": "计算题",
+    "short_answer": "简答题",
+    "design": "设计题",
+    "other": "题目",
+}
+
+
+def _is_paper_question_bank(
+    bank: dict[str, Any], questions: Iterable[dict[str, Any]]
+) -> bool:
+    """Identify exam-paper banks without trusting potentially hallucinated chapters."""
+    if _clean_text(bank.get("source_origin"), 48).lower() == "photo_answer":
+        return True
+    label = " ".join(
+        (
+            _clean_text(bank.get("title"), 160),
+            _clean_text(bank.get("source_name"), 240),
+        )
+    )
+    if _PAPER_DOCUMENT_PATTERN.search(label):
+        return True
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        title = _clean_text(question.get("section_title"), 240)
+        if (
+            title
+            and _PAPER_SECTION_PATTERN.search(title)
+            and not _EXPLICIT_CHAPTER_PATTERN.search(title)
+            and not re.match(r"^\s*\d+\s*[.．]\s*\d+", title)
+        ):
+            return True
+    return False
+
+
+def _sanitize_paper_question_metadata(
+    questions: Iterable[dict[str, Any]],
+) -> int:
+    """Remove copied textbook chapter metadata from an exam-paper question list."""
+    changed = 0
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        question_type = _question_type(question.get("question_type"))
+        current_title = _clean_text(question.get("section_title"), 240)
+        current_key = _clean_text(question.get("section_key"), 40)
+        is_real_paper_section = bool(
+            current_title
+            and _PAPER_SECTION_PATTERN.search(current_title)
+            and not _EXPLICIT_CHAPTER_PATTERN.search(current_title)
+            and not re.match(r"^\s*\d+\s*[.．]\s*\d+", current_title)
+        )
+        next_title = (
+            current_title
+            if is_real_paper_section
+            else _QUESTION_TYPE_SECTION_TITLES[question_type]
+        )
+        next_key = current_key if is_real_paper_section and current_key else question_type
+        updates = {
+            "section_key": next_key,
+            "section_title": next_title,
+            "source_kind": "question",
+        }
+        if any(question.get(key) != value for key, value in updates.items()):
+            changed += 1
+        question.update(updates)
+
+        profile = question.get("retrieval_profile")
+        if isinstance(profile, dict):
+            profile = dict(profile)
+            question["retrieval_profile"] = profile
+            manual_fields = set(profile.get("manual_fields", []))
+            if "chapter" not in manual_fields:
+                profile["chapter"] = ""
+            if "section" not in manual_fields:
+                profile["section"] = next_title
+    return changed
+
+
 def _comparison_text(value: str) -> str:
     return re.sub(r"[\s`$\\，。；：、（）()【】\[\]{}]", "", value).lower()
 
@@ -832,6 +925,8 @@ class HomeworkStore:
             for question in bank.get("questions", [])
             if isinstance(question, dict)
         ]
+        is_paper = _is_paper_question_bank(bank, questions)
+        result["document_kind"] = "paper" if is_paper else "question_bank"
         result["max_score"] = round(
             sum(
                 _question_scoring_max(question)
@@ -850,6 +945,9 @@ class HomeworkStore:
                 if question_limit is None
                 else questions[question_offset:question_offset + question_limit]
             )
+            page = [dict(question) for question in page]
+            if is_paper:
+                _sanitize_paper_question_metadata(page)
             result["questions"] = [
                 self._public_question(
                     bank_id,
@@ -1077,9 +1175,12 @@ class HomeworkStore:
         )
         if question is None:
             raise FileNotFoundError("题目不存在")
+        public_question = dict(question)
+        if _is_paper_question_bank(raw, raw.get("questions", [])):
+            _sanitize_paper_question_metadata([public_question])
         public = self._public_question(
             bank_id,
-            question,
+            public_question,
             include_answers=False,
             asset_scope="question-banks",
             student_id=student_id,
@@ -1496,6 +1597,8 @@ class HomeworkStore:
                 state = self._read()
                 bank = next(item for item in state["question_banks"] if item.get("id") == bank_id)
                 questions = [item for item in bank.get("questions", []) if isinstance(item, dict)]
+                if _is_paper_question_bank(bank, questions):
+                    _sanitize_paper_question_metadata(questions)
                 total = max(1, len(questions))
                 review_count = 0
                 for index, question in enumerate(questions, start=1):
@@ -1809,6 +1912,8 @@ class HomeworkStore:
             for sequence, (bank, source_question) in enumerate(selected, 1):
                 bank_id = str(bank["id"])
                 question = json.loads(json.dumps(source_question, ensure_ascii=False))
+                if _is_paper_question_bank(bank, bank.get("questions", [])):
+                    _sanitize_paper_question_metadata([question])
                 original_id = str(question.get("id", ""))
                 question["id"] = hashlib.sha256(
                     f"{homework_id}|{bank_id}|{original_id}".encode("utf-8")
@@ -2384,7 +2489,7 @@ def _page_prompt(
 7. 多小问题必须结构化：question_text 只放所有小问共享的题干；每个“(1)/(2)/(3)”分别放入 subquestions，label 只写数字，text 不重复括号和共同题干。不要把多个小问挤在 question_text 的同一段。答案也用 answer_text + answer_subquestions 对齐拆分。subquestions 只能来自“解：/答案”之前实际印刷的提问；“解：”之后的假设、推导、分步计算即使也标有 (1)/(2)/(3)，只能进入 answer_subquestions，绝不能进入 subquestions 或泄露给学生。同一组 subquestions 只能归属一个印刷题号；遇到页面上任何下一个完整印刷题号后，前后题的小问必须截断，不能复制或串接。识别新题的首要证据是完整题号和版面位置，而不是章节标题。
 8. question_text 只能转录当前页面肉眼可见的题干，不得从“最近已出现的题目”复制、改写或补全题干。若当前页只有上一题的题图、答案或评分过程，question_text 必须为空。
 9. 使用 Markdown + LaTeX。所有电路变量、下标、希腊字母、单位和算式都必须放在 $...$ 中，例如 $\\beta=150$、$V_{{T}}=26\\,\\mathrm{{mV}}$、$V_{{BE(on)}}=0.7\\,\\mathrm{{V}}$、$r'_{{bb}}=100\\,\\Omega$、$R_{{B1}}=60\\,\\mathrm{{k}}\\Omega$、$A_{{v1}}=v_o/v_i$。禁止输出裸露的 V_T、R_B1、r_bb'、26mV 或 4kΩ。
-10. 已填写答案的横线改回纯空白“______”，不得把答案字符写进题干。section_key 是大题、章节或习题组编号，section_title 是对应标题；没有明确分值时 points 返回 0。option_columns 按原页选项排布返回 1、2 或 4；figure_position 返回 before_question、after_question 或 after_options。
+10. 已填写答案的横线改回纯空白“______”，不得把答案字符写进题干。section_key 是大题、章节或习题组编号，section_title 是页面真实印刷的对应标题；试卷没有章节或大题标题时两者必须留空，不得从 JSON 结构示例或其他页面臆造“1.4 习题解答”等教材章节。没有明确分值时 points 返回 0。option_columns 按原页选项排布返回 1、2 或 4；figure_position 返回 before_question、after_question 或 after_options。
 11. question_bboxes 只框题干与小问；figure_bboxes 只能框学生作答前就应看到的已知电路图、波形图或表格，不要把图号文字裁进图中。figure_captions 与 figure_bboxes 按顺序一一对应，只填写原文图号/图注，例如“图1.3”；即使图号只出现在上一页题干的“如图1.3所示”中，也必须为该题返回一个 question_text 为空的续接片段，并把图归给原 question_key。
 12. answer_bboxes 必须框出本页所有会泄露答案的文字区域；answer_figure_bboxes 单独框出“解：/答案”中才出现的结果图、设计图、推导图和参考电路图，并用 answer_figure_captions 对齐图号。题目要求学生“画出/绘制/设计电路图”且原题没有提供“图x.x/如图/下图”时，答案页画出的电路绝不能进入 figure_bboxes。rubric 只保留明确的评分点。
 13. 图必须归到实际引用它的题目，不能成为独立题目；同一页相邻的“图1.1”“图1.2”必须根据各题题干引用分别归属，不能全部放进当前题。页眉装饰图不要返回。
@@ -2400,7 +2505,7 @@ PDF-Extract-Kit 检测区域：
 {json.dumps(regions, ensure_ascii=False)}
 
 仅返回 JSON：
-{{"items":[{{"question_key":"chapter-1-exercise-1.2.1","section_key":"1.4","section_title":"1.4 习题解答","source_kind":"exercise","number":"1.2.1","question_type":"choice|calculation|short_answer|design|other","question_text":"所有小问共享的题干","subquestions":[{{"label":"1","text":"第一个小问"}},{{"label":"2","text":"第二个小问"}}],"options":[{{"label":"A","text":"选项内容"}}],"option_columns":2,"figure_position":"after_question","points":0,"question_bboxes":[[0,0,1000,1000]],"figure_bboxes":[[0,0,1000,1000]],"figure_captions":["图1.3"],"answer_bboxes":[[0,0,1000,1000]],"answer_figure_bboxes":[[0,0,1000,1000]],"answer_figure_captions":[""],"answer_text":"所有小问共享的答案说明","answer_subquestions":[{{"label":"1","text":"第一问答案"}},{{"label":"2","text":"第二问答案"}}],"rubric":"明确评分点"}}],"warnings":[]}}。"""
+{{"items":[{{"question_key":"document-question-1","section_key":"","section_title":"","source_kind":"question","number":"1","question_type":"choice|calculation|short_answer|design|other","question_text":"所有小问共享的题干","subquestions":[{{"label":"1","text":"第一个小问"}},{{"label":"2","text":"第二个小问"}}],"options":[{{"label":"A","text":"选项内容"}}],"option_columns":2,"figure_position":"after_question","points":0,"question_bboxes":[[0,0,1000,1000]],"figure_bboxes":[[0,0,1000,1000]],"figure_captions":["图1.3"],"answer_bboxes":[[0,0,1000,1000]],"answer_figure_bboxes":[[0,0,1000,1000]],"answer_figure_captions":[""],"answer_text":"所有小问共享的答案说明","answer_subquestions":[{{"label":"1","text":"第一问答案"}},{{"label":"2","text":"第二问答案"}}],"rubric":"明确评分点"}}],"warnings":[]}}。"""
 
 
 def _page_review_prompt(
@@ -2421,6 +2526,7 @@ def _page_review_prompt(
 6. 题目引用的已知图进入 figure_bboxes；“解：”之后才出现的结果图、等效图、波形答案进入 answer_figure_bboxes。图号文字不裁入图，caption 忠实填写完整图号。
 7. “图x.x 题y.y.y的图”归题 y.y.y 的题面；“图x.x 题y.y.y的解”归题 y.y.y 的答案。若只需图(a)而图(b)是解答，只把图(a)放入题面。
 8. 忽略知识讲解、页眉页脚、章节过渡和普通公式说明。不得从最近题目复制页面上不存在的文字。
+9. section_key 和 section_title 只能使用本页真实印刷的大题/章节信息。若试卷本页没有章节标题就留空，不得复制 JSON 结构示例中的标题。
 
 最近题目（仅用于识别跨页归属）：
 {json.dumps(previous_items[-12:], ensure_ascii=False)}
@@ -2436,7 +2542,7 @@ PDF-Extract-Kit 检测区域：
 
 所有 bbox 使用当前整页图片的归一化坐标 [left,top,right,bottom]，范围 0-1000。
 仅返回与第一次相同结构的 JSON：
-{{"items":[{{"question_key":"chapter-1-example-1.3.1","section_key":"1.3","section_title":"1.3 例题解析","source_kind":"example","number":"例1.3.1","question_type":"calculation","question_text":"共享题干","subquestions":[{{"label":"1","text":"第一问"}}],"options":[],"option_columns":1,"figure_position":"after_question","points":0,"question_bboxes":[[0,0,1000,1000]],"figure_bboxes":[[0,0,1000,1000]],"figure_captions":["图1.3.1（a）"],"answer_bboxes":[[0,0,1000,1000]],"answer_figure_bboxes":[],"answer_figure_captions":[],"answer_text":"答案说明","answer_subquestions":[{{"label":"1","text":"第一问答案"}}],"rubric":""}}],"warnings":[]}}。"""
+{{"items":[{{"question_key":"document-question-1","section_key":"","section_title":"","source_kind":"question","number":"1","question_type":"calculation","question_text":"共享题干","subquestions":[{{"label":"1","text":"第一问"}}],"options":[],"option_columns":1,"figure_position":"after_question","points":0,"question_bboxes":[[0,0,1000,1000]],"figure_bboxes":[[0,0,1000,1000]],"figure_captions":["图1"],"answer_bboxes":[[0,0,1000,1000]],"answer_figure_bboxes":[],"answer_figure_captions":[],"answer_text":"答案说明","answer_subquestions":[{{"label":"1","text":"第一问答案"}}],"rubric":""}}],"warnings":[]}}。"""
 
 
 def _normalized_page_items(value: dict[str, Any], page_number: int) -> list[dict[str, Any]]:
@@ -4880,6 +4986,15 @@ def process_homework(
         if not all_items:
             raise RuntimeError("附件中没有识别到可直接布置的独立题目")
         ensure_not_cancelled()
+        is_paper_question_bank = bool(
+            is_question_bank and _is_paper_question_bank(raw, all_items)
+        )
+        if is_paper_question_bank:
+            cleaned_section_count = _sanitize_paper_question_metadata(all_items)
+            if cleaned_section_count:
+                warnings.append(
+                    f"已按试卷结构清理 {cleaned_section_count} 道题的教材章节标签"
+                )
         _normalize_document_metadata(all_items)
         warnings.extend(_prune_cross_question_subquestion_copies(all_items))
         warnings.extend(_repair_implausible_question_key_reuse(all_items))
@@ -5030,6 +5145,8 @@ def process_homework(
             })
         warnings.extend(_prune_cross_question_answer_leakage(questions))
         if is_question_bank:
+            if is_paper_question_bank:
+                _sanitize_paper_question_metadata(questions)
             ensure_not_cancelled()
             points_by_id, knowledge_warnings = _extract_question_knowledge_points(
                 client,
@@ -5056,7 +5173,7 @@ def process_homework(
             processing_warnings=list(dict.fromkeys(warnings))[:30],
             processing_progress=100,
             processing_message=f"{document_label}内容与参考答案的结构化数据已生成",
-            extraction_schema_version=5,
+            extraction_schema_version=6,
             processing_owner_pid=None,
         )
     except QuestionBankProcessingCancelled:

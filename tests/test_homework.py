@@ -473,6 +473,82 @@ def test_private_question_banks_are_scoped_and_expose_answer_readiness(tmp_path)
     assert context["reference"]["answer"] == "A"
 
 
+def test_exam_question_bank_public_view_removes_hallucinated_book_section(tmp_path):
+    store = HomeworkStore(tmp_path / "homework")
+    bank = store.create_question_bank(
+        title="电子电路基础测试题",
+        filename="2024春A卷.pdf",
+        content_type="application/pdf",
+        data=b"%PDF-1.4\n",
+    )
+    store.update_question_bank(
+        bank["id"],
+        status="ready",
+        questions=[{
+            "id": "a" * 32,
+            "sequence": 9,
+            "number": "9",
+            "section_key": "1.4",
+            "section_title": "1.4 习题解答",
+            "source_kind": "exercise",
+            "question_type": "choice",
+            "prompt": "以下属于线性失真的是______。",
+            "options": [{"label": "A", "text": "饱和失真"}],
+        }],
+    )
+
+    public = store.get_question_bank(bank["id"])
+    question = public["questions"][0]
+
+    assert public["document_kind"] == "paper"
+    assert question["section_key"] == "choice"
+    assert question["section_title"] == "选择题"
+    assert question["source_kind"] == "question"
+    assert store.get_raw_question_bank(bank["id"])["questions"][0]["section_title"] == "1.4 习题解答"
+
+
+def test_exam_question_bank_processing_persists_clean_section_metadata(tmp_path):
+    store = HomeworkStore(tmp_path / "homework")
+    bank = store.create_question_bank(
+        title="期末考试",
+        filename="电路课程试卷.png",
+        content_type="image/png",
+        data=sample_image_bytes(),
+    )
+    extraction = FakeVisionClient({
+        "items": [{
+            "question_key": "chapter-1-exercise-1.2.9",
+            "section_key": "1.4",
+            "section_title": "1.4 习题解答",
+            "source_kind": "exercise",
+            "number": "9",
+            "question_type": "choice",
+            "question_text": "以下属于线性失真的是______。",
+            "options": [
+                {"label": "A", "text": "饱和失真"},
+                {"label": "B", "text": "相位失真"},
+            ],
+            "question_bboxes": [[50, 50, 950, 600]],
+        }],
+        "warnings": [],
+    })
+
+    process_question_bank(
+        store,
+        bank["id"],
+        client=extraction,
+        layout_adapter=FakeLayoutAdapter(),
+    )
+
+    raw = store.get_raw_question_bank(bank["id"])
+    question = raw["questions"][0]
+    assert raw["extraction_schema_version"] == 6
+    assert question["section_key"] == "choice"
+    assert question["section_title"] == "选择题"
+    assert question["source_kind"] == "question"
+    assert any("已按试卷结构清理" in warning for warning in raw["processing_warnings"])
+
+
 def test_legacy_ownerless_question_bank_remains_shared(tmp_path):
     store = HomeworkStore(tmp_path / "homework")
     bank = store.create_question_bank(
@@ -2648,7 +2724,9 @@ def test_page_prompt_filters_book_explanations_and_requires_structured_subquesti
     assert "同一组 subquestions 只能归属一个印刷题号" in prompt
     assert "附件可能完全没有例题" in prompt
     assert "标题只是弱提示" in prompt
+    assert '"section_key":"","section_title":""' in prompt
     assert '"figure_captions":["图1.3"]' in prompt
+    assert "不得从 JSON 结构示例" in prompt
     assert "题目卷" not in prompt
 
 
@@ -2667,7 +2745,8 @@ def test_page_review_prompt_checks_numbers_units_and_cross_page_ownership():
     assert "同一组小问不得同时出现在两个 question_key" in prompt
     assert "不要假定附件一定有例题" in prompt
     assert "标题只作弱提示" in prompt
-    assert '"number":"例1.3.1"' in prompt
+    assert '"section_key":"","section_title":""' in prompt
+    assert '"number":"1"' in prompt
 
 
 def test_page_alignment_flags_subquestions_copied_to_the_wrong_question():

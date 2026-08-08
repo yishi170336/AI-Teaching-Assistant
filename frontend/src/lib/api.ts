@@ -609,6 +609,7 @@ export type QuestionBank = {
   knowledge_base: string
   owner_student_id?: string
   source_origin?: string
+  document_kind?: 'paper' | 'question_bank'
   recommendation_enabled?: boolean
   tagging_status?: 'idle' | 'processing' | 'ready' | 'error'
   tagging_progress?: number
