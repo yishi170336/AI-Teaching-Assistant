@@ -1093,6 +1093,24 @@ function normalizeQuizTitle(content: string) {
   )
 }
 
+function stripLeadingListOrdinals(value: string) {
+  let normalized = value.trim()
+  const ordinal = /^(?:[（(]\s*\d+\s*[）)]|\d+\s*[.、．)])\s*/
+  for (let index = 0; index < 3; index += 1) {
+    const stripped = normalized.replace(ordinal, '').trim()
+    if (stripped === normalized) break
+    normalized = stripped
+  }
+  return normalized
+}
+
+function normalizeQuizContent(content: string) {
+  return normalizeQuizTitle(content).replace(
+    /^(\s*)(\d+)([.)、．])(\s+)(?:\(\s*\2\s*\)|（\s*\2\s*）|\2\s*[.)、．])\s*/gm,
+    '$1$2$3$4',
+  )
+}
+
 function PracticeCard({
   practice,
   grading,
@@ -1107,12 +1125,19 @@ function PracticeCard({
   onGenerateSimilar: () => void
 }) {
   const [showAnswer, setShowAnswer] = useState(false)
-  const solutionSteps = practice.solution_steps?.length
+  const solutionSteps = (practice.solution_steps?.length
     ? practice.solution_steps
-    : practice.solution ? [practice.solution] : []
-  const answerItems = practice.answer_items?.length
+    : practice.solution ? [practice.solution] : [])
+    .map(stripLeadingListOrdinals)
+    .filter(Boolean)
+  const answerItems = (practice.answer_items?.length
     ? practice.answer_items
-    : practice.answer ? [practice.answer] : []
+    : practice.answer ? [practice.answer] : [])
+    .map(stripLeadingListOrdinals)
+    .filter(Boolean)
+  const commonMistakes = (practice.common_mistakes || [])
+    .map(stripLeadingListOrdinals)
+    .filter(Boolean)
 
   return (
     <section className={`practice-card ${grading ? 'graded' : ''}`} onClick={(event) => event.stopPropagation()}>
@@ -1184,10 +1209,10 @@ function PracticeCard({
               ? answerItems.map((answer, index) => <MathMarkdown key={`${index}-${answer}`} content={`${index + 1}. ${answer}`} />)
               : <p>本题暂无标准答案。</p>}
           </div>
-          {practice.common_mistakes?.length > 0 && (
+          {commonMistakes.length > 0 && (
             <div>
               <span>易错提醒</span>
-              <ul>{practice.common_mistakes.map((item) => <li key={item}><InlineMath content={item} /></li>)}</ul>
+              <ul>{commonMistakes.map((item) => <li key={item}><InlineMath content={item} /></li>)}</ul>
             </div>
           )}
         </div>
@@ -1237,10 +1262,10 @@ function mistakeDraftForAssistant(messages: ChatMessage[], index: number): Mista
     question = message.practice.question
     answer = [
       '### 解题步骤',
-      ...message.practice.solution_steps.map((item, itemIndex) => `${itemIndex + 1}. ${item}`),
+      ...message.practice.solution_steps.map((item, itemIndex) => `${itemIndex + 1}. ${stripLeadingListOrdinals(item)}`),
       '',
       '### 标准答案',
-      ...message.practice.answer_items.map((item, itemIndex) => `${itemIndex + 1}. ${item}`),
+      ...message.practice.answer_items.map((item, itemIndex) => `${itemIndex + 1}. ${stripLeadingListOrdinals(item)}`),
     ].join('\n')
   }
   else if (agent === '出题 Agent') {
@@ -1969,7 +1994,7 @@ function Conversation({
                     onMouseUp={() => window.setTimeout(captureAnnotationSelection, 0)}
                     onTouchEnd={() => window.setTimeout(captureAnnotationSelection, 0)}
                   >
-                    <MathMarkdown content={normalizeQuizTitle(message.content)} />
+                    <MathMarkdown content={normalizeQuizContent(message.content)} />
                   </div>
                 )
                 : <div className="user-message-content"><MathMarkdown content={message.content} /></div>

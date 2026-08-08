@@ -17,6 +17,7 @@ from backend.app.agents.workflow import (
     _quiz_family_matches,
     _recent_generated_questions,
     _source_context,
+    _strip_list_ordinal,
     _student_answer_surface_issues,
 )
 
@@ -1670,6 +1671,52 @@ def test_quiz_rendering_hides_solution_and_returns_structured_practice():
     assert rendered["practice"]["solution_steps"]
     assert rendered["practice"]["verification"]["passed"] is True
     assert rendered["sources"] == []
+
+
+def test_quiz_rendering_removes_model_supplied_item_ordinals():
+    engine = object.__new__(CircuitTutorEngine)
+    draft = {
+        "question_type": "numeric",
+        "question": "分析反馈放大器。",
+        "question_stem": "分析反馈放大器。",
+        "question_parts": [
+            "(1) 判断反馈类型。",
+            "2. （2）计算反馈系数。",
+        ],
+        "knowledge_point": "负反馈",
+        "difficulty": "适中",
+        "solution": "先判断组态，再计算。",
+        "solution_steps": ["1. 判断反馈组态。", "（2）计算反馈系数。"],
+        "answer": "电压串联负反馈；反馈系数为 0.2。",
+        "answer_items": ["（1）电压串联负反馈。", "2. 反馈系数为 0.2。"],
+        "common_mistakes": ["1、混淆输入端连接。"],
+    }
+
+    rendered = asyncio.run(engine._render_quiz({
+        "draft": draft,
+        "verification": {"passed": True, "method": "logic"},
+        "history": [],
+        "quiz_type": "numeric",
+    }))
+
+    assert "1. 判断反馈类型。" in rendered["response"]
+    assert "2. 计算反馈系数。" in rendered["response"]
+    assert "1. (1)" not in rendered["response"]
+    assert "2. （2）" not in rendered["response"]
+    assert rendered["practice"]["question_parts"] == [
+        "判断反馈类型。",
+        "计算反馈系数。",
+    ]
+    assert rendered["practice"]["solution_steps"] == [
+        "判断反馈组态。",
+        "计算反馈系数。",
+    ]
+    assert rendered["practice"]["answer_items"] == [
+        "电压串联负反馈。",
+        "反馈系数为 0.2。",
+    ]
+    assert rendered["practice"]["common_mistakes"] == ["混淆输入端连接。"]
+    assert _strip_list_ordinal("1. （1）答案") == "答案"
 
 
 def test_opamp_waveform_fallback_uses_one_consistent_threshold_and_period_model():

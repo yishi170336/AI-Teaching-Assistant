@@ -1386,16 +1386,33 @@ def _student_answer_surface_issues(
     return list(dict.fromkeys(issues))
 
 
+_LIST_ORDINAL_PREFIX = re.compile(
+    r"^\s*(?:[（(]\s*\d+\s*[）)]|\d+\s*[.、．)])\s*"
+)
+
+
+def _strip_list_ordinal(value: Any) -> str:
+    """Remove model-supplied numbering from an item rendered by a numbered list."""
+
+    normalized = str(value).strip()
+    for _ in range(3):
+        stripped = _LIST_ORDINAL_PREFIX.sub("", normalized, count=1).strip()
+        if stripped == normalized:
+            break
+        normalized = stripped
+    return normalized
+
+
 def _draft_items(value: Any) -> list[str]:
     if isinstance(value, list):
         items: list[str] = []
         for entry in value:
             if isinstance(entry, dict):
-                title = str(entry.get("title", "")).strip()
+                title = _strip_list_ordinal(entry.get("title", ""))
                 content = str(entry.get("content", "")).strip()
                 rendered = f"**{title}**\n\n{content}" if title and content else title or content
             else:
-                rendered = str(entry).strip()
+                rendered = _strip_list_ordinal(entry)
             if rendered:
                 items.append(rendered)
         return items
@@ -4438,6 +4455,7 @@ class CircuitTutorEngine:
                 "question 是完整题干（以「如图所示电路」开头）；question_stem 不含分项设问；\n"
                 "question_parts 是分项设问的 JSON 字符串数组；solution_steps 至少 3 项；\n"
                 "answer_items 与 question_parts 一一对应；common_mistakes 至少 1 项。\n"
+                "所有数组元素只写正文，禁止自带 1.、(1)、（1）等序号，序号由系统统一生成。\n"
                 f"{type_contract}\n"
                 "solution 中公式用 $...$ 或 $$...$$。\n\n"
                 f"目标知识点：{state['knowledge_point']}\n"
@@ -4469,7 +4487,9 @@ class CircuitTutorEngine:
             "topology_signature 必须简洁复述新题实际使用的节点、串并联与支路关系；component_types 是元件类型数组。"
             "question 必须是完整题目；question_stem 不含分项设问；"
             "question_parts、solution_steps、answer_items、common_mistakes 必须是 JSON 字符串数组。"
-            "题干排布要仿照参考原题：先交代电路与拓扑，再列已知量，最后用（1）（2）分项列出全部待求量。"
+            "所有数组元素只写正文，禁止自带 1.、(1)、（1）等序号，序号由系统统一生成。"
+            "题干排布要仿照参考原题：先交代电路与拓扑，再列已知量，最后通过 question_parts 分项列出全部待求量；"
+            "显示层会生成（1）（2）等序号，数组项本身不要写序号。"
             "solution_steps 至少 3 项，必须覆盖公式依据、数值代入、单位与结果校验，并与本题实际结构相符；"
             "answer_items 必须与 question_parts 一一对应，不能挤在一个长段落中。"
             f"question_type 必须为 {quiz_type}。"
