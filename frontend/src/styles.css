@@ -1144,6 +1144,12 @@ button { color: inherit; }
 .question-bank-picker > section > header strong { color: #315955; font-size: 10px; }
 .question-bank-picker > section > header > span { color: #6f8985; font-size: 8px; }
 .question-bank-picker-list { display: grid; gap: 7px; padding: 9px; }
+.question-bank-picker-list.is-chaptered { gap: 11px; }
+.question-bank-picker-chapter { overflow: hidden; background: #f3f8f6; border: 1px solid #dce8e4; border-radius: 11px; }
+.question-bank-picker-chapter > header { display: flex; align-items: center; justify-content: space-between; padding: 8px 11px; background: #e8f3ef; border-bottom: 1px solid #d8e7e3; }
+.question-bank-picker-chapter > header strong { color: #28675f; font-size: 9px; }
+.question-bank-picker-chapter > header span { color: #78908b; font-size: 8px; }
+.question-bank-picker-chapter > div { display: grid; gap: 7px; padding: 8px; }
 .question-bank-picker-list article { min-width: 0; display: grid; grid-template-columns: 22px minmax(0, 1fr) 92px; align-items: center; gap: 9px; padding: 10px; cursor: pointer; background: #fff; border: 1px solid #e1eae8; border-radius: 10px; transition: border-color .15s ease, background .15s ease; }
 .question-bank-picker-list article.selected { background: #f0f9f6; border-color: #83bdb2; box-shadow: inset 3px 0 #238479; }
 .question-bank-picker-list article > div { min-width: 0; }
@@ -1156,6 +1162,12 @@ button { color: inherit; }
 .question-bank-detail-body { padding: 17px; }
 .question-bank-question-manager, .question-bank-paper-preview { padding: 18px; background: #fff; border: 1px solid #dce6e3; border-radius: 14px; }
 .question-bank-manage-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 13px; }
+.question-bank-manage-groups { display: grid; gap: 14px; margin-top: 13px; }
+.question-bank-manage-group { overflow: hidden; background: #f7faf9; border: 1px solid #dce8e4; border-radius: 12px; }
+.question-bank-manage-group > header { display: flex; align-items: center; justify-content: space-between; padding: 10px 13px; background: #eaf4f1; border-bottom: 1px solid #d8e7e3; }
+.question-bank-manage-group > header strong { color: #28675f; font-size: 10px; }
+.question-bank-manage-group > header span { color: #78908b; font-size: 8px; }
+.question-bank-manage-group > .question-bank-manage-list { margin-top: 0; padding: 9px; }
 .question-bank-manage-list article { min-width: 0; display: grid; grid-template-columns: 31px minmax(0, 1fr) auto; align-items: start; gap: 9px; padding: 11px; background: #f7faf9; border: 1px solid #e1eae7; border-radius: 10px; }
 .question-bank-manage-number { display: grid; place-items: center; width: 29px; height: 29px; color: #fff; background: #237c73; border-radius: 8px; font-size: 9px; font-weight: 800; }
 .question-bank-manage-copy { min-width: 0; }
@@ -1341,6 +1353,12 @@ button { color: inherit; }
 .student-bank-detail-header > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding-right: 22px; }
 .student-bank-question-list { display: grid; gap: 13px; max-height: min(720px, calc(100vh - 220px)); padding: 17px; overflow-y: auto; }
 .student-bank-question-list.is-loading { opacity: .48; pointer-events: none; }
+.student-bank-chapter-group { overflow: hidden; background: #edf4f2; border: 1px solid #d5e4e0; border-radius: 15px; }
+.student-bank-chapter-heading { position: sticky; z-index: 2; top: -17px; display: flex; align-items: center; justify-content: space-between; padding: 12px 15px; background: linear-gradient(135deg, #e2f1ed, #edf6f3); border-bottom: 1px solid #d2e4df; }
+.student-bank-chapter-heading > div { display: flex; align-items: center; gap: 7px; color: #24746c; }
+.student-bank-chapter-heading strong { color: #285b56; font-size: 12px; }
+.student-bank-chapter-heading span { color: #718b86; font-size: 8px; }
+.student-bank-chapter-questions { display: grid; gap: 11px; padding: 11px; }
 .student-bank-detail-loading { min-height: 260px; display: flex; align-items: center; justify-content: center; gap: 9px; color: #2b776f; }
 .student-bank-detail-loading strong { font-size: 10px; }
 .student-bank-pagination { display: flex; justify-content: center; padding: 13px 17px 18px; background: #fff; border-top: 1px solid #e1eae7; }

@@ -159,6 +159,7 @@ import {
   uploadKnowledgeFile,
   rebuildKnowledgeBase,
 } from '../lib/api'
+import { groupQuestionBankQuestions } from '../lib/questionBankGrouping'
 import { CHAT_MODEL, CHAT_MODEL_PROVIDER, ChatMessage, ChatMode, useChatStore } from '../store/chatStore'
 
 const { TextArea } = Input
@@ -3000,6 +3001,11 @@ function QuestionBankView({
   const selectedBank = selectedBankDetail?.id === selectedBankId
     ? { ...(selectedBankSummary || selectedBankDetail), ...selectedBankDetail }
     : selectedBankSummary
+  const questionLayout = groupQuestionBankQuestions(
+    selectedBank?.questions || [],
+    selectedBank?.source_origin,
+    `${selectedBank?.title || ''} ${selectedBank?.source_name || ''}`,
+  )
 
   const loadBanks = useCallback(async (withSpinner = false) => {
     if (withSpinner) setLoading(true)
@@ -3333,7 +3339,25 @@ function QuestionBankView({
             ) : selectedBank.status === 'ready' && selectedBank.questions.length ? (
               <>
                 <div className={`student-bank-question-list ${detailLoading ? 'is-loading' : ''}`}>
-                  {selectedBank.questions.map((question) => (
+                  {questionLayout.grouped ? questionLayout.groups.map((group) => (
+                    <section className="student-bank-chapter-group" key={group.key}>
+                      <header className="student-bank-chapter-heading">
+                        <div><BookOpen size={16} /><strong>{group.title}</strong></div>
+                        <span>{group.questions.length} 道题</span>
+                      </header>
+                      <div className="student-bank-chapter-questions">
+                        {group.questions.map((question) => (
+                          <QuestionBankQuestionCard
+                            key={question.id}
+                            question={question}
+                            deleting={deletingQuestionId === question.id}
+                            onDelete={() => void removeQuestion(selectedBank.id, question.id)}
+                            onAsk={() => onAskQuestion(selectedBank, question)}
+                          />
+                        ))}
+                      </div>
+                    </section>
+                  )) : selectedBank.questions.map((question) => (
                     <QuestionBankQuestionCard
                       key={question.id}
                       question={question}

@@ -56,6 +56,7 @@ import {
 } from '../lib/api'
 import HomeworkPaper from '../components/HomeworkPaper'
 import MathMarkdown, { InlineMath } from '../components/MathMarkdown'
+import { groupQuestionBankQuestions } from '../lib/questionBankGrouping'
 
 const { Dragger } = Upload
 const { TextArea } = Input
@@ -119,14 +120,51 @@ function questionTypeLabel(value: string) {
 function QuestionManagementList({
   questions,
   deletingQuestionId = '',
+  groupByChapter = false,
+  sourceOrigin = '',
+  bankLabel = '',
   onEditQuestion,
   onDeleteQuestion,
 }: {
   questions: HomeworkQuestion[]
   deletingQuestionId?: string
+  groupByChapter?: boolean
+  sourceOrigin?: string
+  bankLabel?: string
   onEditQuestion: (question: HomeworkQuestion) => void
   onDeleteQuestion?: (questionId: string) => void
 }) {
+  const questionLayout = groupByChapter
+    ? groupQuestionBankQuestions(questions, sourceOrigin, bankLabel)
+    : { grouped: false, groups: [{ key: 'all-questions', title: '', questions }] }
+  const renderQuestions = (items: HomeworkQuestion[]) => items.map((question) => (
+    <article key={question.id}>
+      <div className="question-bank-manage-number">{question.number}</div>
+      <div className="question-bank-manage-copy">
+        <span>
+          {question.source_kind === 'example' ? '例题' : question.source_kind === 'exercise' ? '习题' : '题目'}
+          {' · '}{question.section_title || '题目'} · {questionTypeLabel(question.question_type)}
+        </span>
+        <MathMarkdown content={question.prompt || '未识别到题干'} />
+        <small>{question.figures?.length || 0} 张题图 · {question.answer_figures?.length || 0} 张答案图 · {question.answer || question.answer_subquestions?.length ? '含参考答案' : '未识别到答案'}</small>
+      </div>
+      <div className="question-manage-actions">
+        <Button type="text" icon={<Pencil size={14} />} onClick={() => onEditQuestion(question)}>编辑</Button>
+        {onDeleteQuestion && (
+          <Popconfirm
+            title="从题库中删除这道题？"
+            description="只影响题库，已经布置的作业不会受影响。"
+            okText="删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+            onConfirm={() => onDeleteQuestion(question.id)}
+          >
+            <Button danger type="text" icon={<Trash2 size={14} />} loading={deletingQuestionId === question.id} />
+          </Popconfirm>
+        )}
+      </div>
+    </article>
+  ))
   return (
     <section className="question-bank-question-manager">
       <header className="teacher-section-heading">
@@ -134,36 +172,16 @@ function QuestionManagementList({
         <small>可修正文题、答案、图注，或补充和替换图片</small>
       </header>
       {questions.length ? (
-        <div className="question-bank-manage-list">
-          {questions.map((question) => (
-            <article key={question.id}>
-              <div className="question-bank-manage-number">{question.number}</div>
-              <div className="question-bank-manage-copy">
-                <span>
-                  {question.source_kind === 'example' ? '例题' : question.source_kind === 'exercise' ? '习题' : '题目'}
-                  {' · '}{question.section_title || '题目'} · {questionTypeLabel(question.question_type)}
-                </span>
-                <MathMarkdown content={question.prompt || '未识别到题干'} />
-                <small>{question.figures?.length || 0} 张题图 · {question.answer_figures?.length || 0} 张答案图 · {question.answer || question.answer_subquestions?.length ? '含参考答案' : '未识别到答案'}</small>
-              </div>
-              <div className="question-manage-actions">
-                <Button type="text" icon={<Pencil size={14} />} onClick={() => onEditQuestion(question)}>编辑</Button>
-                {onDeleteQuestion && (
-                  <Popconfirm
-                    title="从题库中删除这道题？"
-                    description="只影响题库，已经布置的作业不会受影响。"
-                    okText="删除"
-                    cancelText="取消"
-                    okButtonProps={{ danger: true }}
-                    onConfirm={() => onDeleteQuestion(question.id)}
-                  >
-                    <Button danger type="text" icon={<Trash2 size={14} />} loading={deletingQuestionId === question.id} />
-                  </Popconfirm>
-                )}
-              </div>
-            </article>
-          ))}
-        </div>
+        questionLayout.grouped ? (
+          <div className="question-bank-manage-groups">
+            {questionLayout.groups.map((group) => (
+              <section className="question-bank-manage-group" key={group.key}>
+                <header><strong>{group.title}</strong><span>{group.questions.length} 道题</span></header>
+                <div className="question-bank-manage-list">{renderQuestions(group.questions)}</div>
+              </section>
+            ))}
+          </div>
+        ) : <div className="question-bank-manage-list">{renderQuestions(questions)}</div>
       ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无题目" />}
     </section>
   )
@@ -367,6 +385,9 @@ function QuestionBankPreview({
       <QuestionManagementList
         questions={bank.questions}
         deletingQuestionId={deletingQuestionId}
+        groupByChapter
+        sourceOrigin={bank.source_origin}
+        bankLabel={`${bank.title} ${bank.source_name}`}
         onEditQuestion={onEditQuestion}
         onDeleteQuestion={onDeleteQuestion}
       />
@@ -1134,6 +1155,31 @@ export default function TeacherPage() {
               ) : questionBanks.filter((bank) => bank.status === 'ready' && bank.questions.length > 0).map((bank) => {
                 const bankKeys = bank.questions.map((question) => bankQuestionKey(bank.id, question.id))
                 const selectedCount = bankKeys.filter((key) => selectedBankQuestions.includes(key)).length
+                const questionLayout = groupQuestionBankQuestions(
+                  bank.questions,
+                  bank.source_origin,
+                  `${bank.title} ${bank.source_name}`,
+                )
+                const renderQuestions = (questions: HomeworkQuestion[]) => questions.map((question) => {
+                  const key = bankQuestionKey(bank.id, question.id)
+                  const figure = question.figures?.[0]
+                  return (
+                    <article className={selectedBankQuestions.includes(key) ? 'selected' : ''} key={question.id}>
+                      <Checkbox
+                        checked={selectedBankQuestions.includes(key)}
+                        onChange={(event) => setSelectedBankQuestions((keys) => event.target.checked
+                          ? [...keys, key]
+                          : keys.filter((value) => value !== key))}
+                      />
+                      <div>
+                        <span>{question.section_title || '题目'} · 第 {question.number} 题</span>
+                        <MathMarkdown content={question.prompt || '未识别到题干'} />
+                        <small>{question.options?.length ? `${question.options.length} 个选项 · ` : ''}{question.subquestions?.length ? `${question.subquestions.length} 个小问 · ` : ''}{question.answer || question.answer_figures?.length ? '含参考答案' : '暂无参考答案'}</small>
+                      </div>
+                      {figure && <img src={figure.url} alt={figure.caption || `第 ${question.number} 题题图`} />}
+                    </article>
+                  )
+                })
                 return (
                   <section key={bank.id}>
                     <header>
@@ -1148,27 +1194,13 @@ export default function TeacherPage() {
                       </Checkbox>
                       <span>已选 {selectedCount}/{bank.questions.length}</span>
                     </header>
-                    <div className="question-bank-picker-list">
-                      {bank.questions.map((question) => {
-                        const key = bankQuestionKey(bank.id, question.id)
-                        const figure = question.figures?.[0]
-                        return (
-                          <article className={selectedBankQuestions.includes(key) ? 'selected' : ''} key={question.id}>
-                            <Checkbox
-                              checked={selectedBankQuestions.includes(key)}
-                              onChange={(event) => setSelectedBankQuestions((keys) => event.target.checked
-                                ? [...keys, key]
-                                : keys.filter((value) => value !== key))}
-                            />
-                            <div>
-                              <span>{question.section_title || '题目'} · 第 {question.number} 题</span>
-                              <MathMarkdown content={question.prompt || '未识别到题干'} />
-                              <small>{question.options?.length ? `${question.options.length} 个选项 · ` : ''}{question.subquestions?.length ? `${question.subquestions.length} 个小问 · ` : ''}{question.answer || question.answer_figures?.length ? '含参考答案' : '暂无参考答案'}</small>
-                            </div>
-                            {figure && <img src={figure.url} alt={figure.caption || `第 ${question.number} 题题图`} />}
-                          </article>
-                        )
-                      })}
+                    <div className={`question-bank-picker-list ${questionLayout.grouped ? 'is-chaptered' : ''}`}>
+                      {questionLayout.grouped ? questionLayout.groups.map((group) => (
+                        <section className="question-bank-picker-chapter" key={group.key}>
+                          <header><strong>{group.title}</strong><span>{group.questions.length} 道题</span></header>
+                          <div>{renderQuestions(group.questions)}</div>
+                        </section>
+                      )) : renderQuestions(bank.questions)}
                     </div>
                   </section>
                 )
