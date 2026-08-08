@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.app.config import settings
+from backend.app.rag.section_titles import chapter_number, numbered_section_parts
 from backend.app.services.homework import HomeworkStore
 
 
@@ -76,6 +77,10 @@ TASK_KEYWORDS = {
     "参数设计": ("设计", "选择参数", "确定参数", "满足指标"),
     "故障与误差分析": ("故障", "误差", "失真", "异常", "改进"),
 }
+_PAPER_BANK_PATTERN = re.compile(
+    r"(?:测试题|考试|测验|模拟卷|期中|期末|[a-zＡ-Ｚ]卷)",
+    re.IGNORECASE,
+)
 
 
 def _now() -> str:
@@ -107,6 +112,187 @@ def _tokens(value: str) -> list[str]:
     for chunk in chinese:
         ngrams.extend(chunk[index:index + 2] for index in range(max(1, len(chunk) - 1)))
     return latin + ngrams
+
+
+def _chapter_key(value: Any) -> str:
+    """Return a stable numeric chapter key shared by KB chunks and questions."""
+
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    number = chapter_number(text)
+    if number is not None:
+        return f"chapter-{number}"
+    section_parts, _title = numbered_section_parts(text)
+    if section_parts:
+        return f"chapter-{section_parts[0]}"
+    match = re.search(r"(?:^|[^a-z])chapter[-_\s]*(\d{1,2})(?:$|[^\d])", text, re.I)
+    if match:
+        return f"chapter-{int(match.group(1))}"
+    numeric = re.match(r"^\s*(\d{1,2})(?:\s*[.．]\s*\d{1,2})+", text)
+    if numeric:
+        return f"chapter-{int(numeric.group(1))}"
+    return ""
+
+
+def _normalized_chapter_scope(value: Any) -> list[dict[str, Any]]:
+    scope = value if isinstance(value, list) else []
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in scope:
+        item = raw if isinstance(raw, dict) else {"chapter": raw}
+        chapter = str(item.get("chapter") or item.get("title") or "").strip()[:160]
+        key = str(item.get("chapter_key") or "").strip() or _chapter_key(chapter)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        try:
+            score = max(0.0, min(1.0, float(item.get("score") or 0.0)))
+        except (TypeError, ValueError):
+            score = 0.0
+        try:
+            evidence_count = max(0, int(item.get("evidence_count") or 0))
+        except (TypeError, ValueError):
+            evidence_count = 0
+        relevance = str(item.get("relevance") or "weak").strip().lower()
+        normalized.append({
+            "chapter_key": key,
+            "chapter": chapter or key,
+            "relevance": "strong" if relevance == "strong" else "weak",
+            "score": round(score, 4),
+            "evidence_count": evidence_count,
+            "sections": _clean_list(item.get("sections"), 4),
+        })
+    return normalized
+
+
+def select_relevant_chapters(
+    hits: list[dict[str, Any]],
+    *,
+    explicit_chapter: str = "",
+    max_strong: int = 2,
+) -> list[dict[str, Any]]:
+    """Aggregate KB hits into a narrow chapter scope with one weak fallback.
+
+    At most two strong chapters are kept.  One weaker but still plausible
+    chapter may be added so cross-chapter concepts are not lost, while low
+    confidence tail chapters never expand the question search indiscriminately.
+    """
+
+    explicit = str(explicit_chapter or "").strip()
+    if explicit and _chapter_key(explicit):
+        return [{
+            "chapter_key": _chapter_key(explicit),
+            "chapter": explicit[:160],
+            "relevance": "strong",
+            "score": 1.0,
+            "evidence_count": 0,
+            "sections": [],
+        }]
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        chapter = str(hit.get("chapter") or "").strip()
+        section = str(hit.get("section") or "").strip()
+        key = _chapter_key(chapter) or _chapter_key(section)
+        if not key:
+            continue
+        chapter_label = chapter if _chapter_key(chapter) else section
+        try:
+            score = max(0.0, min(1.0, float(hit.get("score") or 0.0)))
+        except (TypeError, ValueError):
+            score = 0.0
+        item = grouped.setdefault(key, {
+            "chapter_key": key,
+            "chapter": chapter_label[:160],
+            "best_score": 0.0,
+            "evidence_count": 0,
+            "sections": [],
+        })
+        if score > item["best_score"]:
+            item["best_score"] = score
+            item["chapter"] = chapter_label[:160]
+        item["evidence_count"] += 1
+        if section and section not in item["sections"]:
+            item["sections"].append(section[:160])
+
+    ranked = sorted(
+        grouped.values(),
+        key=lambda item: (item["best_score"], item["evidence_count"]),
+        reverse=True,
+    )
+    if not ranked:
+        return []
+    top_score = float(ranked[0]["best_score"])
+    if top_score <= 0:
+        ranked = ranked[:1]
+    strong_cutoff = max(0.18, top_score * 0.72)
+    weak_cutoff = max(0.10, top_score * 0.45)
+    strong = [item for item in ranked if item["best_score"] >= strong_cutoff][
+        : max(1, max_strong)
+    ]
+    if not strong:
+        strong = ranked[:1]
+    selected_keys = {item["chapter_key"] for item in strong}
+    weak = next(
+        (
+            item for item in ranked
+            if item["chapter_key"] not in selected_keys
+            and item["best_score"] >= weak_cutoff
+        ),
+        None,
+    )
+    result = [
+        {
+            "chapter_key": item["chapter_key"],
+            "chapter": item["chapter"],
+            "relevance": "strong",
+            "score": round(float(item["best_score"]), 4),
+            "evidence_count": item["evidence_count"],
+            "sections": item["sections"][:4],
+        }
+        for item in strong
+    ]
+    if weak is not None:
+        result.append({
+            "chapter_key": weak["chapter_key"],
+            "chapter": weak["chapter"],
+            "relevance": "weak",
+            "score": round(float(weak["best_score"]), 4),
+            "evidence_count": weak["evidence_count"],
+            "sections": weak["sections"][:4],
+        })
+    return result
+
+
+def _question_chapter_key(
+    question: dict[str, Any], profile: dict[str, Any] | None = None
+) -> str:
+    profile = profile if isinstance(profile, dict) else question.get("retrieval_profile")
+    profile = profile if isinstance(profile, dict) else {}
+    location = question.get("location")
+    location = location if isinstance(location, dict) else {}
+    for value in (
+        profile.get("chapter"),
+        profile.get("section"),
+        location.get("chapter"),
+        question.get("section_title"),
+        question.get("section_key"),
+    ):
+        key = _chapter_key(value)
+        if key:
+            return key
+    return ""
+
+
+def _profile_matches_chapter(profile: dict[str, Any], requested: str) -> bool:
+    requested_key = _chapter_key(requested)
+    profile_key = _chapter_key(profile.get("chapter")) or _chapter_key(profile.get("section"))
+    if requested_key and profile_key:
+        return requested_key == profile_key
+    return bool(requested and requested in str(profile.get("chapter", "")))
 
 
 def default_recommendation_enabled(bank: dict[str, Any]) -> bool:
@@ -234,6 +420,51 @@ class QuestionRecommendationService:
         temporary = self.history_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(self.history_path)
+
+    def _recommendation_banks(
+        self, *, student_id: str, knowledge_base: str = ""
+    ) -> list[dict[str, Any]]:
+        banks = self.homework_store.list_recommendation_banks(student_id=student_id)
+        target = str(knowledge_base or "").strip()
+        if not target:
+            return banks
+        return [
+            bank for bank in banks
+            if str(bank.get("knowledge_base") or "default") == target
+        ]
+
+    @staticmethod
+    def _scoped_questions(
+        bank: dict[str, Any],
+        questions: list[dict[str, Any]],
+        chapter_scope: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not chapter_scope:
+            return questions
+        bank_label = " ".join((
+            str(bank.get("title") or ""),
+            str(bank.get("source_name") or ""),
+        ))
+        if (
+            str(bank.get("source_origin") or "").strip().lower() == "photo_answer"
+            or _PAPER_BANK_PATTERN.search(bank_label)
+        ):
+            return questions
+        available_keys = {
+            key for question in questions
+            if (key := _question_chapter_key(question))
+        }
+        if not available_keys:
+            # Papers and legacy flat banks have no trustworthy chapter boundary.
+            return questions
+        scope_keys = {
+            str(item.get("chapter_key") or "") for item in chapter_scope
+            if str(item.get("chapter_key") or "")
+        }
+        return [
+            question for question in questions
+            if _question_chapter_key(question) in scope_keys
+        ]
 
     def metadata(self, *, student_id: str) -> dict[str, Any]:
         """Return server-authoritative inventory statistics for accessible banks."""
@@ -367,7 +598,12 @@ class QuestionRecommendationService:
         difficulty = 1.0 if requirements.get("difficulty") and requirements["difficulty"] == profile.get("difficulty") else 0.0
         skills = set(requirements.get("skills", []))
         skill = len(skills.intersection(profile.get("skills", []))) / max(1, len(skills))
-        chapter = 1.0 if requirements.get("chapter") and requirements["chapter"] in str(profile.get("chapter", "")) else 0.0
+        chapter = (
+            1.0
+            if requirements.get("chapter")
+            and _profile_matches_chapter(profile, str(requirements["chapter"]))
+            else 0.0
+        )
         requested_components = set(requirements.get("components", []))
         component = len(requested_components.intersection(profile.get("components", []))) / max(1, len(requested_components))
         requested_methods = set(requirements.get("methods", []))
@@ -510,6 +746,8 @@ class QuestionRecommendationService:
         inherited_requirements: dict[str, Any] | None = None,
         agent_analysis: dict[str, Any] | None = None,
         excluded_question_ids: set[str] | None = None,
+        knowledge_base: str = "",
+        chapter_scope: list[dict[str, Any]] | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
         # `query` may include the full bound source question for semantic
@@ -523,12 +761,19 @@ class QuestionRecommendationService:
         sanitized_analysis = self._sanitize_agent_analysis(agent_analysis)
         requirements = self._apply_agent_requirements(requirements, sanitized_analysis)
         requirements["agent_analysis"] = sanitized_analysis
+        normalized_scope = _normalized_chapter_scope(chapter_scope)
+        requirements["chapter_scope"] = normalized_scope
         excluded = {str(item) for item in (excluded_question_ids or set()) if str(item)}
         candidates: list[dict[str, Any]] = []
-        for bank in self.homework_store.list_recommendation_banks(student_id=student_id):
-            for question in bank.get("questions", []):
-                if not isinstance(question, dict):
-                    continue
+        scope_by_key = {item["chapter_key"]: item for item in normalized_scope}
+        for bank in self._recommendation_banks(
+            student_id=student_id, knowledge_base=knowledge_base
+        ):
+            questions = [
+                question for question in bank.get("questions", [])
+                if isinstance(question, dict)
+            ]
+            for question in self._scoped_questions(bank, questions, normalized_scope):
                 if str(question.get("id", "")) in excluded:
                     continue
                 readiness = self.homework_store._question_answer_readiness(
@@ -540,6 +785,7 @@ class QuestionRecommendationService:
                     continue
                 profile = build_retrieval_profile(question)
                 score, score_components = self._score(query, requirements, question, profile)
+                scope_match = scope_by_key.get(_question_chapter_key(question, profile), {})
                 candidates.append({
                     "question_id": str(question.get("id", "")),
                     "question_bank_id": str(bank.get("id", "")),
@@ -561,6 +807,7 @@ class QuestionRecommendationService:
                     "tasks": profile.get("tasks", []),
                     "has_figure": bool(question.get("figures")),
                     "reference_available": True,
+                    "chapter_relevance": scope_match.get("relevance", ""),
                     "retrieval_score": round(score, 5),
                     "score_components": score_components,
                 })
@@ -583,6 +830,8 @@ class QuestionRecommendationService:
         agent_evidence: list[str] | None = None,
         allowed_question_ids: set[str] | None = None,
         excluded_question_ids: set[str] | None = None,
+        knowledge_base: str = "",
+        chapter_scope: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         requirements = self._parse_query(
             constraint_query if constraint_query is not None else query,
@@ -591,13 +840,27 @@ class QuestionRecommendationService:
         sanitized_analysis = self._sanitize_agent_analysis(agent_analysis)
         requirements = self._apply_agent_requirements(requirements, sanitized_analysis)
         requirements["agent_analysis"] = sanitized_analysis
+        normalized_scope = _normalized_chapter_scope(chapter_scope)
+        requirements["chapter_scope"] = normalized_scope
         excluded = {str(item) for item in (excluded_question_ids or set()) if str(item)}
+        allowed = (
+            {str(item) for item in allowed_question_ids if str(item)}
+            if allowed_question_ids is not None
+            else None
+        )
         candidates: list[dict[str, Any]] = []
-        for bank in self.homework_store.list_recommendation_banks(student_id=student_id):
-            for question in bank.get("questions", []):
-                if not isinstance(question, dict):
-                    continue
-                if str(question.get("id", "")) in excluded:
+        for bank in self._recommendation_banks(
+            student_id=student_id, knowledge_base=knowledge_base
+        ):
+            questions = [
+                question for question in bank.get("questions", [])
+                if isinstance(question, dict)
+            ]
+            for question in self._scoped_questions(bank, questions, normalized_scope):
+                question_id = str(question.get("id", ""))
+                if question_id in excluded or (
+                    allowed is not None and question_id not in allowed
+                ):
                     continue
                 readiness = self.homework_store._question_answer_readiness(
                     question, list(bank.get("processing_warnings", []))
@@ -619,7 +882,7 @@ class QuestionRecommendationService:
             candidates = [
                 item
                 for item in candidates
-                if str(item["question"].get("id", "")) in allowed_question_ids
+                if str(item["question"].get("id", "")) in allowed
             ]
         if not candidates:
             if allowed_question_ids is not None:
@@ -685,7 +948,7 @@ class QuestionRecommendationService:
                 )
             chapter_ok = (
                 not requested_chapter
-                or requested_chapter in str(profile.get("chapter", ""))
+                or _profile_matches_chapter(profile, requested_chapter)
             )
             figure_ok = (
                 requested_figure is None
@@ -743,7 +1006,10 @@ class QuestionRecommendationService:
             item for item in candidates
             if (
                 (not requested_type or item["profile"].get("question_type") == requested_type)
-                and (not requested_chapter or requested_chapter in str(item["profile"].get("chapter", "")))
+                and (
+                    not requested_chapter
+                    or _profile_matches_chapter(item["profile"], requested_chapter)
+                )
                 and (
                     requested_figure is None
                     or bool(item["question"].get("figures")) is bool(requested_figure)
@@ -828,7 +1094,9 @@ class QuestionRecommendationService:
             ):
                 if requested_values and not requested_values.issubset(set(selected_profile.get(field, []))):
                     relaxed_conditions.append(field)
-            if requested_chapter and requested_chapter not in str(selected_profile.get("chapter", "")):
+            if requested_chapter and not _profile_matches_chapter(
+                selected_profile, requested_chapter
+            ):
                 relaxed_conditions.append("chapter")
             if requested_figure is not None and bool(question.get("figures")) is not bool(requested_figure):
                 relaxed_conditions.append("requires_figure")
@@ -846,6 +1114,13 @@ class QuestionRecommendationService:
             if item in profile.get("knowledge_points", [])
         ] or profile.get("knowledge_points", [])[:3]
         evidence: list[str] = []
+        if normalized_scope:
+            evidence.append(
+                "检索章节：" + "、".join(
+                    str(item.get("chapter") or item.get("chapter_key"))
+                    for item in normalized_scope
+                )
+            )
         if matched:
             evidence.append("知识点：" + "、".join(matched))
         if requirements.get("question_type") == profile.get("question_type"):
@@ -890,6 +1165,7 @@ class QuestionRecommendationService:
             },
             "profile": profile,
             "requirements": requirements,
+            "chapter_scope": normalized_scope,
             "reason": agent_reason.strip()[:500] if preferred and agent_reason.strip() else deterministic_reason,
             "evidence": _clean_list(agent_evidence, 8) if preferred and agent_evidence else evidence,
             "score_summary": selected["score_components"],

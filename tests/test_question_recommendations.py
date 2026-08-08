@@ -4,10 +4,12 @@ import json
 
 import pytest
 
+import backend.app.services.question_recommendations as recommendation_module
 from backend.app.services.homework import HomeworkStore
 from backend.app.services.question_recommendations import (
     QuestionRecommendationService,
     build_retrieval_profile,
+    select_relevant_chapters,
 )
 
 
@@ -331,3 +333,104 @@ def test_question_without_reference_answer_is_not_recommendable(tmp_path):
 
     assert questions[0]["id"] not in {item["question_id"] for item in shortlist}
     assert all(item["reference_available"] is True for item in shortlist)
+
+
+def test_knowledge_hits_keep_two_strong_chapters_and_one_weak_chapter():
+    scope = select_relevant_chapters([
+        {"chapter": "第一章 二极管电路", "section": "1.2 二极管", "score": 0.92},
+        {"chapter": "第二章 晶体管放大电路", "section": "2.3 共射放大", "score": 0.78},
+        {"chapter": "第三章 场效应管", "section": "3.1 场效应管", "score": 0.50},
+        {"chapter": "第四章 频率特性", "section": "4.1 频响", "score": 0.34},
+        {"chapter": "第五章 反馈", "section": "5.1 反馈", "score": 0.20},
+    ])
+
+    assert [item["chapter_key"] for item in scope] == [
+        "chapter-1", "chapter-2", "chapter-3",
+    ]
+    assert [item["relevance"] for item in scope] == ["strong", "strong", "weak"]
+
+
+def test_shortlist_only_builds_profiles_inside_selected_chapter(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    state = json.loads(store.index_path.read_text(encoding="utf-8"))
+    questions = state["question_banks"][0]["questions"]
+    for index, question in enumerate(questions, 1):
+        question["section_key"] = f"{index}.4"
+        question["section_title"] = f"{index}.4 习题解答"
+    store.index_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+    original = recommendation_module.build_retrieval_profile
+    profiled_ids: list[str] = []
+
+    def tracked_profile(question):
+        profiled_ids.append(str(question["id"]))
+        return original(question)
+
+    monkeypatch.setattr(recommendation_module, "build_retrieval_profile", tracked_profile)
+    service = QuestionRecommendationService(store, tmp_path / "recommend")
+    shortlist = service.shortlist(
+        query="练习晶体管放大电路",
+        student_id="student-chapter-scope",
+        knowledge_base="default",
+        chapter_scope=[{
+            "chapter_key": "chapter-2",
+            "chapter": "第二章 晶体管放大电路",
+            "relevance": "strong",
+            "score": 0.9,
+        }],
+    )
+
+    assert [item["question_id"] for item in shortlist] == [questions[1]["id"]]
+    assert profiled_ids == [questions[1]["id"]]
+    assert shortlist[0]["chapter_relevance"] == "strong"
+
+
+def test_exam_bank_ignores_chapter_scope_and_keeps_flat_search(tmp_path):
+    store = _store(tmp_path)
+    state = json.loads(store.index_path.read_text(encoding="utf-8"))
+    bank = state["question_banks"][0]
+    bank["title"] = "电子电路基础期末考试A卷"
+    bank["source_name"] = "2024春A卷.pdf"
+    for index, question in enumerate(bank["questions"], 1):
+        question["section_key"] = f"{index}.4"
+        question["section_title"] = f"{index}.4 习题解答"
+    store.index_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+    service = QuestionRecommendationService(store, tmp_path / "recommend")
+    shortlist = service.shortlist(
+        query="二极管计算题",
+        student_id="student-paper-scope",
+        chapter_scope=[{
+            "chapter_key": "chapter-2",
+            "chapter": "第二章 晶体管放大电路",
+            "relevance": "strong",
+            "score": 0.9,
+        }],
+    )
+
+    assert len(shortlist) == 3
+
+
+def test_final_selection_only_rebuilds_allowed_candidate_profiles(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    questions = json.loads(store.index_path.read_text(encoding="utf-8"))[
+        "question_banks"
+    ][0]["questions"]
+    allowed_id = questions[1]["id"]
+    original = recommendation_module.build_retrieval_profile
+    profiled_ids: list[str] = []
+
+    def tracked_profile(question):
+        profiled_ids.append(str(question["id"]))
+        return original(question)
+
+    monkeypatch.setattr(recommendation_module, "build_retrieval_profile", tracked_profile)
+    service = QuestionRecommendationService(store, tmp_path / "recommend")
+    result = service.recommend(
+        query="二极管计算题",
+        student_id="student-final-candidates",
+        allowed_question_ids={allowed_id},
+    )
+
+    assert result["question_ref"]["question_id"] == allowed_id
+    assert profiled_ids == [allowed_id]

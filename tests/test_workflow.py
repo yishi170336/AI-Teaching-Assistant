@@ -1995,6 +1995,85 @@ def test_recommend_agent_understands_intent_and_reranks_question_stems():
     assert result["recommendation"]["selection_method"] == "agent_rerank"
 
 
+def test_recommend_agent_uses_knowledge_base_chapters_before_question_search():
+    class RecommendationLLM:
+        model = "chapter-first-recommender"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, messages, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return (
+                    '{"intent_summary":"练习晶体管静态工作点",'
+                    '"knowledge_points":["静态工作点"],"components":["晶体三极管"],'
+                    '"methods":["直流等效分析"],"tasks":["静态工作点"],'
+                    '"reasoning_focus":"先确定偏置状态"}'
+                )
+            return (
+                '{"question_id":"q-bias","reason":"题目要求分析晶体管偏置。",'
+                '"evidence":["需要计算静态工作点"],"tradeoffs":[],'
+                '"fit_dimensions":["知识点","分析方法"]}'
+            )
+
+    class KnowledgeBases:
+        def __init__(self):
+            self.query = ""
+
+        def quick_search(self, knowledge_base, query, top_k):
+            assert knowledge_base == "course-a"
+            assert top_k == 16
+            self.query = query
+            return [
+                {"chapter": "第二章 晶体管放大电路", "section": "2.2 偏置", "score": 0.92},
+                {"chapter": "第三章 场效应管", "section": "3.2 偏置", "score": 0.52},
+                {"chapter": "第五章 反馈", "section": "5.1 反馈", "score": 0.30},
+            ]
+
+    class RecommendationService:
+        def __init__(self):
+            self.shortlist_kwargs = {}
+            self.recommend_kwargs = {}
+
+        def shortlist(self, **kwargs):
+            self.shortlist_kwargs = kwargs
+            return [{"question_id": "q-bias", "prompt": "计算晶体管静态工作点。"}]
+
+        def recommend(self, **kwargs):
+            self.recommend_kwargs = kwargs
+            return {
+                "question_ref": {
+                    "kind": "question_bank",
+                    "question_bank_id": "book",
+                    "question_id": "q-bias",
+                },
+                "selection_method": "agent_rerank",
+            }
+
+    engine = object.__new__(CircuitTutorEngine)
+    service = RecommendationService()
+    knowledge_bases = KnowledgeBases()
+    engine.recommendation_service = service
+    engine.knowledge_bases = knowledge_bases
+    result = asyncio.run(engine._run_recommend_agent({
+        "message": "从题库推荐一道晶体管静态工作点练习",
+        "student_id": "student-chapter-first",
+        "knowledge_base": "course-a",
+        "history": [],
+        "llm": RecommendationLLM(),
+    }))
+
+    scope = service.shortlist_kwargs["chapter_scope"]
+    assert [item["chapter_key"] for item in scope] == ["chapter-2", "chapter-3"]
+    assert [item["relevance"] for item in scope] == ["strong", "weak"]
+    assert service.shortlist_kwargs["knowledge_base"] == "course-a"
+    assert service.shortlist_kwargs["limit"] == 120
+    assert service.recommend_kwargs["chapter_scope"] == scope
+    assert "晶体管静态工作点" in knowledge_bases.query
+    assert result["recommendation"]["question_ref"]["question_id"] == "q-bias"
+
+
 def test_recommend_agent_preserves_context_and_repairs_incomplete_rerank():
     class RecommendationLLM:
         model = "context-recommender"

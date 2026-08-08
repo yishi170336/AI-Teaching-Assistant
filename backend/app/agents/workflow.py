@@ -51,6 +51,7 @@ from backend.app.services.photo_answer import (
     recognition_retrieval_text,
     review_risk_reasons,
 )
+from backend.app.services.question_recommendations import select_relevant_chapters
 
 
 StatusCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -2661,7 +2662,7 @@ class CircuitTutorEngine:
         await _emit(
             state,
             "recommend-retrieve",
-            "正在用结构标签和题干语义召回候选题",
+            "正在整理知识库章节检索条件",
             "题库推荐 Agent",
         )
         retrieval_query = "\n".join(
@@ -2677,6 +2678,63 @@ class CircuitTutorEngine:
             )
             if item
         )
+        knowledge_base = str(state.get("knowledge_base") or "default")
+        inherited_scope = (
+            active_inherited.get("chapter_scope", [])
+            if isinstance(active_inherited, dict)
+            else []
+        )
+        chapter_scope = [
+            dict(item) for item in inherited_scope if isinstance(item, dict)
+        ] if is_continuation else []
+        if not chapter_scope:
+            await _emit(
+                state,
+                "recommend-chapter-retrieve",
+                "正在知识库中定位强相关章节，并保留少量弱相关章节",
+                "题库推荐 Agent",
+            )
+            explicit_constraints = agent_analysis.get("explicit_constraints")
+            explicit_chapter = (
+                str(explicit_constraints.get("chapter") or "").strip()
+                if isinstance(explicit_constraints, dict)
+                else ""
+            )
+            chapter_hits: list[dict[str, Any]] = []
+            knowledge_bases = getattr(self, "knowledge_bases", None)
+            quick_search = getattr(knowledge_bases, "quick_search", None)
+            if callable(quick_search):
+                chapter_query = "\n".join(item for item in (
+                    state["message"][:1600],
+                    str(agent_analysis.get("intent_summary") or "")[:500],
+                    " ".join(_string_list(agent_analysis.get("knowledge_points"), 12)),
+                    " ".join(_string_list(agent_analysis.get("circuit_functions"), 8)),
+                    str(agent_analysis.get("reasoning_focus") or "")[:500],
+                    source_context[:3200],
+                ) if item)
+                try:
+                    chapter_hits = await asyncio.to_thread(
+                        quick_search,
+                        knowledge_base,
+                        chapter_query,
+                        16,
+                    )
+                except Exception:
+                    chapter_hits = []
+            chapter_scope = select_relevant_chapters(
+                chapter_hits,
+                explicit_chapter=explicit_chapter,
+            )
+        await _emit(
+            state,
+            "recommend-question-retrieve",
+            (
+                "已缩小到相关章节，正在检索其中的题目与标签"
+                if chapter_scope
+                else "知识库未返回可靠章节，正在使用兼容检索"
+            ),
+            "题库推荐 Agent",
+        )
         candidate_catalog = await asyncio.to_thread(
             self.recommendation_service.shortlist,
             query=retrieval_query,
@@ -2685,7 +2743,9 @@ class CircuitTutorEngine:
             inherited_requirements=active_inherited,
             agent_analysis=agent_analysis,
             excluded_question_ids=excluded_question_ids,
-            limit=400,
+            knowledge_base=knowledge_base,
+            chapter_scope=chapter_scope,
+            limit=120 if chapter_scope else 400,
         )
         shortlist = candidate_catalog[:20]
         if len(candidate_catalog) > 20:
@@ -2882,6 +2942,8 @@ class CircuitTutorEngine:
                 for candidate in shortlist
             } if shortlist else None,
             excluded_question_ids=excluded_question_ids,
+            knowledge_base=knowledge_base,
+            chapter_scope=chapter_scope,
         )
         await _emit(
             state,
