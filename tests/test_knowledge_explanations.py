@@ -14,6 +14,7 @@ from backend.app.services.knowledge_explanations import (
     KnowledgeExplanationService,
     KnowledgeExplanationStore,
     QwenImageClient,
+    _json_object,
     build_page_prompt,
     normalize_page_detail,
     normalize_plan,
@@ -1078,8 +1079,268 @@ def test_page_detail_retries_incomplete_visual_instruction(tmp_path: Path) -> No
 
     assert client.review_count == 1
     assert len(client.detail_prompts) == 2
+    assert r"例如 \\frac" in client.detail_prompts[0]
     assert "语义不完整" in client.detail_prompts[1]
     assert detail["sections"][0]["visual"].endswith("直流负反馈方向。")
+
+
+def test_json_object_preserves_latex_commands_with_single_backslashes() -> None:
+    raw = r'{"body":"I=e^{\frac{V}{nV_T}}+\theta+\beta"}'
+
+    value = _json_object(raw)
+
+    assert value["body"] == r"I=e^{\frac{V}{nV_T}}+\theta+\beta"
+
+
+def test_page_detail_accepts_visual_only_warning_after_retry(tmp_path: Path) -> None:
+    class VisualWarningClient:
+        def __init__(self) -> None:
+            self.detail_calls = 0
+            self.review_calls = 0
+
+        async def chat(self, messages, **_kwargs) -> str:
+            prompt = messages[-1]["content"]
+            if "独立的单页教学内容审查员" in prompt:
+                self.review_calls += 1
+                return json.dumps(
+                    {
+                        "passed": False,
+                        "scope": "visual",
+                        "severity": "warning",
+                        "missing_requirements": [],
+                        "issues": ["绘图标签位置还可以更具体"],
+                    },
+                    ensure_ascii=False,
+                )
+            self.detail_calls += 1
+            return json.dumps(
+                {
+                    "sections": [
+                        {
+                            "heading": "参考支路",
+                            "body": "参考支路建立基极电压并设定参考电流。",
+                            "visual": "画出参考晶体管及参考电流向下的箭头。",
+                            "visual_type": "circuit",
+                            "accent": "blue",
+                        },
+                        {
+                            "heading": "输出支路",
+                            "body": "匹配晶体管共享基极电压，使输出电流跟随参考电流。",
+                            "visual": "画出输出晶体管，并在集电极支路标出输出电流箭头。",
+                            "visual_type": "circuit",
+                            "accent": "green",
+                        },
+                    ],
+                    "key_takeaway": "匹配器件通过共享控制电压近似复制参考电流。",
+                },
+                ensure_ascii=False,
+            )
+
+    page = {
+        "index": 1,
+        "title": "镜像电流器工作机制",
+        "subtitle": "从参考支路到输出支路",
+        "learning_goal": "理解电流复制关系",
+        "content_brief": "说明匹配晶体管在放大区通过共享基极电压复制电流",
+        "visual_focus": "左右并列的参考支路与输出支路",
+        "covers": ["R1"],
+        "layout": "system-diagram",
+    }
+    plan = {
+        "title": "镜像电流器",
+        "requirements": [{"id": "R1", "content": "解释镜像电流器工作原理"}],
+        "pages": [page],
+    }
+    client = VisualWarningClient()
+
+    detail = asyncio.run(
+        KnowledgeExplanationService(KnowledgeExplanationStore(tmp_path))._create_page_detail(
+            question="解释镜像电流器",
+            plan=plan,
+            page=page,
+            text_client=client,
+        )
+    )
+
+    assert len(detail["sections"]) == 2
+    assert client.detail_calls == 2
+    assert client.review_calls == 2
+
+
+def test_generate_analyzes_and_revises_when_page_review_finds_plan_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class ReplanClient:
+        def __init__(self) -> None:
+            self.plan_prompts: list[str] = []
+            self.detail_calls = 0
+            self.page_review_calls = 0
+            self.repair_analysis_calls = 0
+
+        async def chat(self, messages, **_kwargs) -> str:
+            prompt = messages[-1]["content"]
+            if "独立的知识讲解内容审查员" in prompt:
+                return json.dumps(
+                    {
+                        "passed": True,
+                        "scope": "plan",
+                        "severity": "blocking",
+                        "missing_requirements": [],
+                        "issues": [],
+                    },
+                    ensure_ascii=False,
+                )
+            if "独立的单页教学内容审查员" in prompt:
+                self.page_review_calls += 1
+                if "器件饱和区特性" in prompt:
+                    return json.dumps(
+                        {
+                            "passed": False,
+                            "scope": "plan",
+                            "severity": "blocking",
+                            "missing_requirements": [],
+                            "issues": ["content_brief中的饱和区错误，应改为放大区"],
+                        },
+                        ensure_ascii=False,
+                    )
+                return json.dumps(
+                    {
+                        "passed": True,
+                        "scope": "detail",
+                        "severity": "blocking",
+                        "missing_requirements": [],
+                        "issues": [],
+                    },
+                    ensure_ascii=False,
+                )
+            if "知识讲解大纲修订顾问" in prompt:
+                self.repair_analysis_calls += 1
+                return json.dumps(
+                    {
+                        "root_cause": "content_brief把晶体管工作区错误写成饱和区",
+                        "affected_fields": ["第1页 content_brief"],
+                        "repair_instructions": [
+                            "把工作区修正为放大区，并同步检查正文和主视觉术语"
+                        ],
+                        "preserve": ["保留R1、电流复制主题和单页结构"],
+                    },
+                    ensure_ascii=False,
+                )
+            if "擅长知识可视化的课程内容设计师" in prompt:
+                self.plan_prompts.append(prompt)
+                bad_plan = len(self.plan_prompts) == 1
+                content_brief = (
+                    "说明匹配晶体管基于器件饱和区特性复制电流"
+                    if bad_plan
+                    else "说明匹配晶体管在放大区通过共享基极电压复制电流"
+                )
+                return json.dumps(
+                    {
+                        "title": "镜像电流器",
+                        "subtitle": "解释参考电流如何被复制到输出支路",
+                        "requirements": [
+                            {"id": "R1", "content": "解释镜像电流器的工作原理"}
+                        ],
+                        "pages": [
+                            {
+                                "title": "工作机制与电流关系",
+                                "subtitle": "参考支路控制输出支路",
+                                "learning_goal": "理解电流复制机制",
+                                "content_brief": content_brief,
+                                "visual_focus": "左右并列的参考支路与输出支路",
+                                "covers": ["R1"],
+                                "layout": "system-diagram",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            self.detail_calls += 1
+            return json.dumps(
+                {
+                    "sections": [
+                        {
+                            "heading": "参考支路",
+                            "body": "二极管连接的晶体管建立共享基极电压。",
+                            "visual": "画出二极管连接的参考晶体管和向下的参考电流箭头。",
+                            "visual_type": "circuit",
+                            "accent": "blue",
+                        },
+                        {
+                            "heading": "输出支路",
+                            "body": "匹配晶体管在放大区产生近似相等的集电极电流。",
+                            "visual": "画出输出晶体管，并标出输出电流及共享基极连接线。",
+                            "visual_type": "circuit",
+                            "accent": "green",
+                        },
+                    ],
+                    "key_takeaway": "匹配晶体管在放大区通过共享基极电压近似复制电流。",
+                },
+                ensure_ascii=False,
+            )
+
+    async def fake_visual_layouts(**kwargs):
+        pages = kwargs["pages"]
+        return [
+            {
+                "composition": "参考支路与输出支路左右并列",
+                "reading_flow": "从参考支路沿共享基极连线阅读到输出支路",
+                "regions": [
+                    {
+                        "section_index": index,
+                        "position": "主体左侧" if index == 1 else "主体右侧",
+                        "proportion": "约占主体宽度一半",
+                        "hierarchy": "primary",
+                        "presentation": "电路图与对应说明上下组合",
+                        "connection": "通过共享基极连线连接另一支路",
+                    }
+                    for index, _section in enumerate(page["sections"], start=1)
+                ],
+                "takeaway_placement": "主体下方",
+                "takeaway_treatment": "使用浅蓝结论框",
+                "palette_strategy": "蓝色表示参考支路，绿色表示输出支路",
+                "decoration": "只保留轻量电流箭头",
+            }
+            for page in pages
+        ]
+
+    async def fake_image_prompt(**_kwargs):
+        return ""
+
+    store = KnowledgeExplanationStore(tmp_path)
+    service = KnowledgeExplanationService(store)
+    monkeypatch.setattr(service, "_create_visual_layouts", fake_visual_layouts)
+    monkeypatch.setattr(service, "_create_image_prompt", fake_image_prompt)
+    created = store.create(
+        student_id="student-1",
+        question="解释镜像电流器",
+        requested_page_count=1,
+        text_model="qwen3.7-flash",
+        image_model="qwen-image-2.0",
+    )
+    client = ReplanClient()
+    image_client = FakeImageClient()
+
+    completed = asyncio.run(
+        service.generate(
+            created["id"],
+            question=created["question"],
+            requested_page_count=1,
+            text_client=client,
+            image_client=image_client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert completed["status"] == "completed"
+    assert len(client.plan_prompts) == 2
+    assert client.repair_analysis_calls == 1
+    assert "这是一次针对现有大纲的定向修订" in client.plan_prompts[1]
+    assert "把工作区修正为放大区" in client.plan_prompts[1]
+    assert "器件饱和区特性" in client.plan_prompts[1]
+    assert client.detail_calls == 2
+    assert client.page_review_calls == 2
+    assert "放大区" in store.raw(created["id"])["pages"][0]["content_brief"]
+    assert len(image_client.calls) == 1
 
 
 @pytest.mark.parametrize(

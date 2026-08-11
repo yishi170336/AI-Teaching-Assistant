@@ -6,6 +6,7 @@ import re
 import shutil
 import threading
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,47 @@ PAGE_LAYOUT_INSTRUCTIONS = {
 VISUAL_TYPES = ("general", "circuit", "curve", "formula-derivation")
 VISUAL_HIERARCHIES = ("primary", "secondary", "supporting")
 CONTENT_GENERATION_ATTEMPTS = 2
+PLAN_REPAIR_ATTEMPTS = 2
+REVIEW_SCOPES = {"plan", "detail", "visual"}
+REVIEW_SEVERITIES = {"blocking", "warning"}
+LATEX_JSON_COMMANDS = (
+    "begin",
+    "beta",
+    "cdot",
+    "cos",
+    "dfrac",
+    "end",
+    "exp",
+    "frac",
+    "gamma",
+    "lambda",
+    "left",
+    "ln",
+    "log",
+    "mathbb",
+    "mathbf",
+    "mathrm",
+    "nabla",
+    "neq",
+    "partial",
+    "phi",
+    "pi",
+    "rho",
+    "right",
+    "sin",
+    "sqrt",
+    "sum",
+    "tan",
+    "text",
+    "tfrac",
+    "theta",
+    "times",
+)
+LATEX_JSON_COMMAND_PATTERN = re.compile(
+    r"(?<!\\)\\(?=(?:"
+    + "|".join(re.escape(command) for command in LATEX_JSON_COMMANDS)
+    + r")(?:\b|(?=[{([])))"
+)
 DANGLING_TEXT_ENDINGS = (
     "的",
     "之",
@@ -93,6 +135,18 @@ SPECIALIZED_VISUAL_INSTRUCTIONS = {
 
 class KnowledgeExplanationError(RuntimeError):
     pass
+
+
+class KnowledgeExplanationPlanRevisionRequired(KnowledgeExplanationError):
+    pass
+
+
+@dataclass(frozen=True)
+class ReviewFeedback:
+    passed: bool
+    message: str
+    scope: str
+    severity: str
 
 
 def _utc_now() -> str:
@@ -498,74 +552,115 @@ class KnowledgeExplanationService:
             progress=4,
             message="正在理解问题并规划讲解内容…",
         )
-        plan = await self._create_plan(question, requested_page_count, text_client)
-        pages = [
-            {
-                "index": index,
-                "title": item["title"],
-                "subtitle": item["subtitle"],
-                "learning_goal": item["learning_goal"],
-                "content_brief": item["content_brief"],
-                "visual_focus": item["visual_focus"],
-                "covers": item["covers"],
-                "layout": item["layout"],
-                "sections": [],
-                "key_takeaway": "",
-                "visual_layout": {},
-                "image_prompt": "",
-                "status": "pending",
-                "message": "等待生成",
-                "image_file": "",
-            }
-            for index, item in enumerate(plan["pages"], start=1)
-        ]
-        self.store.update(
-            task_id,
-            title=plan["title"],
-            subtitle=plan["subtitle"],
-            requirements=plan["requirements"],
-            page_count=len(pages),
-            pages=pages,
-            status="generating",
-            progress=10,
-            message=f"大纲已完成，开始规划第 1/{len(pages)} 页具体内容…",
-        )
-        # Finish the instructional content for every page before any visual layout
-        # or image prompt is designed. This keeps the later stages from silently
-        # changing the teaching plan to fit an early visual idea.
-        for page in pages:
-            page_index = int(page["index"])
-            base_progress = 10 + int((page_index - 1) * 30 / len(pages))
-            self.store.update_page(
-                task_id,
-                page_index,
-                status="writing",
-                message="正在组织本页内容与图示…",
+        plan: dict[str, Any] = {}
+        pages: list[dict[str, Any]] = []
+        previous_plan: dict[str, Any] | None = None
+        plan_repair_guidance = ""
+        for plan_attempt in range(PLAN_REPAIR_ATTEMPTS):
+            plan = await self._create_plan(
+                question,
+                requested_page_count,
+                text_client,
+                previous_plan=previous_plan,
+                repair_guidance=plan_repair_guidance,
             )
+            pages = [
+                {
+                    "index": index,
+                    "title": item["title"],
+                    "subtitle": item["subtitle"],
+                    "learning_goal": item["learning_goal"],
+                    "content_brief": item["content_brief"],
+                    "visual_focus": item["visual_focus"],
+                    "covers": item["covers"],
+                    "layout": item["layout"],
+                    "sections": [],
+                    "key_takeaway": "",
+                    "visual_layout": {},
+                    "image_prompt": "",
+                    "status": "pending",
+                    "message": "等待生成",
+                    "image_file": "",
+                }
+                for index, item in enumerate(plan["pages"], start=1)
+            ]
             self.store.update(
                 task_id,
-                progress=base_progress,
-                message=f"正在规划第 {page_index}/{len(pages)} 页具体内容…",
+                title=plan["title"],
+                subtitle=plan["subtitle"],
+                requirements=plan["requirements"],
+                page_count=len(pages),
+                pages=pages,
+                status="generating",
+                progress=10,
+                message=f"大纲已完成，开始规划第 1/{len(pages)} 页具体内容…",
             )
-            detail = await self._create_page_detail(
-                question=question,
-                plan=plan,
-                page=page,
-                text_client=text_client,
-            )
-            page.update(detail)
-            self.store.update_page(
-                task_id,
-                page_index,
-                sections=detail["sections"],
-                key_takeaway=detail["key_takeaway"],
-                message="本页内容已确认，等待整组布局设计…",
-            )
-            self.store.update(
-                task_id,
-                progress=10 + int(page_index * 30 / len(pages)),
-                message=f"已完成 {page_index}/{len(pages)} 页内容规划",
-            )
+            try:
+                # Finish all instructional content before designing visual layout.
+                # If a page exposes a bad content boundary, analyze the conflict
+                # and revise the existing plan instead of forcing the detail writer
+                # to obey it or blindly rebuilding from scratch.
+                for page in pages:
+                    page_index = int(page["index"])
+                    base_progress = 10 + int((page_index - 1) * 30 / len(pages))
+                    self.store.update_page(
+                        task_id,
+                        page_index,
+                        status="writing",
+                        message="正在组织本页内容与图示…",
+                    )
+                    self.store.update(
+                        task_id,
+                        progress=base_progress,
+                        message=f"正在规划第 {page_index}/{len(pages)} 页具体内容…",
+                    )
+                    detail = await self._create_page_detail(
+                        question=question,
+                        plan=plan,
+                        page=page,
+                        text_client=text_client,
+                    )
+                    page.update(detail)
+                    self.store.update_page(
+                        task_id,
+                        page_index,
+                        sections=detail["sections"],
+                        key_takeaway=detail["key_takeaway"],
+                        message="本页内容已确认，等待整组布局设计…",
+                    )
+                    self.store.update(
+                        task_id,
+                        progress=10 + int(page_index * 30 / len(pages)),
+                        message=f"已完成 {page_index}/{len(pages)} 页内容规划",
+                    )
+            except KnowledgeExplanationPlanRevisionRequired as exc:
+                if plan_attempt + 1 >= PLAN_REPAIR_ATTEMPTS:
+                    raise KnowledgeExplanationError(
+                        "重新规划后仍存在大纲级事实或结构冲突："
+                        + str(exc)
+                    ) from exc
+                self.store.update(
+                    task_id,
+                    status="planning",
+                    progress=6,
+                    message="发现大纲与页面内容冲突，正在分析修正方案…",
+                )
+                plan_repair_guidance = await self._analyze_plan_revision(
+                    question=question,
+                    plan=plan,
+                    failed_page=page,
+                    review_feedback=str(exc),
+                    text_client=text_client,
+                )
+                previous_plan = deepcopy(plan)
+                self.store.update(
+                    task_id,
+                    status="planning",
+                    progress=8,
+                    message="修正方案已确定，正在定向重写大纲…",
+                )
+                continue
+            break
 
         self.store.update(
             task_id,
@@ -665,7 +760,13 @@ class KnowledgeExplanationService:
         )
 
     async def _create_plan(
-        self, question: str, requested_page_count: int, text_client: Any
+        self,
+        question: str,
+        requested_page_count: int,
+        text_client: Any,
+        *,
+        previous_plan: dict[str, Any] | None = None,
+        repair_guidance: str = "",
     ) -> dict[str, Any]:
         count_instruction = (
             f"必须恰好规划 {requested_page_count} 页。"
@@ -700,6 +801,18 @@ JSON 结构：
   ]
 }}
 """.strip()
+        if previous_plan:
+            prompt += f"""
+
+这是一次针对现有大纲的定向修订，不是从零另写。请先依据修正方案消除已发现的问题，再返回完整 JSON 大纲。
+除非修正方案明确要求调整，否则必须保留原 requirements、未受影响页面的任务边界、页面顺序和用户指定页数；受影响字段与相关联字段必须同步修正，不能只替换一个词后留下新的矛盾。
+
+现有大纲：
+{json.dumps(previous_plan, ensure_ascii=False, indent=2)}
+
+已确认的修正方案：
+{repair_guidance}
+""".rstrip()
         feedback = ""
         for attempt in range(CONTENT_GENERATION_ATTEMPTS):
             retry_instruction = (
@@ -722,7 +835,7 @@ JSON 结构：
                 feedback = str(exc)
                 continue
             try:
-                passed, feedback = await self._review_plan_coverage(
+                review = await self._review_plan_coverage(
                     question=question,
                     plan=plan,
                     text_client=text_client,
@@ -730,11 +843,85 @@ JSON 结构：
             except KnowledgeExplanationError as exc:
                 feedback = f"审查结果无效：{exc}"
                 continue
-            if passed:
+            feedback = review.message
+            if review.passed:
                 return plan
         raise KnowledgeExplanationError(
             "讲解内容规划连续两次未通过问题覆盖与语义完整性校验：" + feedback
         )
+
+    async def _analyze_plan_revision(
+        self,
+        *,
+        question: str,
+        plan: dict[str, Any],
+        failed_page: dict[str, Any],
+        review_feedback: str,
+        text_client: Any,
+    ) -> str:
+        prompt = f"""
+你是一名知识讲解大纲修订顾问。页面审查发现大纲字段本身可能存在事实错误、内部矛盾或不可同时满足的约束。请诊断需要如何修改，再给下一次大纲生成提供具体、可执行的修正方案；不要直接生成新大纲，也不要展开思维过程。
+
+用户问题：{question}
+当前完整大纲：
+{json.dumps(plan, ensure_ascii=False, indent=2)}
+
+触发问题的页面：
+{json.dumps(failed_page, ensure_ascii=False, indent=2)}
+
+页面审查意见：
+{review_feedback}
+
+要求：
+1. root_cause 简明说明冲突来自哪个大纲字段及为什么需要修改。
+2. affected_fields 精确列出要修改的页码和字段名，例如“第1页 content_brief”。
+3. repair_instructions 写出修改后的事实、条件、术语和需要同步调整的关联字段，不得只写“修正错误”。
+4. preserve 明确列出应保留的用户要求、未受影响页面、页序或正确结论，避免重写时丢失已有内容。
+5. 只输出 JSON，不要 Markdown。
+
+JSON 结构：
+{{
+  "root_cause": "问题根因",
+  "affected_fields": ["第1页 content_brief"],
+  "repair_instructions": ["可直接执行的修改要求"],
+  "preserve": ["必须保持不变的内容"]
+}}
+""".strip()
+        raw = await text_client.chat(
+            [{"role": "user", "content": prompt}],
+            temperature=0.0,
+            json_mode=True,
+            reasoning_budget=640,
+        )
+        try:
+            advice = _json_object(raw)
+        except KnowledgeExplanationError:
+            return json.dumps(
+                {
+                    "root_cause": review_feedback,
+                    "affected_fields": [f"第{failed_page['index']}页大纲字段"],
+                    "repair_instructions": [review_feedback],
+                    "preserve": ["保留未被审查指出有问题的 requirements 和页面任务"],
+                },
+                ensure_ascii=False,
+            )
+        normalized = {
+            "root_cause": re.sub(
+                r"\s+", " ", str(advice.get("root_cause") or review_feedback)
+            ).strip(),
+            "affected_fields": _review_advice_items(
+                advice.get("affected_fields"),
+                fallback=f"第{failed_page['index']}页大纲字段",
+            ),
+            "repair_instructions": _review_advice_items(
+                advice.get("repair_instructions"), fallback=review_feedback
+            ),
+            "preserve": _review_advice_items(
+                advice.get("preserve"),
+                fallback="保留未被审查指出有问题的 requirements 和页面任务",
+            ),
+        }
+        return json.dumps(normalized, ensure_ascii=False, indent=2)
 
     async def _review_plan_coverage(
         self,
@@ -742,7 +929,7 @@ JSON 结构：
         question: str,
         plan: dict[str, Any],
         text_client: Any,
-    ) -> tuple[bool, str]:
+    ) -> ReviewFeedback:
         prompt = f"""
 你是独立的知识讲解内容审查员。不要替规划辩护，要逐字核对用户问题中的每一个对象、因果关系、限定条件、要求采用的分析视角和输出要求，判断规划是否都有实质性页面内容承接。
 
@@ -755,10 +942,11 @@ JSON 结构：
 2. 每个 requirement 是否至少被一页 covers 引用，且对应 content_brief 确实说明了要讲什么，而不是只在标题或 covers 中挂名。
 3. 指定页数较少时仍必须覆盖整个问题；如果一页装不下，应在该页内重新组织，而不是擅自只回答其中一部分。
 4. 标题、副标题、学习目标、content_brief 和 visual_focus 必须语义完整，无截断、半句、悬空连接词或未闭合公式。
-5. 不因没有套用固定教学顺序而判错，只检查用户问题覆盖、知识依赖和内容完整性。
+5. content_brief、visual_focus、公式、工作条件和技术术语必须事实准确且前后一致；不能把事实错误留给逐页文案阶段修正。
+6. 不因没有套用固定教学顺序而判错，只检查用户问题覆盖、知识依赖、事实准确性和内容完整性。
 
 只输出 JSON：
-{{"passed": true, "missing_requirements": [], "issues": []}}
+{{"passed": true, "scope": "plan", "severity": "blocking", "missing_requirements": [], "issues": []}}
 未通过时 passed=false，并用 missing_requirements 列出缺少的具体问题要求，用 issues 列出需要重写的页面和原因。
 """.strip()
         raw = await text_client.chat(
@@ -767,7 +955,7 @@ JSON 结构：
             json_mode=True,
             reasoning_budget=512,
         )
-        return _review_feedback(_json_object(raw))
+        return _review_feedback(_json_object(raw), default_scope="plan")
 
     async def _create_page_detail(
         self,
@@ -803,7 +991,7 @@ JSON 结构：
 本页版式：{page['layout']}（{PAGE_LAYOUT_INSTRUCTIONS[page['layout']]}）
 
 严格在本页内容边界内规划 2 到 6 个内容分区，数量由内容决定，不得为凑版式拆分或补充无关模块。分区可以是推导步骤、对比对象、机制环节、条件、图解、案例数据或结论，不能默认套用概念、原理、应用的固定顺序。
-每个正文最多 90 个汉字，优先使用准确术语、必要公式、条件和单位；公式写成普通可读文本或 LaTeX，不要编造数值和结论。
+每个正文最多 90 个汉字，优先使用准确术语、必要公式、条件和单位；结构化 JSON 中的公式优先写成普通可读文本，例如 I=I_S×(exp(V/(nV_T))-1)。如必须使用 LaTeX，所有反斜杠必须写成双反斜杠，例如 \\\\frac；不要编造数值和结论。
 heading 必须是与主题直接相关的自然标题，不得使用“模块1”“要点2”“总结3”等通用编号。
 visual 要像给制图人员的指令一样具体，写明对象、空间关系、箭头、标签、坐标轴、公式或强调位置，不要只写“配图”。
 visual_type 必须选择 general、circuit、curve、formula-derivation 之一。绘制电路时，visual 必须写清器件、节点、连接、极性和箭头方向，信息不足则选择功能框图；绘制曲线时，必须写清横纵轴物理量、单位、趋势和正文明确给出的关键点；绘制公式推导时，必须写清起始关系、中间等价变形和结果，正文没有中间步骤时不得补造。
@@ -836,7 +1024,7 @@ visual_type 必须选择 general、circuit、curve、formula-derivation 之一�
                 feedback = str(exc)
                 continue
             try:
-                passed, feedback = await self._review_page_detail(
+                review = await self._review_page_detail(
                     question=question,
                     plan=plan,
                     page=page,
@@ -847,7 +1035,17 @@ visual_type 必须选择 general、circuit、curve、formula-derivation 之一�
             except KnowledgeExplanationError as exc:
                 feedback = f"审查结果无效：{exc}"
                 continue
-            if passed:
+            feedback = review.message
+            if review.passed:
+                return detail
+            if review.scope == "plan":
+                raise KnowledgeExplanationPlanRevisionRequired(
+                    f"“{page['title']}”暴露出需要重做大纲的问题：{feedback}"
+                )
+            if (
+                review.severity == "warning"
+                and attempt + 1 >= CONTENT_GENERATION_ATTEMPTS
+            ):
                 return detail
         raise KnowledgeExplanationError(
             f"“{page['title']}”连续两次未通过内容覆盖与语义完整性校验：{feedback}"
@@ -862,7 +1060,7 @@ visual_type 必须选择 general、circuit、curve、formula-derivation 之一�
         detail: dict[str, Any],
         page_requirements: list[dict[str, str]],
         text_client: Any,
-    ) -> tuple[bool, str]:
+    ) -> ReviewFeedback:
         review_payload = {
             "question": question,
             "lesson_title": plan["title"],
@@ -881,13 +1079,15 @@ visual_type 必须选择 general、circuit、curve、formula-derivation 之一�
 
 审查标准：
 1. required_coverage 中每一项都必须在 sections 的正文或关键结论中得到实质解释，不能只出现名词。
-2. detail 必须符合 content_brief，不遗漏指定条件、因果链、公式、分析视角或对比关系，也不能越界重复其他页任务。
+2. detail 必须符合事实正确的 content_brief，不遗漏指定条件、因果链、公式、分析视角或对比关系，也不能越界重复其他页任务。如果 content_brief 或 visual_focus 自身存在事实错误、内部矛盾或无法同时满足，scope 必须为 plan，不能要求 detail 服从错误大纲。
 3. heading、body、visual、key_takeaway 不得有截断、半句、悬空动词或连接词；括号、引号、公式和因果箭头必须闭合。
 4. visual 必须给出足够执行的信息。出现“旁标、标注、显示、绘制、指向”等动作时，必须继续写清标什么、显示什么或指向什么。
 5. 电路拓扑、曲线坐标轴、公式变量若信息不足，应明确要求简化示意，不能暗示生图模型自行补造。
+6. scope 只能是 plan、detail 或 visual：大纲字段有错选 plan；正文事实、覆盖或公式有错选 detail；仅绘图位置、标签或布局细节不足选 visual。
+7. severity 只能是 blocking 或 warning：事实错误、要求遗漏、公式损坏为 blocking；纯视觉执行细节不足为 warning。若同时存在多类问题，优先 plan，其次 detail，最后 visual；优先 blocking。
 
 只输出 JSON：
-{{"passed": true, "missing_requirements": [], "issues": []}}
+{{"passed": true, "scope": "detail", "severity": "blocking", "missing_requirements": [], "issues": []}}
 未通过时 passed=false，并具体指出缺失要点或残缺字段，供下一次完整重写。
 """.strip()
         raw = await text_client.chat(
@@ -896,7 +1096,7 @@ visual_type 必须选择 general、circuit、curve、formula-derivation 之一�
             json_mode=True,
             reasoning_budget=512,
         )
-        return _review_feedback(_json_object(raw))
+        return _review_feedback(_json_object(raw), default_scope="detail")
 
     async def _create_visual_layouts(
         self,
@@ -1043,6 +1243,7 @@ def _json_object(raw: str) -> dict[str, Any]:
     text = str(raw or "").strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
+    text = LATEX_JSON_COMMAND_PATTERN.sub(lambda _match: r"\\", text)
     try:
         value = json.loads(text)
     except json.JSONDecodeError:
@@ -1103,7 +1304,7 @@ def complete_text(
     return text
 
 
-def _review_feedback(value: Any) -> tuple[bool, str]:
+def _review_feedback(value: Any, *, default_scope: str) -> ReviewFeedback:
     review = value if isinstance(value, dict) else {}
     missing = review.get("missing_requirements")
     issues = review.get("issues")
@@ -1114,8 +1315,58 @@ def _review_feedback(value: Any) -> tuple[bool, str]:
         for item in collection
         if str(item).strip()
     ]
+    message = "；".join(messages) or "审查未通过，但审查器未给出具体原因"
+    explicit_scope = str(review.get("scope") or "").strip().lower()
+    scope = explicit_scope if explicit_scope in REVIEW_SCOPES else default_scope
+    if explicit_scope not in REVIEW_SCOPES and default_scope == "detail":
+        lowered = message.lower()
+        plan_markers = ("content_brief", "visual_focus", "大纲", "内容边界", "主视觉")
+        visual_markers = ("visual", "绘图", "视觉", "布局", "配图", "标注位置")
+        blocking_markers = (
+            "事实",
+            "技术表述",
+            "矛盾",
+            "错误",
+            "缺失",
+            "遗漏",
+            "公式",
+            "变量",
+            "覆盖",
+            "正文",
+        )
+        if any(marker in lowered for marker in plan_markers):
+            scope = "plan"
+        elif any(marker in lowered for marker in visual_markers) and not any(
+            marker in lowered for marker in blocking_markers
+        ):
+            scope = "visual"
+    explicit_severity = str(review.get("severity") or "").strip().lower()
+    severity = (
+        explicit_severity
+        if explicit_severity in REVIEW_SEVERITIES
+        else ("warning" if scope == "visual" else "blocking")
+    )
+    if scope == "visual":
+        severity = "warning"
     passed = review.get("passed") is True and not messages
-    return passed, "；".join(messages) or "审查未通过，但审查器未给出具体原因"
+    return ReviewFeedback(
+        passed=passed,
+        message=message,
+        scope=scope,
+        severity=severity,
+    )
+
+
+def _review_advice_items(value: Any, *, fallback: str) -> list[str]:
+    if isinstance(value, list):
+        items = [
+            re.sub(r"\s+", " ", str(item)).strip()
+            for item in value[:12]
+            if str(item).strip()
+        ]
+        if items:
+            return items
+    return [fallback]
 
 
 def _detected_specialized_visual_types(section: dict[str, Any]) -> list[str]:
