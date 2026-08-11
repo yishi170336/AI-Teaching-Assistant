@@ -5279,6 +5279,10 @@ function StudentPageContent() {
     try {
       const stored = await fetchSession(selectedSessionId)
       loadSession(selectedSessionId, stored)
+      if (mode === 'explain') {
+        setMode('auto')
+        setScene('chat')
+      }
       setActiveView('chat')
       setSidebarOpen(false)
     } catch (error) {
@@ -5288,6 +5292,10 @@ function StudentPageContent() {
 
   const startNewSession = () => {
     clear()
+    if (mode === 'explain') {
+      setMode('auto')
+      setScene('chat')
+    }
     setActiveView('chat')
     setSidebarOpen(false)
   }
