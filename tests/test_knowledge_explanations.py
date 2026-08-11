@@ -1196,7 +1196,10 @@ def test_generate_analyzes_and_revises_when_page_review_finds_plan_conflict(
                     return json.dumps(
                         {
                             "passed": False,
-                            "scope": "plan",
+                            # Mixed page/plan feedback can be misclassified by the
+                            # model. The deterministic classifier must still route
+                            # an explicit content_brief error back to plan repair.
+                            "scope": "detail",
                             "severity": "blocking",
                             "missing_requirements": [],
                             "issues": ["content_brief中的饱和区错误，应改为放大区"],

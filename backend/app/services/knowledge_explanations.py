@@ -1318,9 +1318,15 @@ def _review_feedback(value: Any, *, default_scope: str) -> ReviewFeedback:
     message = "；".join(messages) or "审查未通过，但审查器未给出具体原因"
     explicit_scope = str(review.get("scope") or "").strip().lower()
     scope = explicit_scope if explicit_scope in REVIEW_SCOPES else default_scope
-    if explicit_scope not in REVIEW_SCOPES and default_scope == "detail":
+    if default_scope == "detail":
         lowered = message.lower()
         plan_markers = ("content_brief", "visual_focus", "大纲", "内容边界", "主视觉")
+        plan_error_patterns = (
+            r"(?:content_brief|visual_focus|内容边界|主视觉).{0,100}"
+            r"(?:事实错误|错误|有误|矛盾|不准确|违背|需修正|本身存在)",
+            r"(?:事实错误|错误|有误|矛盾|不准确|违背|需修正).{0,100}"
+            r"(?:content_brief|visual_focus|内容边界|主视觉)",
+        )
         visual_markers = ("visual", "绘图", "视觉", "布局", "配图", "标注位置")
         blocking_markers = (
             "事实",
@@ -1334,12 +1340,15 @@ def _review_feedback(value: Any, *, default_scope: str) -> ReviewFeedback:
             "覆盖",
             "正文",
         )
-        if any(marker in lowered for marker in plan_markers):
+        if any(re.search(pattern, lowered) for pattern in plan_error_patterns):
             scope = "plan"
-        elif any(marker in lowered for marker in visual_markers) and not any(
-            marker in lowered for marker in blocking_markers
-        ):
-            scope = "visual"
+        elif explicit_scope not in REVIEW_SCOPES:
+            if any(marker in lowered for marker in plan_markers):
+                scope = "plan"
+            elif any(marker in lowered for marker in visual_markers) and not any(
+                marker in lowered for marker in blocking_markers
+            ):
+                scope = "visual"
     explicit_severity = str(review.get("severity") or "").strip().lower()
     severity = (
         explicit_severity
