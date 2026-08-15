@@ -1969,19 +1969,6 @@ function Conversation({
                       </div>
                     </div>
                   ) : null}
-                  {message.questionSummary.answer_figures?.length ? (
-                    <div className="message-question-figure-group answer">
-                      <small>参考答案图</small>
-                      <div className="message-question-figures">
-                        {message.questionSummary.answer_figures.map((figure) => (
-                          <figure key={figure.file || figure.url}>
-                            <AntImage src={figure.url} alt={figure.caption || '参考答案图'} />
-                            {figure.caption ? <figcaption>{figure.caption}</figcaption> : null}
-                          </figure>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
                 </div>
               </div>
             ) : null}

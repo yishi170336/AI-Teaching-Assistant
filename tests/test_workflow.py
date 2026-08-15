@@ -1331,12 +1331,55 @@ def test_question_knowledge_prompt_is_bounded_by_question_and_reference(tmp_path
     system_prompt = result["answer_messages"][0]["content"]
     user_message = result["answer_messages"][1]
     assert "只能是服务器绑定的当前原题" in system_prompt
+    assert "题目知识点总览" in system_prompt
     assert "不得扩写为整门课程" in system_prompt
     assert "不得改变题图拓扑、器件极性" in system_prompt
+    assert "题目知识点总览；可以归纳多个知识点" in user_message["content"]
     assert "V1 经 1kΩ 电阻连接稳压管" in user_message["content"]
     assert "ΔVo=rz/(R+rz)·ΔV1" in user_message["content"]
     assert user_message["images"] == ["question-image", "answer-image"]
     assert "仅用于确认当前题目的实际考点" in user_message["content"]
+
+
+def test_question_knowledge_named_concept_followup_does_not_repeat_overview(tmp_path):
+    class FakeRetriever:
+        index_dir = tmp_path
+
+    class FakeKnowledgeBases:
+        def get(self, _knowledge_base):
+            return FakeRetriever()
+
+    class FakeVisionClient:
+        provider = "qwen"
+        model = "qwen3-vl-flash"
+
+    engine = object.__new__(CircuitTutorEngine)
+    engine.knowledge_bases = FakeKnowledgeBases()
+    result = asyncio.run(engine._compose_answer_prompt({
+        "message": "可以讲解一下晶体管高频混合π模型吗？",
+        "answer_task": "question_knowledge",
+        "semantic_request": {"operation": "knowledge_query", "scope": "current"},
+        "rewritten_query": "模拟电子技术 晶体管高频混合π模型",
+        "knowledge_base": "default",
+        "conversation_context": "上一轮已经概括了本题的四个知识点。",
+        "conversation_focus": {"id": "focus-high-frequency", "kind": "question_bank"},
+        "attachment_context": "分析晶体管高频响应并计算密勒等效输入电容。",
+        "structured_question": {"prompt": "求接电容等效到输入回路的密勒电容"},
+        "reference_answer": {"answer": "使用高频混合π模型和密勒定理。"},
+        "question_images": ["question-image"],
+        "reference_images": ["answer-image"],
+        "hits": [],
+        "evidence_scope": {},
+        "llm": FakeVisionClient(),
+    }))
+
+    system_prompt = result["answer_messages"][0]["content"]
+    user_message = result["answer_messages"][1]["content"]
+    assert "本轮只围绕这个被点名的对象继续讲解" in system_prompt
+    assert "禁止再次输出整道题的知识点总表" in system_prompt
+    assert "不要使用表格" in system_prompt
+    assert "点名概念聚焦讲解" in user_message
+    assert "不得重复知识点总表" in user_message
 
 
 def test_annotation_prompt_keeps_marked_scope_and_original_question(tmp_path):

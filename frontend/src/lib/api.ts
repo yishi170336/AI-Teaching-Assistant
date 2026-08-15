@@ -745,7 +745,6 @@ export type QuestionSummary = {
   number?: string
   prompt: string
   figures?: HomeworkAsset[]
-  answer_figures?: HomeworkAsset[]
 }
 
 export type ConversationFocus = {

@@ -48,27 +48,25 @@ def test_question_summary_keeps_question_figure_urls_for_chat_rendering():
         "url": "/api/question-banks/bank/assets/figure-1.png?student_id=s1",
     }]
     assert "path" not in summary["figures"][0]
-    assert summary["answer_figures"] == []
+    assert "answer_figures" not in summary
 
-    with_answers = main_module._question_summary_from_context(
-        {
-            "bank": {"title": "电子电路基础学习指导书"},
-            "question_ref": {"question_bank_id": "bank"},
-            "question": {"number": "例1.3.1", "prompt": "如图所示", "figures": []},
-            "reference": {"answer_figures": [{
+    context_with_answers = {
+        "bank": {"title": "电子电路基础学习指导书"},
+        "question_ref": {"question_bank_id": "bank"},
+        "question": {"number": "例1.3.1", "prompt": "如图所示", "figures": []},
+        "reference": {
+            "answer": "不得出现在来源题目卡片中",
+            "answer_figures": [{
                 "path": "F:/private/assets/answer-figure.png",
                 "caption": "图1.3.2",
-            }]},
+            }],
         },
-        include_answer_figures=True,
-        student_id="student-1",
-    )
-    assert with_answers is not None
-    assert with_answers["answer_figures"] == [{
-        "file": "answer-figure.png",
-        "caption": "图1.3.2",
-        "url": "/api/question-banks/bank/assets/answer-figure.png?student_id=student-1",
-    }]
+    }
+    answer_free_summary = main_module._question_summary_from_context(context_with_answers)
+    assert answer_free_summary is not None
+    assert "answer" not in answer_free_summary
+    assert "answer_figures" not in answer_free_summary
+    assert "answer-figure.png" not in json.dumps(answer_free_summary, ensure_ascii=False)
 
 
 def test_student_chat_uses_request_selected_model(monkeypatch):
