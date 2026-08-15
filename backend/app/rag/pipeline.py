@@ -34,12 +34,17 @@ from backend.app.rag.ontology import (
 )
 from backend.app.rag.multimodal import (
     BuildModelConfig,
+    CompatibleMultimodalClient,
     LayoutElement,
     SCANNED_PAGE_PLACEHOLDER,
     build_chapter_knowledge_summaries,
     build_local_knowledge_graph,
     enhance_pdf,
     multimodal_chunks,
+)
+from backend.app.rag.semantic_graph import (
+    build_semantic_knowledge_graph,
+    is_semantic_graph,
 )
 from backend.app.rag.stores import build_qdrant_indexes, sync_neo4j_graph
 
@@ -129,6 +134,60 @@ def clean_page_text(text: str, repeated_noise: set[str] | None = None) -> str:
     return "\n\n".join(paragraphs)
 
 
+def _native_text_blocks(
+    page: fitz.Page,
+    repeated_noise: set[str],
+) -> list[dict[str, Any]]:
+    """Convert a native PDF text layer into the same layout-block schema as OCR."""
+
+    page_width = max(1.0, float(page.rect.width))
+    page_height = max(1.0, float(page.rect.height))
+    blocks: list[dict[str, Any]] = []
+    raw_blocks = page.get_text(
+        "dict", flags=fitz.TEXT_PRESERVE_LIGATURES
+    ).get("blocks", [])
+    for index, raw in enumerate(raw_blocks, 1):
+        if int(raw.get("type", -1)) != 0:
+            continue
+        lines = [
+            _normalize_line("".join(str(span.get("text", "")) for span in line.get("spans", [])))
+            for line in raw.get("lines", [])
+        ]
+        lines = [line for line in lines if line and line not in repeated_noise]
+        if not lines:
+            continue
+        text = "\n".join(lines).strip()
+        compact = re.sub(r"\s+", " ", text).strip()
+        first_line = lines[0]
+        if re.match(r"^第[一二三四五六七八九十百0-9]+章", first_line):
+            block_type = "chapter_heading"
+        elif re.match(r"^\d+(?:\.\d+){1,3}\s*\S+", first_line) and len(compact) < 90:
+            block_type = "section_heading"
+        elif re.match(r"^(?:图|表)(?:题)?\s*\d", first_line):
+            block_type = "figure_caption"
+        elif re.match(r"^(?:[一二三四五六七八九十]+、|\(?\d+[.)）])", first_line):
+            block_type = "list_item"
+        elif len(compact) < 180 and re.search(r"[=≈≠≤≥∑∫√]", compact):
+            block_type = "formula"
+        else:
+            block_type = "paragraph"
+        bbox = [float(value) for value in raw.get("bbox", [0, 0, 0, 0])]
+        normalized_bbox = [
+            round(max(0.0, min(1000.0, bbox[0] / page_width * 1000)), 2),
+            round(max(0.0, min(1000.0, bbox[1] / page_height * 1000)), 2),
+            round(max(0.0, min(1000.0, bbox[2] / page_width * 1000)), 2),
+            round(max(0.0, min(1000.0, bbox[3] / page_height * 1000)), 2),
+        ]
+        blocks.append({
+            "id": f"native-block-{index}",
+            "type": block_type,
+            "text": text,
+            "bbox": normalized_bbox,
+            "reading_order": len(blocks) + 1,
+        })
+    return blocks
+
+
 def _is_chapter_title(title: str) -> bool:
     return bool(re.match(r"^第[一二三四五六七八九十百0-9]+章", title.replace(" ", "")))
 
@@ -165,6 +224,7 @@ def extract_pdf(path: Path, chapter_limit: int | None = None) -> list[PageDocume
                 current_section = title
         text = clean_page_text(raw_text, repeated_noise)
         page_object = document[page_number - 1]
+        text_blocks = _native_text_blocks(page_object, repeated_noise)
         has_visual_content = bool(page_object.get_images(full=True)) or len(page_object.get_drawings()) >= 3
         has_formula_content = bool(
             re.search(r"[=+−±√∫ΣΩπ^_].*[A-Za-z0-9]|[A-Za-z0-9].*[=+−±√∫ΣΩπ^_]", text)
@@ -181,6 +241,7 @@ def extract_pdf(path: Path, chapter_limit: int | None = None) -> list[PageDocume
                 chapter=current_chapter or path.stem,
                 section=current_section or current_chapter or path.stem,
                 source_page=source_page_offset + page_number,
+                extra={"text_blocks": text_blocks} if text_blocks else {},
             )
         )
     document.close()
@@ -744,6 +805,26 @@ def validate_graph_semantics(
     chunks: list[TextChunk], graph: dict[str, Any]
 ) -> dict[str, int]:
     textbook_chunks = [chunk for chunk in chunks if chunk.doc_type == "textbook"]
+    if is_semantic_graph(graph):
+        entities = {
+            str(node.get("name", "")).strip()
+            for node in graph.get("nodes", [])
+            if node.get("type") == "entity" and str(node.get("name", "")).strip()
+        }
+        relationships = [
+            edge for edge in graph.get("edges", [])
+            if edge.get("source") and edge.get("target") and edge.get("relation")
+        ]
+        if len(textbook_chunks) >= 12 and not relationships:
+            raise RuntimeError(
+                "知识图谱语义校验失败：教材内容较多，但没有抽取到任何实体关系。"
+                "请检查 TextUnit 切分、图谱抽取模型或关系证据，旧索引不会被替换。"
+            )
+        return {
+            "concept_nodes": len(entities),
+            "entity_nodes": len(entities),
+            "semantic_relationships": len(relationships),
+        }
     concepts = {
         str(node.get("name", "")).strip()
         for node in graph.get("nodes", [])
@@ -792,7 +873,10 @@ def validate_build_artifacts(
         "question_chunks": 0,
         "dangling_graph_edges": 0,
         "concept_nodes": sum(
-            node.get("type") == "concept" for node in graph.get("nodes", [])
+            node.get("type") in {"concept", "entity"} for node in graph.get("nodes", [])
+        ),
+        "semantic_relationships": sum(
+            bool(edge.get("relation")) for edge in graph.get("edges", [])
         ),
         "placeholder_text_chunks": sum(
             chunk.text.strip() == SCANNED_PAGE_PLACEHOLDER
@@ -914,6 +998,7 @@ def build_knowledge_base(
                 extracted,
                 output_dir,
                 model_config=model_config,
+                chapter_limit=chapter_limit,
             )
             repeated_noise = _edge_noise([item.text for item in extracted])
             extracted = [
@@ -983,12 +1068,29 @@ def build_knowledge_base(
         json.dumps(cleaning_audits, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    report(60, "knowledge_graph", "正在构建知识图谱并按章节汇总知识点")
-    graph = build_local_knowledge_graph(chunks)
-    chapter_summaries = graph.get("chapters") or build_chapter_knowledge_summaries(chunks)
-    semantic_quality = validate_graph_semantics(chunks, graph)
+    report(55, "semantic_text_units", "正在恢复自然段并生成 GraphRAG TextUnits")
+    graph_client = (
+        CompatibleMultimodalClient(model_config)
+        if model_config and model_config.enabled
+        else None
+    )
+    report(60, "knowledge_graph", "正在从教材原文和电路图抽取实体与原始关系")
+    semantic_graph = build_semantic_knowledge_graph(
+        documents,
+        elements,
+        client=graph_client,
+        extraction_cache_path=output_dir / "semantic_extractions.jsonl",
+    )
+    chapter_summaries = build_chapter_knowledge_summaries(chunks)
+    semantic_graph["chapters"] = chapter_summaries
+    semantic_quality = validate_graph_semantics(chunks, semantic_graph)
+    legacy_graph = build_local_knowledge_graph(chunks)
+    legacy_graph["chapters"] = chapter_summaries
     (output_dir / "knowledge_graph.json").write_text(
-        json.dumps(graph, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(legacy_graph, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (output_dir / "semantic_knowledge_graph.json").write_text(
+        json.dumps(semantic_graph, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     (output_dir / "chapter_knowledge_points.json").write_text(
         json.dumps(
@@ -998,6 +1100,24 @@ def build_knowledge_base(
         ),
         encoding="utf-8",
     )
+    for artifact_name, values in (
+        ("text_units.jsonl", semantic_graph.get("text_units", [])),
+        ("evidence_store.jsonl", semantic_graph.get("evidence", [])),
+        ("relationship_mentions.jsonl", semantic_graph.get("relationship_mentions", [])),
+    ):
+        (output_dir / artifact_name).write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False) for item in values),
+            encoding="utf-8",
+        )
+    for artifact_name, values in (
+        ("relationship_links.json", semantic_graph.get("relationship_links", [])),
+        ("communities.json", semantic_graph.get("communities", [])),
+        ("community_reports.json", semantic_graph.get("community_reports", [])),
+    ):
+        (output_dir / artifact_name).write_text(
+            json.dumps(values, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     if settings.qdrant_url:
         # Establish native-module import order before Torch on Windows.
@@ -1020,7 +1140,10 @@ def build_knowledge_base(
         show_progress_bar=True,
     )
     report(82, "validation", "正在校验向量与图谱完整性")
-    validation = validate_build_artifacts(chunks, embeddings, graph)
+    validation = validate_build_artifacts(chunks, embeddings, legacy_graph)
+    validation["semantic_graph"] = validate_build_artifacts(
+        chunks, embeddings, semantic_graph
+    )
     validation["section_semantics"] = section_quality
     import faiss
 
@@ -1034,7 +1157,7 @@ def build_knowledge_base(
     report(85, "indexing", "正在写入向量索引")
     qdrant_status = build_qdrant_indexes(output_dir, chunks, embeddings)
     neo4j_status = (
-        sync_neo4j_graph(knowledge_base_id or output_dir.name, graph)
+        sync_neo4j_graph(knowledge_base_id or output_dir.name, legacy_graph)
         if sync_graph_store
         else {"enabled": False, "reason": "deferred until atomic index activation"}
     )
@@ -1062,10 +1185,21 @@ def build_knowledge_base(
         "table_elements": sum(item.element_type == "table" for item in elements),
         "discarded_pages": sum(not item.get("keep", True) for item in cleaning_audits),
         "knowledge_graph": {
-            "nodes": len(graph["nodes"]),
-            "edges": len(graph["edges"]),
+            "nodes": len(legacy_graph["nodes"]),
+            "edges": len(legacy_graph["edges"]),
             "chapters": len(chapter_summaries),
             "neo4j": neo4j_status,
+        },
+        "semantic_knowledge_graph": {
+            "display_only": True,
+            "nodes": len(semantic_graph["nodes"]),
+            "edges": len(semantic_graph["edges"]),
+            "chapters": len(chapter_summaries),
+            "entities": semantic_graph.get("stats", {}).get("entities", len(semantic_graph["nodes"])),
+            "semantic_relationships": semantic_graph.get("stats", {}).get("relationships", len(semantic_graph["edges"])),
+            "relationship_mentions": semantic_graph.get("stats", {}).get("relationship_mentions", 0),
+            "text_units": semantic_graph.get("stats", {}).get("text_units", 0),
+            "communities": semantic_graph.get("stats", {}).get("communities", 0),
         },
         "qdrant": qdrant_status,
         "vision_model": (
@@ -1127,8 +1261,10 @@ def build_knowledge_base(
                 if qdrant_status.get("local_faiss_enabled")
                 else "disabled"
             ),
-            "graph_nodes": len(graph["nodes"]),
-            "graph_edges": len(graph["edges"]),
+            "graph_nodes": len(legacy_graph["nodes"]),
+            "graph_edges": len(legacy_graph["edges"]),
+            "semantic_preview_nodes": len(semantic_graph["nodes"]),
+            "semantic_preview_edges": len(semantic_graph["edges"]),
             "chapter_summaries": len(chapter_summaries),
             "graph_store": "neo4j" if neo4j_status.get("enabled") else "local-json",
         },

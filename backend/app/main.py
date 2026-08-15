@@ -627,11 +627,27 @@ async def knowledge_base_status() -> dict[str, Any]:
 @app.get("/api/kb/{knowledge_base}/graph")
 async def knowledge_graph(knowledge_base: str) -> dict[str, Any]:
     try:
-        return knowledge_bases.graph(knowledge_base)
+        return knowledge_bases.semantic_graph(knowledge_base)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/kb/{knowledge_base}/graph/evidence")
+async def knowledge_graph_evidence(
+    knowledge_base: str, evidence_ids: str = ""
+) -> dict[str, Any]:
+    requested = [value.strip() for value in evidence_ids.split(",") if value.strip()]
+    if len(requested) > 50:
+        raise HTTPException(status_code=400, detail="单次最多查询 50 条图谱证据")
+    try:
+        values = knowledge_bases.graph_evidence(knowledge_base, requested)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"knowledge_base": knowledge_base, "evidence": values}
 
 
 @app.get("/api/kb/{knowledge_base}/source")

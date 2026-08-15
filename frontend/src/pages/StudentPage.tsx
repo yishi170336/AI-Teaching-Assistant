@@ -111,6 +111,7 @@ import {
   deleteQuestionBankQuestion,
   deleteSession,
   fetchKnowledgeGraph,
+  fetchKnowledgeGraphEvidence,
   fetchKnowledgeBases,
   fetchKnowledgeExplanation,
   fetchKnowledgeExplanations,
@@ -127,6 +128,7 @@ import {
   knowledgeBaseSourceUrl,
   KnowledgeExplanation,
   KnowledgeGraph,
+  KnowledgeGraphEvidence,
   generateLearningPlanPpt,
   ModelCatalog,
   ModelConfig,
@@ -2190,6 +2192,10 @@ const clampGraphZoom = (value: number) => (
 
 function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loading: boolean }) {
   const [selectedId, setSelectedId] = useState('')
+  const [selectedEdgeKey, setSelectedEdgeKey] = useState('')
+  const [selectedEvidence, setSelectedEvidence] = useState<KnowledgeGraphEvidence[]>([])
+  const [evidenceLoading, setEvidenceLoading] = useState(false)
+  const [evidenceError, setEvidenceError] = useState('')
   const [selectedChapterId, setSelectedChapterId] = useState('')
   const [chapterWindowOpen, setChapterWindowOpen] = useState(false)
   const [chapterConceptQuery, setChapterConceptQuery] = useState('')
@@ -2208,8 +2214,9 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
     moved: boolean
   } | null>(null)
   const suppressGraphClickRef = useRef(false)
+  const semanticGraph = Boolean(graph?.schema_version?.startsWith('3.'))
   const totals = useMemo(() => ({
-    concepts: graph?.nodes.filter((node) => node.type === 'concept').length || 0,
+    concepts: graph?.nodes.filter((node) => node.type === 'concept' || node.type === 'entity').length || 0,
     pages: graph?.nodes.filter((node) => node.type === 'page').length || 0,
     structures: graph?.nodes.filter((node) => node.type === 'circuit' || node.type === 'component').length || 0,
   }), [graph])
@@ -2228,6 +2235,9 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
       structures: Math.min(totals.structures, 14),
     })
     setSelectedId('')
+    setSelectedEdgeKey('')
+    setSelectedEvidence([])
+    setEvidenceError('')
     setSelectedChapterId('')
     setChapterWindowOpen(false)
     setChapterConceptQuery('')
@@ -2346,9 +2356,9 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
       degree.set(edge.source, (degree.get(edge.source) || 0) + 1)
       degree.set(edge.target, (degree.get(edge.target) || 0) + 1)
     })
-    const documents = graph.nodes.filter((node) => node.type === 'document').slice(0, 3)
+    const documents = semanticGraph ? [] : graph.nodes.filter((node) => node.type === 'document').slice(0, 3)
     const concepts = graph.nodes
-      .filter((node) => node.type === 'concept')
+      .filter((node) => node.type === 'concept' || node.type === 'entity')
       .sort((a, b) => (b.evidence_count || degree.get(b.id) || 0) - (a.evidence_count || degree.get(a.id) || 0))
       .slice(0, limits.concepts)
     const selectedConcepts = new Set(concepts.map((node) => node.id))
@@ -2358,7 +2368,7 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
         selectedCoverage.set(edge.source, (selectedCoverage.get(edge.source) || 0) + (edge.evidence_count || 1))
       }
     })
-    const pages = graph.nodes
+    const pages = (semanticGraph ? [] : graph.nodes)
       .filter((node) => node.type === 'page')
       .sort((a, b) => (
         (selectedCoverage.get(b.id) || 0) - (selectedCoverage.get(a.id) || 0)
@@ -2366,16 +2376,21 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
         || (a.page || 0) - (b.page || 0)
       ))
       .slice(0, limits.pages)
-    const structures = graph.nodes
+    const structures = (semanticGraph ? [] : graph.nodes)
       .filter((node) => node.type === 'circuit' || node.type === 'component')
       .sort((a, b) => (degree.get(b.id) || 0) - (degree.get(a.id) || 0))
       .slice(0, limits.structures)
-    const groups = [
-      { nodes: documents, radius: 0, ringGap: 34, capacity: 1 },
-      { nodes: concepts, radius: 125, ringGap: 38, capacity: 18 },
-      { nodes: pages, radius: 260, ringGap: 34, capacity: 24 },
-      { nodes: structures, radius: 345, ringGap: 30, capacity: 28 },
-    ]
+    const groups = semanticGraph
+      ? [
+          { nodes: concepts.slice(0, 1), radius: 0, ringGap: 34, capacity: 1 },
+          { nodes: concepts.slice(1), radius: 135, ringGap: 55, capacity: 32 },
+        ]
+      : [
+          { nodes: documents, radius: 0, ringGap: 34, capacity: 1 },
+          { nodes: concepts, radius: 125, ringGap: 38, capacity: 18 },
+          { nodes: pages, radius: 260, ringGap: 34, capacity: 24 },
+          { nodes: structures, radius: 345, ringGap: 30, capacity: 28 },
+        ]
     const positioned = groups.flatMap((group) => group.nodes.map((node, index) => {
       const ringIndex = Math.floor(index / group.capacity)
       const ringStart = ringIndex * group.capacity
@@ -2395,9 +2410,15 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
       nodes: positioned,
       edges: graph.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target)),
     }
-  }, [graph, limits])
+  }, [graph, limits, semanticGraph])
   const positions = new Map(visual.nodes.map((node) => [node.id, node]))
   const selected = graph?.nodes.find((node) => node.id === selectedId)
+  const edgeKey = (source: string, relation: string, target: string) => `${source}\u0000${relation}\u0000${target}`
+  const selectedEdge = visual.edges.find((edge) => (
+    edgeKey(edge.source, edge.relation || edge.type || '', edge.target) === selectedEdgeKey
+  ))
+  const selectedEdgeSource = graph?.nodes.find((node) => node.id === selectedEdge?.source)
+  const selectedEdgeTarget = graph?.nodes.find((node) => node.id === selectedEdge?.target)
   const neighbors = selectedId && graph
     ? graph.edges.filter((edge) => edge.source === selectedId || edge.target === selectedId).length
     : 0
@@ -2407,6 +2428,7 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
     concept: '知识点',
     circuit: '电路图',
     component: '电路元件',
+    entity: '知识实体',
   }
   const selectedPages = selected?.pages?.length
     ? selected.pages
@@ -2432,13 +2454,36 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
       : `第 ${chapter.page_start} 页`
   }
 
+  useEffect(() => {
+    let active = true
+    setSelectedEvidence([])
+    setEvidenceError('')
+    const evidenceIds = selectedEdge?.evidence_ids || []
+    if (!graph || !selectedEdgeKey || !evidenceIds.length) {
+      setEvidenceLoading(false)
+      return () => { active = false }
+    }
+    setEvidenceLoading(true)
+    fetchKnowledgeGraphEvidence(graph.knowledge_base, evidenceIds)
+      .then((items) => {
+        if (active) setSelectedEvidence(items)
+      })
+      .catch((error) => {
+        if (active) setEvidenceError(error instanceof Error ? error.message : '关系证据读取失败')
+      })
+      .finally(() => {
+        if (active) setEvidenceLoading(false)
+      })
+    return () => { active = false }
+  }, [graph?.knowledge_base, selectedEdgeKey])
+
   if (loading) return <div className="workspace-empty"><LoaderCircle className="spin" /><strong>正在整理知识图谱…</strong></div>
-  if (!graph?.nodes.length) return <div className="workspace-empty"><Network /><strong>当前知识库还没有图谱数据</strong><p>重建知识库后会自动提取知识点与资料关系。</p></div>
+  if (!graph?.nodes.length) return <div className="workspace-empty"><Network /><strong>当前知识库还没有图谱数据</strong><p>重建知识库后会从教材正文与电路图中抽取知识实体和原始关系。</p></div>
   return (
     <section className="feature-view graph-view">
       <div className="feature-heading">
-        <div><span>KNOWLEDGE MAP</span><h1>课程知识图谱</h1><p>展示教材、页面、知识点与电路结构；公式和文本片段作为证据收纳在节点详情中。</p></div>
-        <div className="feature-stats"><strong>{graph.stats.concepts}</strong><span>知识点</span><strong>{graph.stats.pages || 0}</strong><span>页面</span><strong>{graph.stats.edges}</strong><span>关系</span></div>
+        <div><span>KNOWLEDGE MAP</span><h1>课程知识图谱</h1><p>{semanticGraph ? '只展示从教材正文与电路图中抽取的知识实体和原始关系；页码、文本片段与具体电路图作为证据单独保存。' : '展示旧版知识图谱数据；重建知识库后将升级为实体—原始关系语义图谱。'}</p></div>
+        <div className="feature-stats"><strong>{graph.stats.entities ?? graph.stats.concepts}</strong><span>知识实体</span><strong>{graph.stats.semantic_relations ?? graph.stats.edges}</strong><span>语义关系</span><strong>{graph.stats.communities || 0}</strong><span>社区</span></div>
       </div>
       <div className="graph-scope-panel">
         <div className="graph-scope-heading">
@@ -2454,19 +2499,19 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
             ]}
           />
         </div>
-        <div className="graph-range-grid">
+        <div className={`graph-range-grid ${semanticGraph ? 'semantic' : ''}`}>
           <label>
-            <span>知识点 <b>{limits.concepts}/{totals.concepts}</b></span>
+            <span>{semanticGraph ? '知识实体' : '知识点'} <b>{limits.concepts}/{totals.concepts}</b></span>
             <Slider min={0} max={Math.max(1, totals.concepts)} value={limits.concepts} disabled={!totals.concepts} onChange={(value) => changeRange('concepts', value)} />
           </label>
-          <label>
+          {!semanticGraph && <label>
             <span>教材页面 <b>{limits.pages}/{totals.pages}</b></span>
             <Slider min={0} max={Math.max(1, totals.pages)} value={limits.pages} disabled={!totals.pages} onChange={(value) => changeRange('pages', value)} />
-          </label>
-          <label>
+          </label>}
+          {!semanticGraph && <label>
             <span>电路与元件 <b>{limits.structures}/{totals.structures}</b></span>
             <Slider min={0} max={Math.max(1, totals.structures)} value={limits.structures} disabled={!totals.structures} onChange={(value) => changeRange('structures', value)} />
-          </label>
+          </label>}
         </div>
       </div>
       <div className="graph-layout">
@@ -2481,11 +2526,45 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
             onPointerUp={finishGraphPointer}
             onPointerCancel={finishGraphPointer}
           >
+            <defs>
+              <marker id="graph-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+                <path d="M 0 0 L 8 4 L 0 8 z" />
+              </marker>
+            </defs>
             <g className="graph-edges">
               {visual.edges.map((edge, index) => {
                 const from = positions.get(edge.source)
                 const to = positions.get(edge.target)
-                return from && to ? <line className={`relation-${edge.type.toLowerCase()}`} key={`${edge.source}-${edge.target}-${index}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} /> : null
+                if (!from || !to) return null
+                const relation = edge.relation || edge.type || '关联'
+                const key = edgeKey(edge.source, relation, edge.target)
+                const middleX = (from.x + to.x) / 2
+                const middleY = (from.y + to.y) / 2
+                return (
+                  <g
+                    className={`graph-edge ${selectedEdgeKey === key ? 'selected' : ''}`}
+                    key={`${key}-${index}`}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      if (!suppressGraphClickRef.current) {
+                        setSelectedEdgeKey(key)
+                        setSelectedId('')
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        setSelectedEdgeKey(key)
+                        setSelectedId('')
+                      }
+                    }}
+                  >
+                    <line className="graph-edge-hit" x1={from.x} y1={from.y} x2={to.x} y2={to.y} />
+                    <line className="graph-edge-line" markerEnd="url(#graph-arrowhead)" x1={from.x} y1={from.y} x2={to.x} y2={to.y} />
+                    {semanticGraph && <text className="graph-edge-label" x={middleX} y={middleY - 5}>{relation.slice(0, 16)}</text>}
+                  </g>
+                )
               })}
             </g>
             <g>
@@ -2495,17 +2574,23 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
                   className={`graph-node ${node.type} ${selectedId === node.id ? 'selected' : ''}`}
                   transform={`translate(${node.x} ${node.y})`}
                   onClick={() => {
-                    if (!suppressGraphClickRef.current) setSelectedId(node.id)
+                    if (!suppressGraphClickRef.current) {
+                      setSelectedId(node.id)
+                      setSelectedEdgeKey('')
+                    }
                   }}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') setSelectedId(node.id)
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      setSelectedId(node.id)
+                      setSelectedEdgeKey('')
+                    }
                   }}
                   role="button"
                   tabIndex={0}
                 >
-                  <circle r={node.type === 'document' ? 25 : node.type === 'page' ? 16 : node.type === 'concept' ? Math.min(22, 12 + node.degree) : node.type === 'circuit' ? 12 : 9} />
+                  <circle r={node.type === 'document' ? 25 : node.type === 'page' ? 16 : node.type === 'concept' || node.type === 'entity' ? Math.min(22, 12 + node.degree) : node.type === 'circuit' ? 12 : 9} />
                   {(node.type !== 'page' || limits.pages <= 12 || selectedId === node.id) && (
-                    <text y={node.type === 'document' ? 40 : node.type === 'page' || node.type === 'concept' ? 32 : 23}>{node.name?.replace(/^电路图\s*[·•]\s*/, '').slice(0, 18) || typeLabel[node.type] || '资料'}</text>
+                    <text y={node.type === 'document' ? 40 : node.type === 'page' || node.type === 'concept' || node.type === 'entity' ? 32 : 23}>{node.name?.replace(/^电路图\s*[·•]\s*/, '').slice(0, 18) || typeLabel[node.type] || '资料'}</text>
                   )}
                 </g>
               ))}
@@ -2526,10 +2611,27 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
             </button>
           </div>
           <div className="graph-zoom-hint">滚轮缩放 · 拖拽移动</div>
-          <div className="graph-legend"><span><i className="document" />教材</span><span><i className="page" />页面</span><span><i className="concept" />知识点</span><span><i className="circuit" />电路图</span><span><i className="component" />元件</span></div>
+          <div className="graph-legend">{semanticGraph ? <><span><i className="entity" />知识实体</span><span><i className="relation" />原始关系</span></> : <><span><i className="document" />教材</span><span><i className="page" />页面</span><span><i className="concept" />知识点</span><span><i className="circuit" />电路图</span><span><i className="component" />元件</span></>}</div>
         </div>
         <aside className="graph-detail">
-          {selected ? <><span>{typeLabel[selected.type] || '知识节点'}</span><h2><InlineMath content={selected.name || '未命名节点'} /></h2><p>连接 {neighbors} 个语义节点{selected.evidence_count ? `，由 ${selected.evidence_count} 条教材证据支持` : ''}。公式与正文片段不会单独铺在图中，但仍参与检索和答案引用。</p>{selectedPages.length > 0 && <div className="graph-page-list">来源页码：{selectedPages.map((page) => `第 ${page} 页`).join('、')}</div>}</> : <><Network size={28} /><h2>探索知识关系</h2><p>教材位于中心，绿色知识点构成语义核心，蓝色页面与外围电路结构作为可追溯证据。</p></>}
+          {selectedEdge ? <>
+            <span>原始关系</span>
+            <h2><InlineMath content={selectedEdge.relation || selectedEdge.type} /></h2>
+            <p className="graph-relation-statement"><InlineMath content={selectedEdgeSource?.name || selectedEdge.source} /> <strong>{selectedEdge.relation || selectedEdge.type}</strong> <InlineMath content={selectedEdgeTarget?.name || selectedEdge.target} /></p>
+            <div className="graph-evidence-title">关系证据 {selectedEdge.evidence_count ? `· ${selectedEdge.evidence_count} 条` : ''}</div>
+            {evidenceLoading && <div className="graph-evidence-state"><LoaderCircle className="spin" size={15} /> 正在读取证据…</div>}
+            {evidenceError && <div className="graph-evidence-state error">{evidenceError}</div>}
+            {!evidenceLoading && !evidenceError && selectedEvidence.length > 0 && <div className="graph-evidence-list">
+              {selectedEvidence.map((item) => (
+                <article key={item.id}>
+                  <span>{item.modality === 'circuit' ? '电路图识别' : '教材正文'}{item.page || item.page_start ? ` · 第 ${item.page || item.page_start} 页` : ''}</span>
+                  <p>{item.text || item.caption || item.description || '该关系来自已保存的原始证据。'}</p>
+                  <small>{item.source}</small>
+                </article>
+              ))}
+            </div>}
+            {!evidenceLoading && !evidenceError && !selectedEvidence.length && <div className="graph-evidence-state">当前关系没有可展示的证据片段。</div>}
+          </> : selected ? <><span>{typeLabel[selected.type] || '知识节点'}</span><h2><InlineMath content={selected.name || '未命名节点'} /></h2>{selected.description && <p>{selected.description}</p>}<p>连接 {neighbors} 个知识实体{selected.evidence_count ? `，由 ${selected.evidence_count} 条原始证据支持` : ''}。页码与具体电路图只用于追溯来源，不作为知识图谱节点。</p>{selectedPages.length > 0 && <div className="graph-page-list">来源页码：{selectedPages.map((page) => `第 ${page} 页`).join('、')}</div>}</> : <><Network size={28} /><h2>探索知识关系</h2><p>{semanticGraph ? '点击实体查看说明，点击带文字的箭头查看原始关系及其教材或电路图证据。' : '这是旧版图谱；重建知识库后可查看实体之间的原始语义关系。'}</p></>}
         </aside>
       </div>
       {chapters.length > 0 && (

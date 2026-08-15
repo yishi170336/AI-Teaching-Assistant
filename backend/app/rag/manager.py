@@ -278,6 +278,104 @@ class KnowledgeBaseManager:
             },
         }
 
+    def semantic_graph(self, knowledge_base: str) -> dict[str, Any]:
+        """Return only the experimental semantic graph used by the graph page."""
+
+        retriever = self.get(knowledge_base)
+        path = retriever.index_dir / "semantic_knowledge_graph.json"
+        if not path.exists():
+            return {
+                "knowledge_base": knowledge_base,
+                "schema_version": "3.0-pending-rebuild",
+                "nodes": [],
+                "edges": [],
+                "chapters": [],
+                "communities": [],
+                "stats": {
+                    "nodes": 0,
+                    "edges": 0,
+                    "concepts": 0,
+                    "entities": 0,
+                    "semantic_relations": 0,
+                    "relationship_mentions": 0,
+                    "communities": 0,
+                    "chapters": 0,
+                },
+            }
+        graph = json.loads(path.read_text(encoding="utf-8"))
+        nodes = [
+            node for node in graph.get("nodes", [])
+            if isinstance(node, dict) and node.get("type") == "entity"
+        ]
+        allowed_ids = {str(node.get("id")) for node in nodes}
+        edges = [
+            edge for edge in graph.get("edges", [])
+            if isinstance(edge, dict)
+            and str(edge.get("source")) in allowed_ids
+            and str(edge.get("target")) in allowed_ids
+            and str(edge.get("relation", "")).strip()
+        ]
+        chapters = graph.get("chapters") or []
+        communities = [
+            {
+                key: value for key, value in community.items()
+                if key not in {"text_unit_ids"}
+            }
+            for community in graph.get("communities", [])
+            if isinstance(community, dict)
+        ]
+        return {
+            "knowledge_base": knowledge_base,
+            "schema_version": graph.get("schema_version"),
+            "nodes": nodes,
+            "edges": edges,
+            "chapters": chapters,
+            "communities": communities,
+            "stats": {
+                "nodes": len(nodes),
+                "edges": len(edges),
+                "concepts": len(nodes),
+                "entities": len(nodes),
+                "semantic_relations": len(edges),
+                "relationship_mentions": len(graph.get("relationship_mentions", [])),
+                "communities": len(communities),
+                "chapters": len(chapters),
+            },
+        }
+
+    def graph_evidence(
+        self, knowledge_base: str, evidence_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        """Resolve graph provenance without exposing source records as graph nodes."""
+
+        requested = {str(value).strip() for value in evidence_ids if str(value).strip()}
+        if not requested:
+            return []
+        retriever = self.get(knowledge_base)
+        path = retriever.index_dir / "evidence_store.jsonl"
+        result: list[dict[str, Any]] = []
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(item, dict) and str(item.get("id")) in requested:
+                    result.append(item)
+                    if len(result) >= 50:
+                        break
+            return result
+        graph_path = retriever.index_dir / "semantic_knowledge_graph.json"
+        if graph_path.exists():
+            graph = json.loads(graph_path.read_text(encoding="utf-8"))
+            return [
+                item for item in graph.get("evidence", [])
+                if isinstance(item, dict) and str(item.get("id")) in requested
+            ][:50]
+        return []
+
     def quick_search(
         self, knowledge_base: str, query: str, top_k: int = 4
     ) -> list[dict[str, Any]]:
@@ -336,10 +434,11 @@ class KnowledgeBaseManager:
                 result["relations"].append({
                     "source": edge.get("source"),
                     "target": edge.get("target"),
-                    "relation": edge.get("relation", "RELATED"),
+                    "relation": edge.get("relation") or edge.get("type", "RELATED"),
                 })
                 # 收集前置概念
-                if edge.get("relation") in ("PREREQUISITE", "DEPENDS_ON"):
+                relation = str(edge.get("relation") or edge.get("type", "")).upper()
+                if relation in ("PREREQUISITE", "DEPENDS_ON"):
                     prereq = edge.get("source", "")
                     concept = edge.get("target", "")
                     result["prerequisites"].setdefault(concept, []).append(prereq)

@@ -51,11 +51,11 @@ PARTIAL_NOISE_MARKERS = (
 PAGE_CLEANING_POLICY_VERSION = "2.1-exercise-range-fallback"
 
 SCANNED_PAGE_PLACEHOLDER = "[本页主要包含电路图、公式或其他图形内容]"
-PAGE_OCR_SCHEMA_VERSION = "1.2-qwen-page-ocr-structural-headings"
+PAGE_OCR_SCHEMA_VERSION = "2.0-qwen-page-ocr-layout-blocks"
 PAGE_OCR_PROMPT = """你是模拟电子技术教材的高保真 OCR 与结构识别器。请完整转写本页，严格保持阅读顺序、标题层级、图题、表题、公式、变量、上下标和单位；不得概括、改写或补写看不清的内容。省略页码和重复的页眉。
-text 必须是按阅读顺序排列的字符串数组，每个元素是一行或一个自然段；chapter 填本页可见的章标题，否则为空；section 填本页最后出现、层级最深的编号教学小节（例如“1.1.3 PN结”），或完整可见的结构标题（仅限“本章小结”“习题”“复习题”“思考题”“自测题”“参考答案”等），否则为空；section_bbox 填该 section 标题在页面中的 [x1,y1,x2,y2]，坐标按页面宽高归一化到 0-1000，标题不可见时返回空数组；concepts 只列正文中明确出现的 2-18 个具体模拟电子技术知识点，不得列书名、章名、泛化词或举例材料。
+blocks 必须按真实阅读顺序列出本页版面块。每个块包含 type、text、bbox、reading_order；type 只能是 chapter_heading、section_heading、paragraph、list_item、formula、figure_caption、table、exercise、page_header、page_footer、noise；bbox 为按页面宽高归一化到 0-1000 的 [x1,y1,x2,y2]。正文自然段不要按视觉换行拆碎，双栏必须先完整读取左栏再读取右栏。chapter 填本页可见的章标题，否则为空；section 填本页最后出现、层级最深的编号教学小节（例如“1.1.3 PN结”），或完整可见的结构标题（仅限“本章小结”“习题”“复习题”“思考题”“自测题”“参考答案”等），否则为空；section_bbox 填该 section 标题 bbox，标题不可见时返回空数组；concepts 只列正文中明确出现的 2-18 个具体模拟电子技术知识点，不得列书名、章名、泛化词或举例材料。
 不要把页眉、图号、表号、公式编号、例题编号、题号、数值或单位（例如“1.0 mA”）误认为 section。
-仅返回 JSON：{"text":["..."],"chapter":"","section":"","section_bbox":[],"concepts":["..."]}。"""
+仅返回 JSON：{"blocks":[{"type":"paragraph","text":"...","bbox":[0,0,0,0],"reading_order":1}],"chapter":"","section":"","section_bbox":[],"concepts":["..."]}。"""
 
 SECTION_HEADING_OCR_PROMPT = """你是教材章节标题校对器。图片只包含一个候选章节标题及少量上下文。
 逐字抄录图片中真实可见、以多级数字编号开头的教学章节标题；不得根据常识补写，不得把图号、表号、公式编号、例题编号或页眉当作章节标题。
@@ -329,9 +329,57 @@ def _file_sha256(path: Path) -> str:
 
 def _ocr_text(value: Any) -> str:
     if isinstance(value, list):
-        lines = [str(item).strip() for item in value if str(item).strip()]
+        lines = [
+            str(item.get("text", "")).strip() if isinstance(item, dict) else str(item).strip()
+            for item in value
+            if (
+                str(item.get("text", "")).strip()
+                if isinstance(item, dict)
+                else str(item).strip()
+            )
+        ]
         return "\n".join(lines)
     return str(value or "").strip()
+
+
+OCR_BLOCK_TYPES = {
+    "chapter_heading", "section_heading", "paragraph", "list_item", "formula",
+    "figure_caption", "table", "exercise", "page_header", "page_footer", "noise",
+}
+
+
+def _ocr_blocks(value: Any) -> list[dict[str, Any]]:
+    """Normalize OCR layout blocks while preserving the model's reading order."""
+
+    if not isinstance(value, list):
+        return []
+    blocks: list[dict[str, Any]] = []
+    for index, raw in enumerate(value, 1):
+        if isinstance(raw, dict):
+            text = str(raw.get("text", "")).strip()
+            block_type = str(raw.get("type", "paragraph")).strip().lower()
+            bbox = _normalized_heading_bbox(raw.get("bbox"))
+            try:
+                reading_order = max(1, int(raw.get("reading_order", index)))
+            except (TypeError, ValueError):
+                reading_order = index
+        else:
+            text = str(raw).strip()
+            block_type = "paragraph"
+            bbox = []
+            reading_order = index
+        if not text:
+            continue
+        if block_type not in OCR_BLOCK_TYPES:
+            block_type = "paragraph"
+        blocks.append({
+            "id": f"ocr-block-{index}",
+            "type": block_type,
+            "text": text,
+            "bbox": bbox,
+            "reading_order": reading_order,
+        })
+    return sorted(blocks, key=lambda item: int(item["reading_order"]))
 
 
 def _normalize_chapter_heading(value: Any) -> str:
@@ -453,9 +501,19 @@ def _ocr_heading_context_details(
     ]
     visible_chapters = [chapter for _, chapter in visible_chapter_lines]
     compact_lead = re.sub(r"\s+", "", "".join(lines[:6]))
-    is_contents_page = "目录" in compact_lead or len({
-        _chapter_marker(chapter) for chapter in visible_chapters
-    }) >= 2
+    contents_entry_count = sum(
+        len(re.findall(r"(?:[.．·…]{3,}|[（(]\s*\d+\s*[）)])", line))
+        for line in lines
+    )
+    numbered_entry_count = sum(
+        bool(re.match(r"^\*?\d+(?:\.\d+)+\s*\S", line)) for line in lines
+    )
+    is_contents_page = (
+        "目录" in compact_lead
+        or len({_chapter_marker(chapter) for chapter in visible_chapters}) >= 2
+        or contents_entry_count >= 5
+        or numbered_entry_count >= 8
+    )
     if is_contents_page:
         return previous_chapter, previous_section, "inherited"
     if (
@@ -805,11 +863,55 @@ def _ocr_scanned_pages(
     output_dir: Path,
     client: QwenVisionClient | None,
     document_hash: str,
+    chapter_limit: int | None = None,
 ) -> list[PageDocument]:
     """Recover the text layer of image-only textbook pages with a durable cache."""
 
+    def page_chapter(document: PageDocument) -> str:
+        lines = [line.strip() for line in document.text.splitlines() if line.strip()]
+        compact_lead = re.sub(r"\s+", "", "".join(lines[:6]))
+        visible = [
+            heading for line in lines[:8]
+            if (heading := _normalize_chapter_heading(line))
+        ]
+        contents_entry_count = sum(
+            len(re.findall(r"(?:[.．·…]{3,}|[（(]\s*\d+\s*[）)])", line))
+            for line in lines
+        )
+        numbered_entry_count = sum(
+            bool(re.match(r"^\*?\d+(?:\.\d+)+\s*\S", line)) for line in lines
+        )
+        if (
+            document.chapter == "目录"
+            or document.section == "目录"
+            or "目录" in compact_lead
+            or len({_chapter_marker(item) for item in visible}) >= 2
+            or contents_entry_count >= 5
+            or numbered_entry_count >= 8
+        ):
+            return ""
+        normalized = _normalize_chapter_heading(document.chapter)
+        if normalized:
+            return normalized
+        return visible[0] if visible else ""
+
+    def limited_chapters(values: list[PageDocument]) -> list[PageDocument]:
+        if not chapter_limit:
+            return values
+        starts: list[tuple[str, int]] = []
+        for index, document in enumerate(values):
+            chapter = page_chapter(document)
+            marker = _chapter_marker(chapter)
+            if marker and (not starts or starts[-1][0] != marker):
+                starts.append((marker, index))
+        if not starts:
+            return values
+        start = starts[0][1]
+        end = starts[chapter_limit][1] if len(starts) > chapter_limit else len(values)
+        return values[start:end]
+
     if not any(page.text.strip() == SCANNED_PAGE_PLACEHOLDER for page in pages):
-        return pages
+        return limited_chapters(pages)
     cache_path = output_dir / f"{path.stem}.page_ocr.jsonl"
     cache_entries: dict[int, dict[str, Any]] = {}
     if cache_path.exists():
@@ -831,20 +933,23 @@ def _ocr_scanned_pages(
     )
 
     recovered: list[PageDocument] = []
+    seen_chapter_markers: list[str] = []
+    first_chapter_index: int | None = None
     previous_chapter = ""
     previous_section = ""
     document = fitz.open(path)
     try:
         for page_document in sorted(pages, key=lambda item: item.page):
+            recovered_document: PageDocument | None = None
             if page_document.text.strip() != SCANNED_PAGE_PLACEHOLDER:
                 previous_chapter = page_document.chapter or previous_chapter
                 previous_section = page_document.section or previous_section
-                recovered.append(page_document)
-                continue
-
-            cached = cache_entries.get(page_document.page)
-            if cached:
+                recovered_document = page_document
+            else:
+                cached = cache_entries.get(page_document.page)
+            if recovered_document is None and cached:
                 cached_text = str(cached["text"]).strip()
+                cached_blocks = _ocr_blocks(cached.get("blocks"))
                 chapter, section, section_source = _ocr_heading_context_details(
                     cached,
                     cached_text,
@@ -861,7 +966,7 @@ def _ocr_scanned_pages(
                 except (TypeError, ValueError):
                     section_confidence = 0.0
                 previous_chapter, previous_section = chapter, section
-                recovered.append(replace(
+                recovered_document = replace(
                     page_document,
                     text=cached_text,
                     chapter=chapter or page_document.chapter,
@@ -877,73 +982,74 @@ def _ocr_scanned_pages(
                         "ocr_heading_verification_attempted": bool(
                             cached.get("heading_verification_attempted")
                         ),
+                        "text_blocks": cached_blocks,
                     },
-                ))
-                continue
-            if reuse_near_complete_cache:
-                recovered.append(page_document)
-                continue
-            if client is None:
-                recovered.append(page_document)
-                continue
-
-            page = document[page_document.page - 1]
-            width, height = max(1.0, float(page.rect.width)), max(1.0, float(page.rect.height))
-            scale = min(1.7, 2200 / max(width, height), math.sqrt(4_500_000 / (width * height)))
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-            image_bytes = pixmap.tobytes("png")
-            try:
-                value = client.complete_json(
-                    PAGE_OCR_PROMPT,
-                    image_bytes=image_bytes,
-                    image_mime="image/png",
                 )
-            except QwenMultimodalAPIError as exc:
-                logger.warning("Qwen page OCR failed for %s page %s: %s", path.name, page_document.page, exc)
-                recovered.append(page_document)
-                continue
-            text = _ocr_text(value.get("text"))
-            if len(re.sub(r"\s+", "", text)) < 30:
-                logger.warning("Qwen page OCR returned too little text for %s page %s", path.name, page_document.page)
-                recovered.append(page_document)
-                continue
-            (
-                verified_section,
-                verified_confidence,
-                heading_verification_attempted,
-            ) = _verify_section_heading_crop(
-                page,
-                value,
-                text,
-                previous_section,
-                client,
-            )
-            chapter, section, section_source = _ocr_heading_context_details(
-                value,
-                text,
-                previous_chapter,
-                previous_section,
-                verified_section=verified_section,
-                heading_verification_attempted=heading_verification_attempted,
-            )
-            concepts = _ocr_concepts(value.get("concepts"), text)
-            section_confidence = (
-                verified_confidence
-                if section_source == "heading-crop"
-                else 0.85
-                if section_source == "page-text"
-                else 0.7
-                if section
-                else 0.0
-            )
-            previous_chapter, previous_section = chapter, section
-            cache_entries[page_document.page] = {
+            elif recovered_document is None and reuse_near_complete_cache:
+                recovered_document = page_document
+            elif recovered_document is None and client is None:
+                recovered_document = page_document
+
+            if recovered_document is None:
+                page = document[page_document.page - 1]
+                width, height = max(1.0, float(page.rect.width)), max(1.0, float(page.rect.height))
+                scale = min(1.7, 2200 / max(width, height), math.sqrt(4_500_000 / (width * height)))
+                pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+                image_bytes = pixmap.tobytes("png")
+                try:
+                    value = client.complete_json(
+                        PAGE_OCR_PROMPT,
+                        image_bytes=image_bytes,
+                        image_mime="image/png",
+                    )
+                except QwenMultimodalAPIError as exc:
+                    logger.warning("Qwen page OCR failed for %s page %s: %s", path.name, page_document.page, exc)
+                    recovered_document = page_document
+                    value = {}
+                blocks = _ocr_blocks(value.get("blocks"))
+                text = _ocr_text(blocks or value.get("text"))
+                if recovered_document is None and len(re.sub(r"\s+", "", text)) < 30:
+                    logger.warning("Qwen page OCR returned too little text for %s page %s", path.name, page_document.page)
+                    recovered_document = page_document
+                if recovered_document is None:
+                    (
+                        verified_section,
+                        verified_confidence,
+                        heading_verification_attempted,
+                    ) = _verify_section_heading_crop(
+                        page,
+                        value,
+                        text,
+                        previous_section,
+                        client,
+                    )
+                    chapter, section, section_source = _ocr_heading_context_details(
+                        value,
+                        text,
+                        previous_chapter,
+                        previous_section,
+                        verified_section=verified_section,
+                        heading_verification_attempted=heading_verification_attempted,
+                    )
+                    concepts = _ocr_concepts(value.get("concepts"), text)
+                    section_confidence = (
+                        verified_confidence
+                        if section_source == "heading-crop"
+                        else 0.85
+                        if section_source == "page-text"
+                        else 0.7
+                        if section
+                        else 0.0
+                    )
+                    previous_chapter, previous_section = chapter, section
+                    cache_entries[page_document.page] = {
                 "schema_version": PAGE_OCR_SCHEMA_VERSION,
                 "document_hash": document_hash,
                 "model": client.model,
                 "page": page_document.page,
                 "source_page": page_document.source_page or page_document.page,
                 "text": text,
+                "blocks": blocks,
                 "chapter": chapter,
                 "section": section,
                 "section_raw": _normalize_section_heading(value.get("section", "")),
@@ -953,26 +1059,40 @@ def _ocr_scanned_pages(
                 "section_confidence": section_confidence,
                 "section_bbox": _normalized_heading_bbox(value.get("section_bbox")),
                 "concepts": concepts,
-            }
-            _write_page_ocr_cache(cache_path, cache_entries)
-            recovered.append(replace(
-                page_document,
-                text=text,
-                chapter=chapter or page_document.chapter,
-                section=section or chapter or page_document.section,
-                extra={
-                    **(page_document.extra or {}),
-                    "ocr_concepts": concepts,
-                    "ocr_processor": f"qwen-vl:{client.model}",
-                    "ocr_section_raw": _normalize_section_heading(value.get("section", "")),
-                    "ocr_section_source": section_source,
-                    "ocr_section_confidence": section_confidence,
-                    "ocr_section_bbox": _normalized_heading_bbox(value.get("section_bbox")),
-                    "ocr_heading_verification_attempted": heading_verification_attempted,
-                },
-            ))
+                    }
+                    _write_page_ocr_cache(cache_path, cache_entries)
+                    recovered_document = replace(
+                        page_document,
+                        text=text,
+                        chapter=chapter or page_document.chapter,
+                        section=section or chapter or page_document.section,
+                        extra={
+                            **(page_document.extra or {}),
+                            "ocr_concepts": concepts,
+                            "ocr_processor": f"qwen-vl:{client.model}",
+                            "ocr_section_raw": _normalize_section_heading(value.get("section", "")),
+                            "ocr_section_source": section_source,
+                            "ocr_section_confidence": section_confidence,
+                            "ocr_section_bbox": _normalized_heading_bbox(value.get("section_bbox")),
+                            "ocr_heading_verification_attempted": heading_verification_attempted,
+                            "text_blocks": blocks,
+                        },
+                    )
+
+            assert recovered_document is not None
+            chapter = page_chapter(recovered_document)
+            marker = _chapter_marker(chapter)
+            if marker and (not seen_chapter_markers or seen_chapter_markers[-1] != marker):
+                if chapter_limit and len(seen_chapter_markers) >= chapter_limit:
+                    break
+                seen_chapter_markers.append(marker)
+                if first_chapter_index is None:
+                    first_chapter_index = len(recovered)
+            recovered.append(recovered_document)
     finally:
         document.close()
+    if chapter_limit and first_chapter_index is not None:
+        recovered = recovered[first_chapter_index:]
     return _apply_toc_section_catalog(recovered)
 
 
@@ -1626,6 +1746,7 @@ def enhance_pdf(
     output_dir: Path,
     *,
     model_config: BuildModelConfig | None = None,
+    chapter_limit: int | None = None,
 ) -> tuple[list[PageDocument], list[LayoutElement], list[dict[str, Any]]]:
     """Add layout, visual and circuit semantics while preserving original pages."""
 
@@ -1647,7 +1768,7 @@ def enhance_pdf(
     )
     document_hash = _file_sha256(path)
     page_documents = _ocr_scanned_pages(
-        path, page_documents, output_dir, vision_client, document_hash
+        path, page_documents, output_dir, vision_client, document_hash, chapter_limit
     )
     page_text_hashes = {
         item.page: hashlib.sha256(item.text.encode("utf-8")).hexdigest()

@@ -1,6 +1,7 @@
 fastapi>=0.115,<1
 uvicorn[standard]>=0.34,<1
 httpx>=0.28,<1
+socksio>=1.0,<2
 pydantic>=2.10,<3
 python-multipart>=0.0.20,<1
 redis>=5,<7
@@ -18,6 +19,8 @@ matplotlib>=3.8,<4
 openpyxl>=3.1,<4
 sympy>=1.13,<2
 numpy>=1.26,<3
+networkx>=3.4,<4
+graspologic>=3.4,<4
 Pillow>=10,<13
 qdrant-client>=1.14,<2
 neo4j>=5.27,<7

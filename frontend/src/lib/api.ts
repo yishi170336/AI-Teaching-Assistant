@@ -182,6 +182,9 @@ export type KnowledgeGraphNode = {
   symbol?: string
   component_role?: string
   component_type?: string
+  entity_type?: string
+  description?: string
+  aliases?: string[]
 }
 
 export type KnowledgeGraphEdge = {
@@ -189,6 +192,36 @@ export type KnowledgeGraphEdge = {
   target: string
   type: string
   evidence_count?: number
+  relation?: string
+  evidence_ids?: string[]
+  mention_ids?: string[]
+  weight?: number
+}
+
+export type KnowledgeGraphCommunity = {
+  id: string
+  community: number
+  level: number
+  title: string
+  entity_ids: string[]
+  relationship_ids: string[]
+  size: number
+  algorithm?: string
+}
+
+export type KnowledgeGraphEvidence = {
+  id: string
+  modality: 'text' | 'circuit' | string
+  source: string
+  page?: number
+  page_start?: number
+  page_end?: number
+  chapter?: string
+  section?: string
+  text?: string
+  caption?: string
+  description?: string
+  image_path?: string
 }
 
 export type ChapterKnowledgeConcept = {
@@ -213,10 +246,12 @@ export type ChapterKnowledgeSummary = {
 
 export type KnowledgeGraph = {
   knowledge_base: string
+  schema_version?: string
   nodes: KnowledgeGraphNode[]
   edges: KnowledgeGraphEdge[]
   chapters?: ChapterKnowledgeSummary[]
-  stats: { nodes: number; edges: number; concepts: number; documents?: number; pages?: number; circuits?: number; components?: number; chapters?: number }
+  communities?: KnowledgeGraphCommunity[]
+  stats: { nodes: number; edges: number; concepts: number; entities?: number; semantic_relations?: number; relationship_mentions?: number; communities?: number; documents?: number; pages?: number; circuits?: number; components?: number; chapters?: number }
 }
 
 export type MistakeSource = 'question_bank' | 'ai_generated' | 'user_uploaded'
@@ -1218,6 +1253,18 @@ export async function fetchKnowledgeGraph(knowledgeBase: string): Promise<Knowle
   const result = await response.json()
   if (!response.ok) throw new Error(result.detail || '知识图谱读取失败')
   return result
+}
+
+export async function fetchKnowledgeGraphEvidence(
+  knowledgeBase: string,
+  evidenceIds: string[],
+): Promise<KnowledgeGraphEvidence[]> {
+  if (!evidenceIds.length) return []
+  const query = new URLSearchParams({ evidence_ids: evidenceIds.slice(0, 50).join(',') })
+  const response = await fetch(`/api/kb/${encodeURIComponent(knowledgeBase)}/graph/evidence?${query.toString()}`)
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.detail || '关系证据读取失败')
+  return result.evidence || []
 }
 
 export function knowledgeBaseSourceUrl(
