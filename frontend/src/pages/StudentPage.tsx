@@ -2359,7 +2359,12 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
     const documents = semanticGraph ? [] : graph.nodes.filter((node) => node.type === 'document').slice(0, 3)
     const concepts = graph.nodes
       .filter((node) => node.type === 'concept' || node.type === 'entity')
-      .sort((a, b) => (b.evidence_count || degree.get(b.id) || 0) - (a.evidence_count || degree.get(a.id) || 0))
+      .sort((a, b) => (
+        Number((degree.get(b.id) || 0) > 0) - Number((degree.get(a.id) || 0) > 0)
+        || (degree.get(b.id) || 0) - (degree.get(a.id) || 0)
+        || (b.evidence_count || 0) - (a.evidence_count || 0)
+        || a.name.localeCompare(b.name, 'zh-CN')
+      ))
       .slice(0, limits.concepts)
     const selectedConcepts = new Set(concepts.map((node) => node.id))
     const selectedCoverage = new Map<string, number>()
