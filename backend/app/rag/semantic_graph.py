@@ -33,6 +33,15 @@ FIGURE_CAPTION_PATTERN = re.compile(r"^(?:图|表)(?:题)?\s*\d")
 QUESTION_PATTERN = re.compile(
     r"(?:试求|试画|试分析|试证明|回答下列|判断下列|是否正确|求出|计算下列|为什么[？?]?$)"
 )
+PROVENANCE_ENTITY_PATTERN = re.compile(
+    r"^(?:"
+    r".*\.(?:pdf|docx?|md|txt)|"
+    r"(?:教材)?第\s*\d+\s*页(?:的)?(?:电路图|插图|内容)?|"
+    r"(?:本页|该页)(?:电路图|插图|内容)?|"
+    r"(?:图|图题|表)\s*[0-9一二三四五六七八九十]+(?:\.[0-9]+)*.*"
+    r")$",
+    re.I,
+)
 RELATION_MARKERS = (
     "是", "为", "称为", "又称", "简称", "具有", "包含", "包括", "组成", "构成",
     "产生", "形成", "导致", "使", "提高", "降低", "增大", "减小", "增强", "减弱",
@@ -77,6 +86,15 @@ def _normalized_text(value: str) -> str:
     value = unicodedata.normalize("NFKC", str(value)).replace("\u200b", "")
     value = re.sub(r"[ \t]+", " ", value)
     return value.strip()
+
+
+def _valid_entity_name(value: str) -> bool:
+    name = _normalized_text(value).strip("，。；：、")
+    if not 2 <= len(name) <= 60:
+        return False
+    if PROVENANCE_ENTITY_PATTERN.match(name):
+        return False
+    return name not in {"教材", "页面", "页码", "电路图", "插图", "文件名"}
 
 
 def _join_visual_lines(value: str) -> str:
@@ -379,7 +397,7 @@ def _normalize_extraction(raw: Any, unit: SemanticTextUnit) -> dict[str, Any]:
             if not isinstance(item, dict):
                 continue
             name = _normalized_text(str(item.get("name", ""))).strip("，。；：、")
-            if not 2 <= len(name) <= 60:
+            if not _valid_entity_name(name):
                 continue
             if _compact(name) not in _compact(unit.text + unit.section):
                 continue
@@ -398,7 +416,12 @@ def _normalize_extraction(raw: Any, unit: SemanticTextUnit) -> dict[str, Any]:
             target = _normalized_text(str(item.get("target", ""))).strip("，。；：、")
             relation = _normalized_text(str(item.get("relation_original", ""))).strip("，。；：、")
             evidence = _normalized_text(str(item.get("evidence_text", "")))
-            if not source or not target or source == target or not relation:
+            if (
+                not _valid_entity_name(source)
+                or not _valid_entity_name(target)
+                or source == target
+                or not relation
+            ):
                 continue
             if not _valid_evidence_span(evidence, unit.text):
                 continue
@@ -645,6 +668,8 @@ def _merge_graph_records(
     raw_mentions: list[dict[str, Any]] = []
 
     def ensure_entity(name: str, entity_type: str = "课程概念", description: str = "") -> str:
+        if not _valid_entity_name(name):
+            return ""
         key = _compact(name)
         entity_id = _stable_id("entity", key)
         entity = entities.setdefault(entity_id, {
@@ -672,6 +697,8 @@ def _merge_graph_records(
             entity_id = ensure_entity(
                 str(item["name"]), str(item.get("type", "课程概念")), str(item.get("description", ""))
             )
+            if not entity_id:
+                continue
             entity = entities[entity_id]
             if unit_id not in entity["text_unit_ids"]:
                 entity["text_unit_ids"].append(unit_id)
@@ -688,6 +715,8 @@ def _merge_graph_records(
                 continue
             source_id = ensure_entity(source_name, _entity_type(source_name))
             target_id = ensure_entity(target_name, _entity_type(target_name))
+            if not source_id or not target_id:
+                continue
             mention_id = _stable_id("relationship-mention", unit_id, position, source_id, relation, target_id)
             raw_mentions.append({
                 "id": mention_id,
@@ -710,6 +739,8 @@ def _merge_graph_records(
             continue
         source_id = ensure_entity(source_name, _entity_type(source_name))
         target_id = ensure_entity(target_name, _entity_type(target_name))
+        if not source_id or not target_id:
+            continue
         mention_id = _stable_id(
             "relationship-mention", item.get("evidence_id"), position, source_id, relation, target_id
         )

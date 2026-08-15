@@ -133,6 +133,41 @@ def test_non_verbatim_relation_is_rejected_without_generating_replacement() -> N
     assert "抑制" not in json.dumps(result, ensure_ascii=False)
 
 
+def test_figure_numbers_and_location_relations_are_not_graph_entities() -> None:
+    unit = SemanticTextUnit(
+        id="unit-figure",
+        text="二极管的实际特性曲线如图 1.2.6(a) 所示。",
+        source="教材.pdf",
+        page_start=12,
+        page_end=12,
+        chapter="第一章",
+        section="1.2 二极管特性",
+    )
+
+    class _FigureRelationClient:
+        config = SimpleNamespace(model="test-extractor")
+
+        def complete_json(self, _prompt: str) -> dict:
+            return {"items": [{
+                "text_unit_id": unit.id,
+                "entities": [
+                    {"name": "二极管的实际特性曲线", "type": "器件特性"},
+                    {"name": "图 1.2.6(a)", "type": "图号"},
+                ],
+                "relationships": [{
+                    "source": "二极管的实际特性曲线",
+                    "target": "图 1.2.6(a)",
+                    "relation_original": "如",
+                    "evidence_text": unit.text,
+                }],
+            }]}
+
+    result = extract_text_unit_graphs([unit], _FigureRelationClient())
+
+    assert [item["name"] for item in result[unit.id]["entities"]] == ["二极管的实际特性曲线"]
+    assert result[unit.id]["relationships"] == []
+
+
 def test_chapter_limit_works_without_embedded_pdf_toc(tmp_path) -> None:
     pages = [
         PageDocument("前言内容足够长，不应进入第一章构建结果。", "扫描教材.pdf", 1, "扫描教材", "扫描教材"),
