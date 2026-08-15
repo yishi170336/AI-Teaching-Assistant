@@ -43,6 +43,8 @@ from backend.app.rag.multimodal import (
     multimodal_chunks,
 )
 from backend.app.rag.semantic_graph import (
+    audit_semantic_graph_quality,
+    bind_chapter_knowledge_points,
     build_semantic_knowledge_graph,
     is_semantic_graph,
 )
@@ -802,8 +804,10 @@ def validate_section_semantics(
 
 
 def validate_graph_semantics(
-    chunks: list[TextChunk], graph: dict[str, Any]
-) -> dict[str, int]:
+    chunks: list[TextChunk],
+    graph: dict[str, Any],
+    quality_audit: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     textbook_chunks = [chunk for chunk in chunks if chunk.doc_type == "textbook"]
     if is_semantic_graph(graph):
         entities = {
@@ -820,10 +824,19 @@ def validate_graph_semantics(
                 "知识图谱语义校验失败：教材内容较多，但没有抽取到任何实体关系。"
                 "请检查 TextUnit 切分、图谱抽取模型或关系证据，旧索引不会被替换。"
             )
+        audit = quality_audit or audit_semantic_graph_quality(graph)
+        if audit.get("status") != "passed":
+            raise RuntimeError(
+                "知识图谱质量门禁失败："
+                f"发现 {int(audit.get('critical_issues', 0))} 个关键问题。"
+                "请查看 semantic_quality_audit.json；旧索引不会被替换。"
+            )
         return {
             "concept_nodes": len(entities),
             "entity_nodes": len(entities),
             "semantic_relationships": len(relationships),
+            "semantic_quality_status": audit.get("status", "unknown"),
+            "semantic_quality_warnings": int(audit.get("warning_issues", 0)),
         }
     concepts = {
         str(node.get("name", "")).strip()
@@ -1069,9 +1082,17 @@ def build_knowledge_base(
     )
 
     report(55, "semantic_text_units", "正在恢复自然段并生成 GraphRAG TextUnits")
+    graph_model_config = model_config
+    if (
+        model_config
+        and model_config.provider == "qwen"
+        and "vl" in model_config.model.lower()
+        and settings.qwen_graph_model
+    ):
+        graph_model_config = replace(model_config, model=settings.qwen_graph_model)
     graph_client = (
-        CompatibleMultimodalClient(model_config)
-        if model_config and model_config.enabled
+        CompatibleMultimodalClient(graph_model_config)
+        if graph_model_config and graph_model_config.enabled
         else None
     )
     report(60, "knowledge_graph", "正在从教材原文和电路图抽取实体与原始关系")
@@ -1082,8 +1103,17 @@ def build_knowledge_base(
         extraction_cache_path=output_dir / "semantic_extractions.jsonl",
     )
     chapter_summaries = build_chapter_knowledge_summaries(chunks)
-    semantic_graph["chapters"] = chapter_summaries
-    semantic_quality = validate_graph_semantics(chunks, semantic_graph)
+    semantic_chapters, chapter_alignment = bind_chapter_knowledge_points(
+        chapter_summaries, semantic_graph.get("nodes", [])
+    )
+    semantic_graph["chapters"] = semantic_chapters
+    semantic_graph.setdefault("stats", {})["chapter_alignment"] = chapter_alignment
+    semantic_audit = audit_semantic_graph_quality(semantic_graph)
+    semantic_audit["chapter_alignment"] = chapter_alignment
+    (output_dir / "semantic_quality_audit.json").write_text(
+        json.dumps(semantic_audit, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    semantic_quality = validate_graph_semantics(chunks, semantic_graph, semantic_audit)
     legacy_graph = build_local_knowledge_graph(chunks)
     legacy_graph["chapters"] = chapter_summaries
     (output_dir / "knowledge_graph.json").write_text(
@@ -1094,7 +1124,11 @@ def build_knowledge_base(
     )
     (output_dir / "chapter_knowledge_points.json").write_text(
         json.dumps(
-            {"schema_version": "1.0", "chapters": chapter_summaries},
+            {
+                "schema_version": "2.0-semantic-entities",
+                "chapters": semantic_chapters,
+                "alignment": chapter_alignment,
+            },
             ensure_ascii=False,
             indent=2,
         ),
@@ -1104,6 +1138,7 @@ def build_knowledge_base(
         ("text_units.jsonl", semantic_graph.get("text_units", [])),
         ("evidence_store.jsonl", semantic_graph.get("evidence", [])),
         ("relationship_mentions.jsonl", semantic_graph.get("relationship_mentions", [])),
+        ("attribute_facts.jsonl", semantic_graph.get("attribute_facts", [])),
     ):
         (output_dir / artifact_name).write_text(
             "\n".join(json.dumps(item, ensure_ascii=False) for item in values),
@@ -1194,7 +1229,7 @@ def build_knowledge_base(
             "display_only": True,
             "nodes": len(semantic_graph["nodes"]),
             "edges": len(semantic_graph["edges"]),
-            "chapters": len(chapter_summaries),
+            "chapters": len(semantic_chapters),
             "entities": semantic_graph.get("stats", {}).get("entities", len(semantic_graph["nodes"])),
             "semantic_relationships": semantic_graph.get("stats", {}).get("relationships", len(semantic_graph["edges"])),
             "relationship_mentions": semantic_graph.get("stats", {}).get("relationship_mentions", 0),

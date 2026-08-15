@@ -8,6 +8,8 @@ from backend.app.rag.models import PageDocument
 from backend.app.rag.multimodal import _ocr_scanned_pages
 from backend.app.rag.semantic_graph import (
     SemanticTextUnit,
+    audit_semantic_graph_quality,
+    bind_chapter_knowledge_points,
     build_semantic_knowledge_graph,
     build_semantic_text_units,
     extract_text_unit_graphs,
@@ -71,6 +73,23 @@ def test_text_units_follow_layout_blocks_and_join_cross_page_paragraph() -> None
     assert units[0].text == "负反馈能够提高放大电路的稳定性。"
     assert (units[0].page_start, units[0].page_end) == (1, 2)
     assert len(units[0].block_ids) == 2
+
+
+def test_text_units_split_ocr_paragraph_by_sentence_punctuation() -> None:
+    document = _page(4, [{
+        "id": "p1",
+        "type": "paragraph",
+        "text": "半导体具有导电性。PN结具有单向导电性。二极管由PN结构成。",
+        "reading_order": 1,
+    }])
+
+    units = build_semantic_text_units([document])
+
+    assert [unit.text for unit in units] == [
+        "半导体具有导电性。",
+        "PN结具有单向导电性。",
+        "二极管由PN结构成。",
+    ]
 
 
 def test_semantic_graph_contains_only_entities_and_verbatim_relations() -> None:
@@ -166,6 +185,169 @@ def test_figure_numbers_and_location_relations_are_not_graph_entities() -> None:
 
     assert [item["name"] for item in result[unit.id]["entities"]] == ["二极管的实际特性曲线"]
     assert result[unit.id]["relationships"] == []
+
+
+def test_pronoun_clause_and_action_entities_are_rejected() -> None:
+    unit = SemanticTextUnit(
+        id="unit-invalid-entities",
+        text="其电阻增大会降低输出电流。",
+        source="教材.pdf",
+        page_start=5,
+        page_end=5,
+        chapter="第一章",
+        section="1.2 电阻",
+    )
+
+    class _InvalidEntityClient:
+        config = SimpleNamespace(model="test-extractor")
+
+        def complete_json(self, _prompt: str) -> dict:
+            return {"items": [{
+                "text_unit_id": unit.id,
+                "entities": [
+                    {"name": "其电阻", "type": "参数"},
+                    {"name": "增大", "type": "动作"},
+                    {"name": "会降低输出电流", "type": "句子"},
+                    {"name": "输出电流", "type": "物理量"},
+                ],
+                "relationships": [],
+            }]}
+
+    result = extract_text_unit_graphs([unit], _InvalidEntityClient())
+
+    assert [item["name"] for item in result[unit.id]["entities"]] == ["输出电流"]
+
+
+def test_formula_and_quantity_are_attribute_facts_not_entity_nodes() -> None:
+    unit = SemanticTextUnit(
+        id="unit-formula",
+        text="硅管开启电压约为0.5 V，R_D=V_DQ/I_DQ。",
+        source="教材.pdf",
+        page_start=8,
+        page_end=8,
+        chapter="第一章",
+        section="1.3 二极管模型",
+    )
+
+    class _AttributeClient:
+        config = SimpleNamespace(model="test-extractor")
+
+        def complete_json(self, prompt: str) -> dict:
+            text_unit_id = re.findall(r'"text_unit_id":\s*"([^"]+)"', prompt)[-1]
+            return {"items": [{
+                "text_unit_id": text_unit_id,
+                "entities": [
+                    {"name": "硅管开启电压", "type": "电压"},
+                    {"name": "R_D", "type": "电路参数"},
+                ],
+                "relationships": [],
+                "attribute_facts": [
+                    {
+                        "subject": "硅管开启电压",
+                        "relation_original": "约为",
+                        "value": "0.5 V",
+                        "value_type": "quantity",
+                        "evidence_text": unit.text,
+                    },
+                    {
+                        "subject": "R_D",
+                        "relation_original": "=",
+                        "value": "V_DQ/I_DQ",
+                        "value_type": "formula",
+                        "evidence_text": unit.text,
+                    },
+                ],
+            }]}
+
+    extraction = extract_text_unit_graphs([unit], _AttributeClient())
+    document = _page(8, [{
+        "id": "p1", "type": "paragraph", "text": unit.text, "reading_order": 1,
+    }], section=unit.section)
+    graph = build_semantic_knowledge_graph([document], client=_AttributeClient())
+
+    assert len(extraction[unit.id]["attribute_facts"]) == 2
+    assert {node["name"] for node in graph["nodes"]} == {"硅管开启电压", "R_D"}
+    assert {fact["value"] for fact in graph["attribute_facts"]} == {"0.5 V", "V_DQ/I_DQ"}
+    assert not ({"0.5 V", "V_DQ/I_DQ"} & {node["name"] for node in graph["nodes"]})
+
+
+def test_formula_notation_variants_merge_as_aliases() -> None:
+    text = (
+        "v_D为0.1 V；vD为0.2 V；V_th为0.5 V；Vth为0.6 V；"
+        "V(BR)为10 V；V_(BR)为11 V；I_Zmax为20 mA；IZmax为21 mA；"
+        "R_D为1 kΩ；r_d为2 kΩ。"
+    )
+    document = _page(9, [{
+        "id": "p1", "type": "paragraph", "text": text, "reading_order": 1,
+    }])
+
+    class _AliasClient:
+        config = SimpleNamespace(model="test-extractor")
+
+        def complete_json(self, prompt: str) -> dict:
+            unit_ids = re.findall(r'"text_unit_id":\s*"([^"]+)"', prompt)
+            return {"items": [{
+                "text_unit_id": unit_id,
+                "entities": [],
+                "relationships": [],
+                "attribute_facts": [
+                    {
+                        "subject": subject,
+                        "relation_original": "为",
+                        "value": value,
+                        "value_type": "quantity",
+                        "evidence_text": phrase,
+                    }
+                    for subject, value, phrase in [
+                        ("v_D", "0.1 V", "v_D为0.1 V；"),
+                        ("vD", "0.2 V", "vD为0.2 V；"),
+                        ("V_th", "0.5 V", "V_th为0.5 V；"),
+                        ("Vth", "0.6 V", "Vth为0.6 V；"),
+                        ("V(BR)", "10 V", "V(BR)为10 V；"),
+                        ("V_(BR)", "11 V", "V_(BR)为11 V；"),
+                        ("I_Zmax", "20 mA", "I_Zmax为20 mA；"),
+                        ("IZmax", "21 mA", "IZmax为21 mA；"),
+                        ("R_D", "1 kΩ", "R_D为1 kΩ；"),
+                        ("r_d", "2 kΩ", "r_d为2 kΩ。"),
+                    ]
+                    if phrase.rstrip("；。") in prompt
+                ],
+            } for unit_id in unit_ids]}
+
+    graph = build_semantic_knowledge_graph([document], client=_AliasClient())
+
+    assert len(graph["nodes"]) == 6
+    assert len(graph["attribute_facts"]) == 10
+    assert sum(len(node["aliases"]) for node in graph["nodes"]) == 4
+    assert {node["name"] for node in graph["nodes"]} >= {"R_D", "r_d"}
+
+
+def test_chapter_points_reference_final_entities_and_quality_audit_passes() -> None:
+    document = _page(10, [{
+        "id": "p1",
+        "type": "paragraph",
+        "text": "负反馈能够提高放大电路的稳定性。",
+        "reading_order": 1,
+    }])
+    graph = build_semantic_knowledge_graph([document], client=_ExtractionClient())
+    chapters, alignment = bind_chapter_knowledge_points([{
+        "id": "chapter:1",
+        "name": "第一章",
+        "order": 1,
+        "pages": [10],
+        "concept_count": 2,
+        "concepts": [
+            {"id": "concept:old", "name": "负反馈", "evidence_count": 1, "pages": [10]},
+            {"id": "concept:missing", "name": "不存在的知识点", "evidence_count": 1, "pages": [10]},
+        ],
+    }], graph["nodes"])
+    graph["chapters"] = chapters
+
+    assert chapters[0]["concept_count"] == 1
+    assert chapters[0]["concepts"][0]["id"].startswith("entity:")
+    assert chapters[0]["unresolved_concepts"] == ["不存在的知识点"]
+    assert alignment["resolved_concepts"] == 1
+    assert audit_semantic_graph_quality(graph)["status"] == "passed"
 
 
 def test_chapter_limit_works_without_embedded_pdf_toc(tmp_path) -> None:
