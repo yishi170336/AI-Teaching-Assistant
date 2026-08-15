@@ -8,6 +8,7 @@ import unicodedata
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
+from difflib import SequenceMatcher
 from itertools import combinations
 from pathlib import Path
 from typing import Any, Iterable
@@ -20,8 +21,8 @@ from backend.app.rag.ontology import COURSE_CONCEPTS, component_role
 
 logger = logging.getLogger(__name__)
 
-SEMANTIC_GRAPH_SCHEMA_VERSION = "3.1-graphrag-semantic"
-GRAPH_EXTRACTION_VERSION = "2026-08-quality-v4"
+SEMANTIC_GRAPH_SCHEMA_VERSION = "3.2-graphrag-semantic"
+GRAPH_EXTRACTION_VERSION = "2026-08-text-llm-v10"
 TERMINAL_PUNCTUATION = ("。", "！", "？", "!", "?", "；", ";")
 EXCLUDED_SECTION_PATTERN = re.compile(
     r"(?:目录|前言|绪论|习题|复习题|思考题|自测题|参考答案|答案索引|版权|内容简介)"
@@ -44,26 +45,41 @@ PROVENANCE_ENTITY_PATTERN = re.compile(
     re.I,
 )
 ENTITY_PREFIX_PATTERN = re.compile(
-    r"^(?:其|它|该|这种|这些|上述|本页|该页|其中|因此|所以|同时|从而|由于|当|若|如果|在|对|由|将)"
+    r"^(?:其|它|该|这种|这些|这类|此类|上述|本页|该页|其中|因此|所以|同时|从而|由于|当|若|如果|在|对|由|将)"
 )
 ENTITY_CLAUSE_PATTERN = re.compile(
-    r"(?:称为|简称|叫做|是指|可以|能够|用于|使得|导致|产生|形成|包括|包含|具有|"
-    r"增大|减小|增强|减弱|提高|降低|等于|近似为|正比于|反比于)"
+    r"(?:称为|简称|叫做|是指|可以|能够|用于|使得|导致|产生|形成|构成|包括|包含|具有|"
+    r"增大|减小|增多|减少|增强|减弱|提高|降低|大于|小于|高于|低于|等于|近似为|正比于|反比于)"
 )
 ENTITY_CONTEXT_CLAUSE_PATTERN = re.compile(
     r"(?:作用下|情况下|工作情况|发生变化时|从而|因此).*(?:过程|运动|状态|规律|情况)$"
 )
 EXPRESSION_VALUE_PATTERN = re.compile(r"(?:的倒数|之和|之差|的乘积|的比值|的平方)$")
-DESCRIPTIVE_ENTITY_PATTERN = re.compile(r".{4,}(?:的一类物质|的物质|的过程|的现象)$")
+NOMINALIZED_ENTITY_END_PATTERN = re.compile(
+    r"的(?:物质|材料|器件|元件|电路|结构|区域|过程|现象|运动|性能|能力|特性|参数)$"
+)
 ANAPHORIC_ENTITY_PATTERN = re.compile(
     r"(?:这一|这种|该|上述|其)(?:性质|特性|作用|状态|数值|变化|效应|情况)"
+)
+COREFERENCE_MENTION_PATTERN = re.compile(
+    r"^(?:它|其|该(?:器件|元件|电路|结构|材料|参数|物质|区域|过程|现象)?|"
+    r"这种(?:器件|元件|电路|结构|材料|参数|物质|区域|过程|现象)?|"
+    r"上述(?:器件|元件|电路|结构|材料|参数|物质|区域|过程|现象)?)$"
 )
 GENERIC_ENTITY_NAMES = {
     "教材", "页面", "页码", "电路图", "插图", "文件名", "公式", "曲线", "图形", "数值",
     "加强", "减弱", "降低", "提高", "增大", "减小", "增强", "产生", "形成", "作用", "允许值",
+    "增多", "减少", "参数", "优点", "缺点", "情况", "条件", "方向", "位置",
+    "左侧", "右侧", "上方", "下方", "一侧", "另一侧", "图中",
+    "主要作用", "背离耗尽层",
 }
 VALUE_LITERAL_PATTERN = re.compile(
     r"^[≈≃≅=<>≤≥±+\-]?\s*\d+(?:\.\d+)?\s*(?:V|A|mA|μA|uA|Ω|kΩ|MΩ|Hz|kHz|MHz|℃|°C|%)?$",
+    re.I,
+)
+QUANTITY_ENTITY_PATTERN = re.compile(
+    r"^(?:约|大约|近似为|≈|=|[<>≤≥])?\s*[+\-]?\d+(?:\.\d+)?\s*"
+    r"(?:个(?:电子|空穴|载流子|原子)|倍|%|V|A|mA|μA|uA|Ω|kΩ|MΩ|Hz|kHz|MHz|℃|°C)$",
     re.I,
 )
 FORMULA_REFERENCE_PATTERN = re.compile(r"^式\s*[（(]?\d+(?:\.\d+)+[）)]?$", re.I)
@@ -134,6 +150,16 @@ def _normalized_text(value: str) -> str:
     return value.strip()
 
 
+def _canonical_entity_name(value: str) -> tuple[str, str]:
+    """Remove non-identifying contextual modifiers while retaining the surface mention."""
+
+    surface = _normalized_text(value).strip("，。；：、")
+    canonical = re.sub(r"^(?:常用的|常见的|典型的|通常所说的)", "", surface).strip()
+    if len(canonical) < 2:
+        canonical = surface
+    return canonical, surface
+
+
 def _entity_rejection_reasons(value: str) -> list[str]:
     name = _normalized_text(value).strip("，。；：、")
     reasons: list[str] = []
@@ -145,26 +171,32 @@ def _entity_rejection_reasons(value: str) -> list[str]:
         reasons.append("generic_word")
     if ENTITY_PREFIX_PATTERN.match(name) or name.startswith("本章"):
         reasons.append("pronoun_or_clause_prefix")
-    if ENTITY_CLAUSE_PATTERN.search(name):
+    if ENTITY_CLAUSE_PATTERN.search(name) and not NOMINALIZED_ENTITY_END_PATTERN.search(name):
         reasons.append("predicate_in_entity")
     if ENTITY_CONTEXT_CLAUSE_PATTERN.search(name):
         reasons.append("context_clause_entity")
     if EXPRESSION_VALUE_PATTERN.search(name):
         reasons.append("expression_value")
-    if DESCRIPTIVE_ENTITY_PATTERN.fullmatch(name):
-        reasons.append("descriptive_phrase")
     if ANAPHORIC_ENTITY_PATTERN.search(name):
         reasons.append("anaphoric_entity")
     if re.search(r"(?:或|以及|和|与)", name):
         reasons.append("combined_entities")
-    if re.search(r"[。！？!?；;，,：:]", name):
+    if re.search(r"[。！？!?；;，,：:、]", name):
         reasons.append("sentence_fragment")
     if VALUE_LITERAL_PATTERN.match(name):
         reasons.append("literal_value")
+    if QUANTITY_ENTITY_PATTERN.match(name):
+        reasons.append("quantity_value")
     if re.search(r"(?:<=|>=|[=<>≤≥≈≃≅])", name):
         reasons.append("formula_comparison")
     if re.search(r"(?:的|了|着|过|并且|而且)$", name):
         reasons.append("incomplete_phrase")
+    if re.search(r"(?:时|的情况)$", name):
+        reasons.append("condition_phrase")
+    if re.search(r"(?:左侧|右侧|上方|下方)$", name):
+        reasons.append("relative_location")
+    if re.search(r"(?:能|会)(?:够|使|产生|形成|越过|通过|提高|降低|增大|减小|增多|减少)", name):
+        reasons.append("verbal_clause")
     return reasons
 
 
@@ -193,7 +225,10 @@ def _relation_rejection_reasons(
         reasons.append("relation_has_ocr_corruption")
     if relation in {"工作时", "在靠近", "因", "来表征其"}:
         reasons.append("relation_is_incomplete_condition")
-    if relation in {"的", "和", "与", "及", "及其", "或", "其", "它", "这", "如", "式"}:
+    if relation in {
+        "的", "和", "与", "及", "及其", "或", "其", "它", "这", "如", "式",
+        "不断", "逐渐", "也", "均", "都", "会", "能", "将", "起",
+    }:
         reasons.append("relation_is_function_word")
     return reasons
 
@@ -309,38 +344,48 @@ def _sentence_parts(text: str) -> list[str]:
 
 
 def _split_semantic_text(text: str, max_chars: int = 420) -> list[str]:
-    """Split OCR paragraphs into extraction-sized sentence groups.
+    """Keep sentence boundaries while giving the text LLM paragraph context.
 
-    Each ordinary sentence becomes one TextUnit. Only a single overlong sentence
-    is grouped by clauses. This makes subject/predicate/object spans inspectable
-    and prevents relations from leaking across sentence boundaries.
+    Layout blocks already represent OCR-restored paragraphs. Sentences are used
+    as safe split points only when a paragraph exceeds the model-sized window;
+    ordinary neighbouring sentences stay together so the model can resolve
+    references such as “它”“该器件” without inventing a relationship.
     """
 
-    sentences = _sentence_parts(text)
-    pieces: list[str] = []
-    for sentence in sentences or [text]:
+    def split_overlong(sentence: str) -> list[str]:
         if len(sentence) <= max_chars:
-            pieces.append(sentence)
-            continue
+            return [sentence]
         clauses = [
             item.strip()
             for item in re.split(r"(?<=[，,：:])", sentence)
             if item.strip()
         ]
         if len(clauses) <= 1:
-            pieces.extend(
+            return [
                 sentence[index : index + max_chars]
                 for index in range(0, len(sentence), max_chars)
-            )
-            continue
+            ]
+        chunks: list[str] = []
         current = ""
         for clause in clauses:
             if current and len(current) + len(clause) > max_chars:
-                pieces.append(current)
+                chunks.append(current)
                 current = ""
             current += clause
         if current:
-            pieces.append(current)
+            chunks.append(current)
+        return chunks
+
+    pieces: list[str] = []
+    current = ""
+    for sentence in _sentence_parts(text) or [text]:
+        for chunk in split_overlong(sentence):
+            if current and len(current) + len(chunk) > max_chars:
+                pieces.append(current)
+                current = ""
+            current += chunk
+    if current:
+        pieces.append(current)
     return pieces
 
 
@@ -569,31 +614,54 @@ def _fallback_extract(unit: SemanticTextUnit) -> dict[str, Any]:
     }
 
 
-GRAPH_EXTRACTION_PROMPT = """你是教材 GraphRAG 候选事实抽取与自检器。输入是一组按 OCR 版面、自然段和句末符号恢复的 TextUnit。
-对每个 TextUnit 抽取正文明确陈述的课程知识实体、实体关系和数值/公式属性。关系来自原文，不使用预设关系词表。
+GRAPH_EXTRACTION_PROMPT = """你是教材 GraphRAG 三元组抽取专家。输入是一组依据 OCR 版面、自然段和句末符号恢复的 TextUnit。
+请利用完整段落的语言上下文，直接抽取正文明确陈述的“实体—原文关系—实体”三元组和数值/公式属性。关系完全来自原文，不使用预设关系词表。
 
 硬性规则：
-1. 实体必须是可独立理解的名词或技术术语。代词、数值、公式右值、动作词、整句/从句、以“的”结尾的残片都不是实体。
+1. 先理解整段含义，再识别实体和关系。实体直接写在 relationships 的 source/target 或 attribute_facts 的 subject 中，不要另外枚举实体。实体必须是可独立理解的完整名词或技术术语；代词、数值、公式右值、动作词、整句/从句和残缺短语都不是实体。
 2. relation_original 必须逐字复制 evidence_text 中连续出现的最短谓词短语，不得改写、概括、规范化、补充或生成另一种关系。
-3. source、relation_original、target 都必须逐字出现在同一 evidence_text 中，且方向与句子的主语—谓语—宾语一致。无法确定方向就不输出。
+3. source、relation_original、target 的语义方向必须与原文一致。普通三元组的三个字段都逐字来自 evidence_text；如果段内出现“它、该器件、这种结构”等指代，可将 source/target 写成同段中明确出现的完整实体名，并用 source_mention/target_mention 保存事实句中逐字出现的代词。无法唯一确定指代就不输出。
+   若原文实体带有“常用的、这种”等上下文修饰，source/target 写核心术语，source_mention/target_mention 写原文完整提及。例如 source=半导体器件、source_mention=常用的半导体器件。
 4. 只有数值、单位和完整公式右值放入 attribute_facts.value，不得作为关系的实体节点。attribute_facts 不存普通文字定义。例如“硅管开启电压约为0.5 V”输出 subject=硅管开启电压、relation_original=约为、value=0.5 V。
-5. evidence_text 必须逐字来自对应 TextUnit。若事实带有条件或适用范围，将原文连续条件短语逐字放入 qualifier_text；没有则为空。保留否定、方向、近似和大小变化；不同事实分别输出。
+5. evidence_text 必须逐字复制对应 TextUnit 中能够独立证明该事实的最短连续文本；解决段内指代时可以包含相邻两句。若事实带有条件或适用范围，将原文连续条件短语逐字放入 qualifier_text；没有则为空。保留否定、方向、近似和大小变化；不同事实分别输出。
 6. 目录、页码、图号、表号、公式编号、习题要求、文件名和“第几页电路图”不是知识实体。
 7. 对 circuit 模态，只抽取图中器件、连接和邻近正文明确支持的知识；不得凭常识猜测电路功能。
-8. 先逐条自检实体完整性、三元组方向和原文跨度。错误候选直接丢弃；没有可靠事实时返回空数组，不要为了连图制造关系。
+8. 不要输出独立 entities 数组；图实体将严格由通过校验的三元组端点和属性主语生成。
+9. 输出前逐条自检实体完整性、三元组方向、指代唯一性和原文跨度。没有可靠事实时返回空数组，不要为了连图制造关系。
 
 抽取示例：
 - “半导体器件包括半导体二极管、双极型晶体管。”应输出“半导体器件—包括—半导体二极管”和“半导体器件—包括—双极型晶体管”，不得反向。
 - “负反馈能够提高放大电路的稳定性。”应输出“负反馈—能够提高—放大电路的稳定性”。
-- “导电性能良好的物质称为导体。”只把“导体”作为实体并将原句写入 description；不要把“导电性能良好的物质”建成实体，也不要反转或生成关系。
+- “PN结具有单向导电性。它允许电流沿一个方向流动。”第二句可输出 source=PN结、source_mention=它、relation_original=允许、target=电流，evidence_text 保留这两句；不得把“它”建成实体。
+- “导电性能良好的物质称为导体。”可输出“导电性能良好的物质—称为—导体”，这是原文明示的定义关系，不得反转。
 - “R_D=V_DQ/I_DQ。”只输出 attribute_fact：subject=R_D、relation_original==、value=V_DQ/I_DQ、value_type=formula。
 
 禁止示例：P区—简称—体电阻（主语残缺）；反向击穿—称为—V(BR)（实体边界错误）；R_D—=—V_D（公式被截断）；其电阻（代词残片）；关系中使用“...”占位符；用“的、及其、如”单独作为关系。
 
 仅返回 JSON：
-{"items":[{"text_unit_id":"...","entities":[{"name":"...","type":"...","description":"..."}],"relationships":[{"source":"...","target":"...","relation_original":"...","qualifier_text":"...","evidence_text":"...","strength":1}],"attribute_facts":[{"subject":"...","relation_original":"...","value":"...","value_type":"quantity|formula","evidence_text":"..."}]}]}
+{"items":[{"text_unit_id":"...","relationships":[{"source":"...","source_mention":"...","target":"...","target_mention":"...","relation_original":"...","qualifier_text":"...","evidence_text":"...","strength":1}],"attribute_facts":[{"subject":"...","relation_original":"...","value":"...","value_type":"quantity|formula","evidence_text":"..."}]}]}
 
 TextUnits：
+"""
+
+
+GRAPH_REPAIR_PROMPT = """你是教材三元组抽取结果纠错器。下面给出原始 TextUnit、已经通过校验的事实，以及未通过程序校验的候选和原因。
+请重新阅读原文并利用语言理解修正实体边界、原文谓词、方向、指代和证据范围。只返回能够由原文直接证明、且尚未出现在 accepted 中的修正事实；不要解释，不要生成原文不存在的关系，不要为了增加连线而猜测。
+
+要求：
+1. relation_original 必须是原文连续出现的最短谓词，不得同义改写。
+2. source 和 target 必须是完整知识实体。段内指代可以解析为明确先行实体，但必须填写逐字出现的 source_mention/target_mention。
+3. evidence_text 必须是 TextUnit 中的连续原文，普通事实尽量使用单句，指代事实可以使用相邻两句。
+4. 同时检查原文是否还有首次遗漏的明确三元组或数值/公式属性；不能可靠修复或补充的事实直接舍弃。
+5. 不要输出独立 entities 数组，实体只通过三元组端点或属性主语表达。
+6. 只返回单个对象，不再套 items：
+{"relationships":[{"source":"...","source_mention":"...","target":"...","target_mention":"...","relation_original":"...","qualifier_text":"...","evidence_text":"...","strength":1}],"attribute_facts":[{"subject":"...","relation_original":"...","value":"...","value_type":"quantity|formula","evidence_text":"..."}]}
+
+方向复核示例：
+- “二极管由PN结构成”可修正为“PN结—构成—二极管”，因为“构成”是原文谓词且语义施事是PN结。
+- “当PN结反偏时，势垒电压增大”只陈述“势垒电压增大”，不得输出“PN结—增大—势垒电压”；无法形成两个实体之间的明确关系时应舍弃。
+
+待纠错内容：
 """
 
 
@@ -703,10 +771,99 @@ def _relationship_qualifier(
     return "", None
 
 
-def _valid_surface_triple(source: str, relation: str, target: str, evidence: str) -> bool:
-    """Accept high-confidence surface-order triples and reject incomplete spans."""
+def _surface_triple_spans(
+    source: str,
+    relation: str,
+    target: str,
+    evidence: str,
+    *,
+    source_mention: str = "",
+    target_mention: str = "",
+    allow_semantic_order: bool = False,
+) -> tuple[list[int], list[int], list[int]] | None:
+    """Locate an auditable triple, allowing explicit paragraph-local coreference."""
 
-    return _ordered_surface_spans(source, relation, target, evidence) is not None
+    source_surface = _normalized_text(source_mention) or source
+    target_surface = _normalized_text(target_mention) or target
+
+    def valid_mention(entity: str, mention: str) -> bool:
+        if mention == entity:
+            return True
+        if COREFERENCE_MENTION_PATTERN.fullmatch(mention):
+            return True
+        return (
+            _compact(entity) in _compact(mention)
+            and len(mention) <= len(entity) + 12
+            and not re.search(r"[。！？!?；;，,：:]", mention)
+        )
+
+    if not valid_mention(source, source_surface):
+        return None
+    if not valid_mention(target, target_surface):
+        return None
+    ordered = _ordered_surface_spans(source_surface, relation, target_surface, evidence)
+    if ordered is not None or not allow_semantic_order:
+        return ordered
+
+    def occurrences(value: str) -> list[list[int]]:
+        return [
+            [match.start(), match.end()]
+            for match in re.finditer(re.escape(value), evidence)
+        ]
+
+    candidates: list[tuple[int, list[int], list[int], list[int]]] = []
+    for source_span in occurrences(source_surface):
+        for relation_span in occurrences(relation):
+            for target_span in occurrences(target_surface):
+                spans = [source_span, relation_span, target_span]
+                if any(
+                    left[0] < right[1] and right[0] < left[1]
+                    for left, right in combinations(spans, 2)
+                ):
+                    continue
+                window = max(span[1] for span in spans) - min(span[0] for span in spans)
+                candidates.append((window, source_span, relation_span, target_span))
+    if not candidates:
+        return None
+    _, source_span, relation_span, target_span = min(candidates, key=lambda item: item[0])
+    order = "".join(
+        label
+        for _, label in sorted((
+            (source_span[0], "S"),
+            (relation_span[0], "R"),
+            (target_span[0], "T"),
+        ))
+    )
+    if order in {"STR", "TRS"}:
+        return None
+    if order == "TSR":
+        passive_gap = evidence[target_span[1] : source_span[0]]
+        if not re.search(r"(?:由|被|受)", passive_gap):
+            return None
+    return source_span, relation_span, target_span
+
+
+def _valid_surface_triple(
+    source: str,
+    relation: str,
+    target: str,
+    evidence: str,
+    *,
+    source_mention: str = "",
+    target_mention: str = "",
+    allow_semantic_order: bool = False,
+) -> bool:
+    """Accept source-grounded triples without requiring a pronoun to become a node."""
+
+    return _surface_triple_spans(
+        source,
+        relation,
+        target,
+        evidence,
+        source_mention=source_mention,
+        target_mention=target_mention,
+        allow_semantic_order=allow_semantic_order,
+    ) is not None
 
 
 def _normalize_extraction(
@@ -714,6 +871,7 @@ def _normalize_extraction(
     unit: SemanticTextUnit,
     *,
     allow_fallback: bool = False,
+    allow_semantic_order: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(raw, dict):
         if allow_fallback:
@@ -729,7 +887,7 @@ def _normalize_extraction(
         for item in entity_values:
             if not isinstance(item, dict):
                 continue
-            name = _normalized_text(str(item.get("name", ""))).strip("，。；：、")
+            name, _surface_name = _canonical_entity_name(str(item.get("name", "")))
             reasons = _entity_rejection_reasons(name)
             if reasons:
                 rejected.append({"kind": "entity", "reasons": reasons})
@@ -750,39 +908,93 @@ def _normalize_extraction(
         for item in relationship_values:
             if not isinstance(item, dict):
                 continue
-            source = _normalized_text(str(item.get("source", ""))).strip("，。；：、")
-            target = _normalized_text(str(item.get("target", ""))).strip("，。；：、")
+            source, source_surface = _canonical_entity_name(str(item.get("source", "")))
+            target, target_surface = _canonical_entity_name(str(item.get("target", "")))
+            source_mention = _normalized_text(str(item.get("source_mention", ""))).strip(
+                "，。；：、"
+            )
+            target_mention = _normalized_text(str(item.get("target_mention", ""))).strip(
+                "，。；：、"
+            )
+            if source_surface != source and not source_mention:
+                source_mention = source_surface
+            if target_surface != target and not target_mention:
+                target_mention = target_surface
             relation = _normalized_text(str(item.get("relation_original", ""))).strip("，。；：、")
             evidence = _normalized_text(str(item.get("evidence_text", "")))
+            candidate = {
+                "source": source,
+                "source_mention": source_mention,
+                "target": target,
+                "target_mention": target_mention,
+                "relation_original": relation,
+                "qualifier_text": _normalized_text(str(item.get("qualifier_text", ""))),
+                "evidence_text": evidence,
+            }
             reasons = [
                 *[f"source_{reason}" for reason in _entity_rejection_reasons(source)],
                 *[f"target_{reason}" for reason in _entity_rejection_reasons(target)],
                 *_relation_rejection_reasons(relation),
             ]
+            context_text = unit.text + unit.section
+            if _compact(source) not in _compact(context_text):
+                reasons.append("source_not_in_context")
+            if _compact(target) not in _compact(context_text):
+                reasons.append("target_not_in_context")
             if _entity_key(source) == _entity_key(target):
                 reasons.append("self_relation")
             if _compact(source) in _compact(relation) or _compact(target) in _compact(relation):
                 reasons.append("relation_contains_endpoint")
             if reasons:
                 rejected.append({
-                    "kind": "relationship", "reasons": reasons,
+                    "kind": "relationship", "reasons": sorted(set(reasons)),
+                    "candidate": candidate,
                 })
                 continue
             if not _valid_evidence_span(evidence, unit.text):
                 rejected.append({
                     "kind": "relationship", "reasons": ["evidence_not_in_text"],
+                    "candidate": candidate,
                 })
                 continue
-            if not _valid_surface_triple(source, relation, target, evidence):
+            direct_spans = _surface_triple_spans(
+                source,
+                relation,
+                target,
+                evidence,
+                source_mention=source_mention,
+                target_mention=target_mention,
+            )
+            grounded_spans = direct_spans or _surface_triple_spans(
+                source,
+                relation,
+                target,
+                evidence,
+                source_mention=source_mention,
+                target_mention=target_mention,
+                allow_semantic_order=True,
+            )
+            if grounded_spans is None:
                 rejected.append({
                     "kind": "relationship", "reasons": ["invalid_surface_order_or_boundary"],
+                    "candidate": candidate,
+                })
+                continue
+            surface_order_is_srt = (
+                grounded_spans[0][0] < grounded_spans[1][0] < grounded_spans[2][0]
+            )
+            if not surface_order_is_srt and not allow_semantic_order:
+                rejected.append({
+                    "kind": "relationship",
+                    "reasons": ["requires_semantic_direction_review"],
+                    "candidate": candidate,
                 })
                 continue
             try:
                 strength = max(1.0, min(10.0, float(item.get("strength", 5))))
             except (TypeError, ValueError):
                 strength = 5.0
-            spans = _ordered_surface_spans(source, relation, target, evidence)
+            spans = grounded_spans
             if spans is None:
                 continue
             qualifier_text, qualifier_span = _relationship_qualifier(
@@ -790,7 +1002,9 @@ def _normalize_extraction(
             )
             relationships.append({
                 "source": source,
+                "source_mention": source_mention or source,
                 "target": target,
+                "target_mention": target_mention or target,
                 "relation_original": relation,
                 "evidence_text": evidence,
                 "strength": strength,
@@ -799,6 +1013,17 @@ def _normalize_extraction(
                 "target_span": spans[2],
                 "qualifier_text": qualifier_text,
                 "qualifier_span": qualifier_span,
+                "coreference_resolved": bool(
+                    (source_mention and COREFERENCE_MENTION_PATTERN.fullmatch(source_mention))
+                    or (target_mention and COREFERENCE_MENTION_PATTERN.fullmatch(target_mention))
+                ),
+                "surface_form_resolved": bool(
+                    (source_mention and source_mention != source)
+                    or (target_mention and target_mention != target)
+                ),
+                "semantic_direction_reviewed": bool(
+                    allow_semantic_order and not surface_order_is_srt
+                ),
             })
             for name in (source, target):
                 if _compact(name) not in names:
@@ -814,7 +1039,7 @@ def _normalize_extraction(
         for item in attribute_values:
             if not isinstance(item, dict):
                 continue
-            subject = _normalized_text(str(item.get("subject", ""))).strip("，。；：、")
+            subject, _subject_surface = _canonical_entity_name(str(item.get("subject", "")))
             relation = _normalized_text(str(item.get("relation_original", ""))).strip("，。；：、")
             value = _normalized_text(str(item.get("value", ""))).strip("，。；：、")
             value_type = str(item.get("value_type", "text")).strip().lower()
@@ -831,10 +1056,25 @@ def _normalize_extraction(
                 reasons.append("evidence_not_in_text")
             attribute_spans = _ordered_surface_spans(subject, relation, value, evidence)
             if not attribute_spans:
+                attribute_spans = _surface_triple_spans(
+                    subject,
+                    relation,
+                    value,
+                    evidence,
+                    allow_semantic_order=True,
+                )
+            if not attribute_spans:
                 reasons.append("attribute_span_not_found")
             if reasons:
                 rejected.append({
                     "kind": "attribute_fact", "reasons": sorted(set(reasons)),
+                    "candidate": {
+                        "subject": subject,
+                        "relation_original": relation,
+                        "value": value,
+                        "value_type": value_type,
+                        "evidence_text": evidence,
+                    },
                 })
                 continue
             attribute_facts.append({
@@ -862,6 +1102,105 @@ def _normalize_extraction(
         "attribute_facts": attribute_facts,
         "rejected_candidates": rejected,
     }
+
+
+def _merge_llm_extractions(
+    primary: dict[str, Any],
+    repaired: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Combine two grounded LLM passes without rewriting any relation text."""
+
+    def rejection_summary(item: Any) -> dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return None
+        return {
+            "kind": str(item.get("kind", "")),
+            "reasons": list(item.get("reasons", [])),
+        }
+
+    result = {
+        "entities": list(primary.get("entities", [])),
+        "relationships": list(primary.get("relationships", [])),
+        "attribute_facts": list(primary.get("attribute_facts", [])),
+        "rejected_candidates": [
+            summary
+            for item in primary.get("rejected_candidates", [])
+            if (summary := rejection_summary(item)) is not None
+        ],
+        "repair_attempted": repaired is not None,
+        "repair_recovered_relationships": 0,
+        "repair_recovered_attribute_facts": 0,
+    }
+    if repaired is None:
+        return result
+
+    entity_keys = {
+        _entity_key(str(item.get("name", "")))
+        for item in result["entities"]
+        if isinstance(item, dict) and item.get("name")
+    }
+    for item in repaired.get("entities", []):
+        if not isinstance(item, dict) or not item.get("name"):
+            continue
+        key = _entity_key(str(item["name"]))
+        if key not in entity_keys:
+            result["entities"].append(item)
+            entity_keys.add(key)
+
+    relationship_keys = {
+        (
+            _entity_key(str(item.get("source", ""))),
+            str(item.get("relation_original", "")),
+            _entity_key(str(item.get("target", ""))),
+            str(item.get("evidence_text", "")),
+        )
+        for item in result["relationships"]
+        if isinstance(item, dict)
+    }
+    for item in repaired.get("relationships", []):
+        if not isinstance(item, dict):
+            continue
+        key = (
+            _entity_key(str(item.get("source", ""))),
+            str(item.get("relation_original", "")),
+            _entity_key(str(item.get("target", ""))),
+            str(item.get("evidence_text", "")),
+        )
+        if key not in relationship_keys:
+            result["relationships"].append(item)
+            relationship_keys.add(key)
+            result["repair_recovered_relationships"] += 1
+
+    attribute_keys = {
+        (
+            _entity_key(str(item.get("subject", ""))),
+            str(item.get("relation_original", "")),
+            str(item.get("value", "")),
+            str(item.get("evidence_text", "")),
+        )
+        for item in result["attribute_facts"]
+        if isinstance(item, dict)
+    }
+    for item in repaired.get("attribute_facts", []):
+        if not isinstance(item, dict):
+            continue
+        key = (
+            _entity_key(str(item.get("subject", ""))),
+            str(item.get("relation_original", "")),
+            str(item.get("value", "")),
+            str(item.get("evidence_text", "")),
+        )
+        if key not in attribute_keys:
+            result["attribute_facts"].append(item)
+            attribute_keys.add(key)
+            result["repair_recovered_attribute_facts"] += 1
+
+    result["rejected_candidates"].extend(
+        summary
+        for item in repaired.get("rejected_candidates", [])
+        if (summary := rejection_summary(item)) is not None
+    )
+    return result
 
 
 def _read_extraction_cache(path: Path | None) -> dict[str, dict[str, Any]]:
@@ -892,7 +1231,7 @@ def extract_text_unit_graphs(
     client: Any | None = None,
     *,
     cache_path: Path | None = None,
-    batch_size: int = 6,
+    batch_size: int = 1,
     max_workers: int = 3,
 ) -> dict[str, dict[str, Any]]:
     """Extract GraphRAG subgraphs while retaining verbatim relationship mentions."""
@@ -943,26 +1282,134 @@ def extract_text_unit_graphs(
                 response = client.complete_json(
                     GRAPH_EXTRACTION_PROMPT + json.dumps(payload, ensure_ascii=False)
                 )
+                if (
+                    len(batch) == 1
+                    and isinstance(response, dict)
+                    and ("relationships" in response or "attribute_facts" in response)
+                ):
+                    raw_by_id[batch[0].id] = response
                 items = response.get("items", []) if isinstance(response, dict) else []
                 if isinstance(items, list) and items:
-                    raw_by_id = {
+                    raw_by_id.update({
                         str(item.get("text_unit_id")): item
                         for item in items
-                        if isinstance(item, dict) and item.get("text_unit_id")
-                    }
-                    if raw_by_id:
+                        if isinstance(item, dict)
+                        and item.get("text_unit_id")
+                        and any(unit.id == str(item.get("text_unit_id")) for unit in batch)
+                    })
+                    if len(raw_by_id) == len(batch):
                         break
                 logger.warning(
-                    "Semantic graph extraction returned no items (attempt %s/3)", attempt
+                    "Semantic graph extraction missed %s TextUnits (attempt %s/3)",
+                    len(batch) - len(raw_by_id),
+                    attempt,
                 )
-        normalized_batch: list[tuple[SemanticTextUnit, dict[str, Any]]] = []
+        primary_by_id: dict[str, dict[str, Any]] = {}
         for unit in batch:
-            normalized = _normalize_extraction(
+            primary_by_id[unit.id] = _normalize_extraction(
                 raw_by_id.get(unit.id),
                 unit,
                 allow_fallback=client is None,
+                allow_semantic_order=False,
             )
-            normalized_batch.append((unit, normalized))
+
+        repaired_by_id: dict[str, dict[str, Any]] = {}
+        repair_attempted_ids: set[str] = set()
+        if client is not None:
+            repair_payload: list[dict[str, Any]] = []
+            for unit in batch:
+                primary = primary_by_id[unit.id]
+                rejected_facts = [
+                    item for item in primary.get("rejected_candidates", [])
+                    if isinstance(item, dict)
+                    and item.get("kind") in {"relationship", "attribute_fact"}
+                ]
+                if not rejected_facts:
+                    continue
+                compact_rejections = []
+                for rejected in rejected_facts[:16]:
+                    candidate = rejected.get("candidate", {})
+                    compact_rejections.append({
+                        "kind": rejected.get("kind"),
+                        "reasons": rejected.get("reasons", []),
+                        "candidate": {
+                            key: value
+                            for key, value in candidate.items()
+                            if key not in {"evidence_text", "qualifier_text"}
+                        } if isinstance(candidate, dict) else {},
+                    })
+                repair_payload.append({
+                    "text_unit_id": unit.id,
+                    "modality": unit.modality,
+                    "chapter": unit.chapter,
+                    "section": unit.section,
+                    "text": unit.text,
+                    "accepted": {
+                        "relationships": [
+                            {
+                                "source": item.get("source"),
+                                "relation_original": item.get("relation_original"),
+                                "target": item.get("target"),
+                            }
+                            for item in primary.get("relationships", [])
+                            if isinstance(item, dict)
+                        ],
+                        "attribute_facts": [
+                            {
+                                "subject": item.get("subject"),
+                                "relation_original": item.get("relation_original"),
+                                "value": item.get("value"),
+                            }
+                            for item in primary.get("attribute_facts", [])
+                            if isinstance(item, dict)
+                        ],
+                    },
+                    "rejected_candidates": compact_rejections,
+                })
+            if repair_payload:
+                repair_attempted_ids = {
+                    str(item["text_unit_id"]) for item in repair_payload
+                }
+                for attempt in range(1, 2):
+                    response = client.complete_json(
+                        GRAPH_REPAIR_PROMPT + json.dumps(repair_payload, ensure_ascii=False)
+                    )
+                    if (
+                        len(repair_payload) == 1
+                        and isinstance(response, dict)
+                        and ("relationships" in response or "attribute_facts" in response)
+                    ):
+                        repaired_by_id[str(repair_payload[0]["text_unit_id"])] = response
+                    items = response.get("items", []) if isinstance(response, dict) else []
+                    if isinstance(items, list):
+                        repaired_by_id.update({
+                            str(item.get("text_unit_id")): item
+                            for item in items
+                            if isinstance(item, dict)
+                            and str(item.get("text_unit_id")) in repair_attempted_ids
+                        })
+                    if len(repaired_by_id) == len(repair_attempted_ids):
+                        break
+                    logger.warning(
+                        "Semantic graph repair missed %s TextUnits (attempt %s/1)",
+                        len(repair_attempted_ids) - len(repaired_by_id),
+                        attempt,
+                    )
+
+        normalized_batch: list[tuple[SemanticTextUnit, dict[str, Any]]] = []
+        for unit in batch:
+            repaired = (
+                _normalize_extraction(
+                    repaired_by_id.get(unit.id),
+                    unit,
+                    allow_semantic_order=True,
+                )
+                if unit.id in repair_attempted_ids
+                else None
+            )
+            normalized_batch.append(
+                (unit, _merge_llm_extractions(primary_by_id[unit.id], repaired))
+            )
         return normalized_batch
 
     worker_count = min(max(1, max_workers), len(batches)) if batches else 0
@@ -1108,6 +1555,7 @@ def _merge_graph_records(
         description: str = "",
         raw_type: str = "",
     ) -> str:
+        name, _surface_name = _canonical_entity_name(name)
         if not _valid_entity_name(name):
             return ""
         key = _entity_key(name)
@@ -1164,10 +1612,16 @@ def _merge_graph_records(
         for position, item in enumerate(extraction.get("relationships", []), 1):
             if not isinstance(item, dict):
                 continue
-            source_name = str(item.get("source", "")).strip()
-            target_name = str(item.get("target", "")).strip()
+            source_name, source_surface = _canonical_entity_name(str(item.get("source", "")))
+            target_name, target_surface = _canonical_entity_name(str(item.get("target", "")))
             relation = str(item.get("relation_original", "")).strip()
             evidence_text = str(item.get("evidence_text", ""))
+            source_mention = str(item.get("source_mention", "")).strip()
+            target_mention = str(item.get("target_mention", "")).strip()
+            if source_surface != source_name and not source_mention:
+                source_mention = source_surface
+            if target_surface != target_name and not target_mention:
+                target_mention = target_surface
             if (
                 not source_name
                 or not target_name
@@ -1175,13 +1629,36 @@ def _merge_graph_records(
                 or _relation_rejection_reasons(relation)
                 or _compact(source_name) in _compact(relation)
                 or _compact(target_name) in _compact(relation)
-                or not _valid_surface_triple(source_name, relation, target_name, evidence_text)
+                or not _valid_surface_triple(
+                    source_name,
+                    relation,
+                    target_name,
+                    evidence_text,
+                    source_mention=source_mention,
+                    target_mention=target_mention,
+                    allow_semantic_order=True,
+                )
             ):
                 continue
             source_id = ensure_entity(source_name, _entity_type(source_name))
             target_id = ensure_entity(target_name, _entity_type(target_name))
             if not source_id or not target_id or source_id == target_id:
                 continue
+            for entity_id, canonical_name, mention in (
+                (source_id, source_name, source_mention),
+                (target_id, target_name, target_mention),
+            ):
+                if (
+                    mention
+                    and mention != canonical_name
+                    and not COREFERENCE_MENTION_PATTERN.fullmatch(mention)
+                    and _compact(canonical_name) in _compact(mention)
+                    and mention not in entities[entity_id]["aliases"]
+                ):
+                    entities[entity_id]["aliases"].append(mention)
+            for entity_id in (source_id, target_id):
+                if evidence_text and not str(entities[entity_id].get("description", "")).strip():
+                    entities[entity_id]["description"] = evidence_text[:500]
             source_span = item.get("source_span") or _text_span(source_name, evidence_text)
             qualifier_text, qualifier_span = (
                 _relationship_qualifier(
@@ -1197,7 +1674,9 @@ def _merge_graph_records(
                 "source": source_id,
                 "target": target_id,
                 "source_name": source_name,
+                "source_mention": source_mention or source_name,
                 "target_name": target_name,
+                "target_mention": target_mention or target_name,
                 "relation": relation,
                 "evidence_text": evidence_text,
                 "strength": float(item.get("strength", 5) or 5),
@@ -1210,11 +1689,16 @@ def _merge_graph_records(
                 "target_span": item.get("target_span"),
                 "qualifier_text": qualifier_text,
                 "qualifier_span": qualifier_span,
+                "coreference_resolved": bool(item.get("coreference_resolved", False)),
+                "surface_form_resolved": bool(item.get("surface_form_resolved", False)),
+                "semantic_direction_reviewed": bool(
+                    item.get("semantic_direction_reviewed", False)
+                ),
             })
         for position, item in enumerate(extraction.get("attribute_facts", []), 1):
             if not isinstance(item, dict):
                 continue
-            subject_name = str(item.get("subject", "")).strip()
+            subject_name, _subject_surface = _canonical_entity_name(str(item.get("subject", "")))
             relation = str(item.get("relation_original", "")).strip()
             value = str(item.get("value", "")).strip()
             evidence_text = str(item.get("evidence_text", ""))
@@ -1222,13 +1706,21 @@ def _merge_graph_records(
                 _relation_rejection_reasons(relation, allow_formula_operator=True)
                 or str(item.get("value_type", "")) not in {"quantity", "formula"}
                 or not _valid_evidence_span(evidence_text, unit.text)
-                or not _valid_surface_triple(subject_name, relation, value, evidence_text)
+                or not _valid_surface_triple(
+                    subject_name,
+                    relation,
+                    value,
+                    evidence_text,
+                    allow_semantic_order=True,
+                )
             ):
                 continue
             subject_id = ensure_entity(subject_name, _entity_type(subject_name))
             if not subject_id or not relation or not value:
                 continue
             entity = entities[subject_id]
+            if evidence_text and not str(entity.get("description", "")).strip():
+                entity["description"] = evidence_text[:500]
             if unit_id not in entity["text_unit_ids"]:
                 entity["text_unit_ids"].append(unit_id)
             for page in range(unit.page_start, unit.page_end + 1):
@@ -1335,7 +1827,7 @@ def _merge_graph_records(
         relationship_counts[str(edge["target"])] += 1
     for entity_id in list(entities):
         entity = entities[entity_id]
-        if entity_id not in connected_ids and not str(entity.get("description", "")).strip():
+        if entity_id not in connected_ids:
             del entities[entity_id]
             continue
         entity["evidence_count"] = len(entity["text_unit_ids"])
@@ -1499,7 +1991,7 @@ def bind_chapter_knowledge_points(
                     node for node in candidates
                     if not node.get("pages") or chapter_pages.intersection(node.get("pages", []))
                 ] or candidates
-            if not candidates and len(_compact(name)) >= 3:
+            if not candidates and len(_compact(name)) >= 2:
                 contained = [
                     node for node in node_items
                     if (
@@ -1515,6 +2007,30 @@ def bind_chapter_knowledge_points(
                 if len(contained) == 1:
                     candidates = contained
                     match_method = "contained"
+            if not candidates and len(_compact(name)) >= 3:
+                ranked: list[tuple[float, dict[str, Any]]] = []
+                for node in node_items:
+                    if (
+                        chapter_pages
+                        and node.get("pages")
+                        and not chapter_pages.intersection(node.get("pages", []))
+                    ):
+                        continue
+                    labels = [str(node.get("name", "")), *map(str, node.get("aliases", []))]
+                    score = max(
+                        SequenceMatcher(None, _compact(name), _compact(label)).ratio()
+                        for label in labels if label
+                    )
+                    ranked.append((score, node))
+                ranked.sort(key=lambda item: (-item[0], str(item[1].get("name", ""))))
+                if ranked:
+                    best_score, best_node = ranked[0]
+                    second_score = ranked[1][0] if len(ranked) > 1 else 0.0
+                    if best_score >= 0.84 or (
+                        best_score >= 0.72 and best_score - second_score >= 0.08
+                    ):
+                        candidates = [best_node]
+                        match_method = "fuzzy"
             if len(candidates) != 1:
                 unresolved.append(name)
                 unresolved_names.append(name)
@@ -1612,6 +2128,9 @@ def audit_semantic_graph_quality(graph: dict[str, Any]) -> dict[str, Any]:
                 str(mention.get("relation", "")),
                 str(mention.get("target_name") or target_node.get("name", "")),
                 evidence_text,
+                source_mention=str(mention.get("source_mention", "")),
+                target_mention=str(mention.get("target_mention", "")),
+                allow_semantic_order=True,
             )
         ):
             bad_mentions += 1
@@ -1765,6 +2284,17 @@ def build_semantic_knowledge_graph(
     for candidate in rejected_candidates:
         for reason in candidate.get("reasons", []):
             rejection_reasons[str(reason)] += 1
+    repair_attempted_units = sum(
+        1 for extraction in extractions.values() if extraction.get("repair_attempted")
+    )
+    repaired_relationships = sum(
+        int(extraction.get("repair_recovered_relationships", 0) or 0)
+        for extraction in extractions.values()
+    )
+    repaired_attribute_facts = sum(
+        int(extraction.get("repair_recovered_attribute_facts", 0) or 0)
+        for extraction in extractions.values()
+    )
     text_evidence = [
         {
             "id": unit.id,
@@ -1799,6 +2329,13 @@ def build_semantic_knowledge_graph(
             "text_units": len(units),
             "communities": len(communities),
             "circuit_evidence": len(circuit_evidence),
+            "extraction_method": "text_llm" if client is not None else "rule_fallback",
+            "extraction_model": str(
+                getattr(getattr(client, "config", None), "model", "rule")
+            ),
+            "repair_attempted_units": repair_attempted_units,
+            "repair_recovered_relationships": repaired_relationships,
+            "repair_recovered_attribute_facts": repaired_attribute_facts,
             "rejected_candidates": len(rejected_candidates),
             "rejection_reasons": dict(sorted(rejection_reasons.items())),
         },

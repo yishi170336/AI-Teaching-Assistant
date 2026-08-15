@@ -75,7 +75,7 @@ def test_text_units_follow_layout_blocks_and_join_cross_page_paragraph() -> None
     assert len(units[0].block_ids) == 2
 
 
-def test_text_units_split_ocr_paragraph_by_sentence_punctuation() -> None:
+def test_text_units_keep_ocr_paragraph_context_with_sentence_boundaries() -> None:
     document = _page(4, [{
         "id": "p1",
         "type": "paragraph",
@@ -86,9 +86,7 @@ def test_text_units_split_ocr_paragraph_by_sentence_punctuation() -> None:
     units = build_semantic_text_units([document])
 
     assert [unit.text for unit in units] == [
-        "半导体具有导电性。",
-        "PN结具有单向导电性。",
-        "二极管由PN结构成。",
+        "半导体具有导电性。PN结具有单向导电性。二极管由PN结构成。"
     ]
 
 
@@ -150,6 +148,149 @@ def test_non_verbatim_relation_is_rejected_without_generating_replacement() -> N
 
     assert result[unit.id]["relationships"] == []
     assert "抑制" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_text_llm_repairs_rejected_triple_from_original_paragraph() -> None:
+    unit = SemanticTextUnit(
+        id="unit-repair",
+        text="负反馈能够提高放大电路的稳定性。",
+        source="教材.pdf",
+        page_start=3,
+        page_end=3,
+        chapter="第一章",
+        section="1.1 反馈",
+    )
+
+    class _RepairClient:
+        config = SimpleNamespace(model="text-llm")
+
+        def complete_json(self, prompt: str) -> dict:
+            if "待纠错内容" in prompt:
+                relationship = {
+                    "source": "负反馈",
+                    "target": "放大电路的稳定性",
+                    "relation_original": "能够提高",
+                    "evidence_text": unit.text,
+                }
+            else:
+                relationship = {
+                    "source": "负反馈",
+                    "target": "放大电路的稳定性",
+                    "relation_original": "能够提高放大电路的稳定性",
+                    "evidence_text": unit.text,
+                }
+            return {"items": [{
+                "text_unit_id": unit.id,
+                "entities": [
+                    {"name": "负反馈", "type": "反馈方式"},
+                    {"name": "放大电路的稳定性", "type": "电路性质"},
+                ],
+                "relationships": [relationship],
+                "attribute_facts": [],
+            }]}
+
+    result = extract_text_unit_graphs([unit], _RepairClient())[unit.id]
+
+    assert [item["relation_original"] for item in result["relationships"]] == ["能够提高"]
+    assert result["repair_attempted"] is True
+    assert result["repair_recovered_relationships"] == 1
+
+
+def test_text_llm_resolves_paragraph_local_pronoun_without_pronoun_node() -> None:
+    text = "PN结具有单向导电性。它允许电流沿一个方向流动。"
+    document = _page(4, [{
+        "id": "p1", "type": "paragraph", "text": text, "reading_order": 1,
+    }], section="1.2 PN结")
+
+    class _CoreferenceClient:
+        config = SimpleNamespace(model="text-llm")
+
+        def complete_json(self, prompt: str) -> dict:
+            unit_id = re.findall(r'"text_unit_id":\s*"([^"]+)"', prompt)[-1]
+            return {"items": [{
+                "text_unit_id": unit_id,
+                "entities": [
+                    {"name": "PN结", "type": "半导体结构"},
+                    {"name": "电流", "type": "物理量"},
+                ],
+                "relationships": [{
+                    "source": "PN结",
+                    "source_mention": "它",
+                    "target": "电流",
+                    "relation_original": "允许",
+                    "evidence_text": text,
+                }],
+                "attribute_facts": [],
+            }]}
+
+    graph = build_semantic_knowledge_graph([document], client=_CoreferenceClient())
+
+    assert {node["name"] for node in graph["nodes"]} == {"PN结", "电流"}
+    assert graph["relationship_mentions"][0]["source_mention"] == "它"
+    assert graph["relationship_mentions"][0]["coreference_resolved"] is True
+    assert audit_semantic_graph_quality(graph)["status"] == "passed"
+
+
+def test_text_llm_second_pass_accepts_reviewed_passive_direction() -> None:
+    text = "二极管由PN结构成。"
+    unit = SemanticTextUnit(
+        id="unit-passive",
+        text=text,
+        source="教材.pdf",
+        page_start=4,
+        page_end=4,
+        chapter="第一章",
+        section="1.2 二极管",
+    )
+
+    class _PassiveClient:
+        config = SimpleNamespace(model="text-llm")
+
+        def complete_json(self, _prompt: str) -> dict:
+            return {"items": [{
+                "text_unit_id": unit.id,
+                "entities": [
+                    {"name": "PN结", "type": "半导体结构"},
+                    {"name": "二极管", "type": "半导体器件"},
+                ],
+                "relationships": [{
+                    "source": "PN结",
+                    "target": "二极管",
+                    "relation_original": "构成",
+                    "evidence_text": text,
+                }],
+                "attribute_facts": [],
+            }]}
+
+    result = extract_text_unit_graphs([unit], _PassiveClient())[unit.id]
+
+    assert len(result["relationships"]) == 1
+    assert result["relationships"][0]["semantic_direction_reviewed"] is True
+    assert result["repair_attempted"] is True
+    assert result["repair_recovered_relationships"] == 1
+
+
+def test_entity_candidates_without_facts_are_not_published_as_graph_nodes() -> None:
+    document = _page(5, [{
+        "id": "p1", "type": "paragraph", "text": "导体是一类物质。", "reading_order": 1,
+    }])
+
+    class _EntityOnlyClient:
+        config = SimpleNamespace(model="text-llm")
+
+        def complete_json(self, prompt: str) -> dict:
+            unit_id = re.findall(r'"text_unit_id":\s*"([^"]+)"', prompt)[-1]
+            return {"items": [{
+                "text_unit_id": unit_id,
+                "entities": [{"name": "导体", "type": "材料", "description": "一类物质"}],
+                "relationships": [],
+                "attribute_facts": [],
+            }]}
+
+    graph = build_semantic_knowledge_graph([document], client=_EntityOnlyClient())
+
+    assert graph["nodes"] == []
+    assert graph["edges"] == []
 
 
 def test_figure_numbers_and_location_relations_are_not_graph_entities() -> None:
@@ -348,6 +489,25 @@ def test_chapter_points_reference_final_entities_and_quality_audit_passes() -> N
     assert chapters[0]["unresolved_concepts"] == ["不存在的知识点"]
     assert alignment["resolved_concepts"] == 1
     assert audit_semantic_graph_quality(graph)["status"] == "passed"
+
+
+def test_chapter_points_can_bind_one_unambiguous_surface_variant() -> None:
+    nodes = [{
+        "id": "entity:pn",
+        "name": "PN结的单向导电性",
+        "aliases": [],
+        "pages": [12],
+    }]
+    chapters, alignment = bind_chapter_knowledge_points([{
+        "id": "chapter:1",
+        "name": "第一章",
+        "pages": [12],
+        "concepts": [{"name": "PN结及其单向导电性", "pages": [12]}],
+    }], nodes)
+
+    assert chapters[0]["concepts"][0]["entity_id"] == "entity:pn"
+    assert chapters[0]["concepts"][0]["match_method"] == "fuzzy"
+    assert alignment["resolved_concepts"] == 1
 
 
 def test_chapter_limit_works_without_embedded_pdf_toc(tmp_path) -> None:

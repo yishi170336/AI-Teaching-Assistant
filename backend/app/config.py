@@ -41,7 +41,7 @@ class Settings:
         "QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
     )
     qwen_chat_model: str = os.getenv("QWEN_CHAT_MODEL", "qwen3.7-plus")
-    qwen_graph_model: str = os.getenv("QWEN_GRAPH_MODEL", "qwen-plus")
+    qwen_graph_model: str = os.getenv("QWEN_GRAPH_MODEL", "qwen3.7-plus")
     qwen_vision_model: str = os.getenv("QWEN_VISION_MODEL", "qwen3-vl-flash")
     qwen_circuit_vision_model: str = os.getenv(
         "QWEN_CIRCUIT_VISION_MODEL", "qwen3-vl-flash"

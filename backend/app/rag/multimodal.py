@@ -96,6 +96,7 @@ class BuildModelConfig:
     model: str = ""
     api_key: str = field(default="", repr=False)
     base_url: str = ""
+    enable_thinking: bool | None = None
 
     @property
     def enabled(self) -> bool:
@@ -185,6 +186,8 @@ class CompatibleMultimodalClient:
             "max_tokens": 4096,
             "response_format": {"type": "json_object"},
         }
+        if self.config.enable_thinking is not None:
+            payload["enable_thinking"] = self.config.enable_thinking
         headers = {"Content-Type": "application/json"}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"

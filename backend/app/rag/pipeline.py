@@ -1086,16 +1086,19 @@ def build_knowledge_base(
     if (
         model_config
         and model_config.provider == "qwen"
-        and "vl" in model_config.model.lower()
         and settings.qwen_graph_model
     ):
-        graph_model_config = replace(model_config, model=settings.qwen_graph_model)
+        graph_model_config = replace(
+            model_config,
+            model=settings.qwen_graph_model,
+            enable_thinking=False,
+        )
     graph_client = (
         CompatibleMultimodalClient(graph_model_config)
         if graph_model_config and graph_model_config.enabled
         else None
     )
-    report(60, "knowledge_graph", "正在从教材原文和电路图抽取实体与原始关系")
+    report(60, "knowledge_graph", "正在使用文本大模型从教材段落抽取实体与原始关系")
     semantic_graph = build_semantic_knowledge_graph(
         documents,
         elements,
