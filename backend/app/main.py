@@ -249,11 +249,8 @@ def _public_conversation_focus(focus: dict[str, Any] | None) -> dict[str, Any] |
 
 def _question_summary_from_context(
     question_context: dict[str, Any] | None,
-    *,
-    include_answer_figures: bool = False,
-    student_id: str = "",
 ) -> dict[str, Any] | None:
-    """Build the student-visible source card, including every question figure."""
+    """Build an answer-free source card for the student chat."""
 
     if not isinstance(question_context, dict):
         return None
@@ -273,34 +270,11 @@ def _question_summary_from_context(
             )
             if item.get(key) not in (None, "")
         })
-    answer_figures = []
-    if include_answer_figures:
-        question_ref = question_context.get("question_ref")
-        bank_id = (
-            str(question_ref.get("question_bank_id", ""))
-            if isinstance(question_ref, dict)
-            else ""
-        )
-        reference = question_context.get("reference")
-        for item in reference.get("answer_figures", []) if isinstance(reference, dict) else []:
-            if not isinstance(item, dict) or not item.get("path") or not bank_id:
-                continue
-            asset_name = Path(str(item["path"])).name
-            answer_figures.append({
-                "file": asset_name,
-                "caption": str(item.get("caption", "")),
-                "url": (
-                    f"/api/question-banks/{bank_id}/assets/{asset_name}"
-                    + (f"?student_id={student_id}" if student_id else "")
-                ),
-                **({"position": item["position"]} if item.get("position") else {}),
-            })
     return {
         "bank_title": str(bank.get("title", "")),
         "number": question.get("number"),
         "prompt": str(question.get("prompt", ""))[:500],
         "figures": figures[:12],
-        "answer_figures": answer_figures[:12],
     }
 
 
@@ -2437,13 +2411,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                         if result.recommendation
                         else question_ref
                     ),
-                    "question_summary": _question_summary_from_context(
-                        question_context,
-                        include_answer_figures=result.answer_task in {
-                            "solve_question", "explain_bound_answer", "verify_bound_answer",
-                        },
-                        student_id=payload.student_id,
-                    ),
+                    "question_summary": _question_summary_from_context(question_context),
                     "conversation_focus": _public_conversation_focus(final_focus),
                     "resolved_context": context_envelope,
                     "context_state": public_context_state(session_context_state),
@@ -2481,13 +2449,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                         if result.recommendation
                         else question_ref
                     ),
-                    "question_summary": _question_summary_from_context(
-                        question_context,
-                        include_answer_figures=result.answer_task in {
-                            "solve_question", "explain_bound_answer", "verify_bound_answer",
-                        },
-                        student_id=payload.student_id,
-                    ),
+                    "question_summary": _question_summary_from_context(question_context),
                     "conversation_focus": persisted_focus or None,
                     "semantic_request": semantic_request,
                     "resolved_context": context_envelope,

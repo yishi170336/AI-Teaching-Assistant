@@ -513,7 +513,6 @@ button { color: inherit; }
 .message-question-source > div > .math-markdown p { margin: 0; }
 .message-question-figure-group { display: grid; gap: 5px; margin-top: 7px; }
 .message-question-figure-group > small { color: #4f766f; font-weight: 700; }
-.message-question-figure-group.answer > small { color: #796c4f; }
 .message-question-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 260px)); gap: 10px; margin-top: 5px; }
 .message-question-figures figure { width: 100%; box-sizing: border-box; margin: 0; padding: 8px; border: 1px solid #dbe8e5; border-radius: 10px; background: #fff; box-shadow: 0 3px 10px rgba(31,76,71,.04); }
 .message-question-figures .ant-image, .message-question-figures img { display: block; width: 100%; max-height: 220px; object-fit: contain; }
