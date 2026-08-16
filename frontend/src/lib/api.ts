@@ -175,6 +175,7 @@ export type KnowledgeGraphNode = {
   id: string
   type: 'concept' | 'component' | 'circuit' | 'document' | 'page' | string
   name: string
+  display_name?: string
   chunk_id?: string
   page?: number
   pages?: number[]
@@ -185,6 +186,8 @@ export type KnowledgeGraphNode = {
   entity_type?: string
   description?: string
   aliases?: string[]
+  symbols?: string[]
+  display_name_source?: string
 }
 
 export type KnowledgeGraphEdge = {

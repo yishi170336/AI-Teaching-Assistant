@@ -21,8 +21,8 @@ from backend.app.rag.ontology import COURSE_CONCEPTS, component_role
 
 logger = logging.getLogger(__name__)
 
-SEMANTIC_GRAPH_SCHEMA_VERSION = "3.2-graphrag-semantic"
-GRAPH_EXTRACTION_VERSION = "2026-08-text-llm-v10"
+SEMANTIC_GRAPH_SCHEMA_VERSION = "3.3-graphrag-semantic"
+GRAPH_EXTRACTION_VERSION = "2026-08-text-llm-v11"
 TERMINAL_PUNCTUATION = ("。", "！", "？", "!", "?", "；", ";")
 EXCLUDED_SECTION_PATTERN = re.compile(
     r"(?:目录|前言|绪论|习题|复习题|思考题|自测题|参考答案|答案索引|版权|内容简介)"
@@ -95,6 +95,19 @@ TECHNICAL_ENTITY_PATTERN = re.compile(
     r"(?:PN结|半导体|载流子|电场|电流|电压|电阻|电容|电感|二极管|晶体管|"
     r"场效应管|放大电路|反馈电路|电路|信号|增益|放大倍数|工作点|特性|模型|"
     r"效应|区域|运动|过程|方法|定律|定理|导电性|稳定性)"
+)
+FORMULA_SYMBOL_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"[A-Za-zΑ-Ωα-ω][A-Za-zΑ-Ωα-ω0-9]*"
+    r"(?:_(?:[A-Za-zΑ-Ωα-ω0-9]+|\([A-Za-zΑ-Ωα-ω0-9]+\))|"
+    r"\([A-Za-zΑ-Ωα-ω0-9]+\))?"
+    r"(?![A-Za-z0-9])"
+)
+DISPLAY_NAME_SUFFIXES = (
+    "电压当量", "阈值电压", "死区电压", "开启电压", "接触电位差", "电位差",
+    "结电容", "电压", "电流", "电阻", "电容", "电感", "电荷量", "浓度",
+    "电场", "电势", "功率", "频率", "增益", "放大倍数", "工作点", "系数",
+    "参数", "当量", "常数", "电导率", "迁移率", "温度", "电荷",
 )
 
 
@@ -628,6 +641,7 @@ GRAPH_EXTRACTION_PROMPT = """你是教材 GraphRAG 三元组抽取专家。输�
 7. 对 circuit 模态，只抽取图中器件、连接和邻近正文明确支持的知识；不得凭常识猜测电路功能。
 8. 不要输出独立 entities 数组；图实体将严格由通过校验的三元组端点和属性主语生成。
 9. 输出前逐条自检实体完整性、三元组方向、指代唯一性和原文跨度。没有可靠事实时返回空数组，不要为了连图制造关系。
+10. V_T、C_j、V_th 等公式符号可以作为原文实体或属性主语，必须保留原始写法，不要凭常识改名；程序会依据同一 TextUnit 中明确出现的中文定义生成中文展示名。
 
 抽取示例：
 - “半导体器件包括半导体二极管、双极型晶体管。”应输出“半导体器件—包括—半导体二极管”和“半导体器件—包括—双极型晶体管”，不得反向。
@@ -1843,6 +1857,183 @@ def _merge_graph_records(
     )
 
 
+def _graph_display_name(node: dict[str, Any]) -> str:
+    return str(node.get("display_name") or node.get("name") or "").strip()
+
+
+def _symbol_tokens(value: str) -> list[str]:
+    return list(dict.fromkeys(
+        match.group(0) for match in FORMULA_SYMBOL_PATTERN.finditer(str(value))
+    ))
+
+
+def _clean_chinese_display_name(value: str) -> str:
+    label = _normalized_text(value).strip(" ，,。；;：:（）()的")
+    for marker in ("称为", "又称", "简称", "叫做"):
+        if marker in label:
+            label = label.rsplit(marker, 1)[-1].strip()
+    label = re.sub(r"^(?:一个|某个|所谓)", "", label).strip()
+    label = re.sub(r"\s+(?=[\u4e00-\u9fff])", "", label)
+    if not re.search(r"[\u4e00-\u9fff]", label):
+        return ""
+    if not 2 <= len(label) <= 24 or re.search(r"[，,。；;：:]", label):
+        return ""
+    if re.match(r"^(?:当|以|使|若|在|由|且|并|可|对|将|从|和|与|为了|保证)", label):
+        return ""
+    return label
+
+
+def enrich_semantic_display_names(graph: dict[str, Any]) -> dict[str, Any]:
+    """Add source-grounded Chinese labels while preserving textbook symbols.
+
+    Entity ``name`` and every relationship remain untouched.  ``display_name``
+    is only derived when the same TextUnit explicitly defines or apposes a
+    formula symbol with a Chinese technical term.  This also upgrades existing
+    semantic graph files at read time without rewriting their source data.
+    """
+
+    nodes = [item for item in graph.get("nodes", []) if isinstance(item, dict)]
+    nodes_by_id = {str(item.get("id")): item for item in nodes if item.get("id")}
+    symbol_forms: dict[str, set[str]] = defaultdict(set)
+    for node in nodes:
+        for value in [str(node.get("name", "")), *map(str, node.get("aliases", []))]:
+            for symbol in _symbol_tokens(value):
+                symbol_forms[_entity_key(symbol)].add(symbol)
+
+    candidates: dict[str, list[tuple[int, int, str, str, str]]] = defaultdict(list)
+
+    def add_candidate(
+        symbol: str,
+        label: str,
+        *,
+        score: int,
+        evidence_text: str = "",
+        text_unit_id: str = "",
+    ) -> None:
+        key = _entity_key(symbol)
+        if key not in symbol_forms:
+            return
+        cleaned = _clean_chinese_display_name(label)
+        if not cleaned or not cleaned.endswith(DISPLAY_NAME_SUFFIXES):
+            return
+        candidates[key].append((score, len(cleaned), cleaned, evidence_text, text_unit_id))
+
+    text_units = [
+        item for item in graph.get("text_units", [])
+        if isinstance(item, dict) and str(item.get("text", "")).strip()
+    ]
+    for _key, forms in symbol_forms.items():
+        for symbol in sorted(forms, key=lambda item: (-len(item), item)):
+            escaped = re.escape(symbol)
+            symbol_span = rf"(?<![A-Za-z0-9_]){escaped}(?![A-Za-z0-9_])"
+            for unit in text_units:
+                text = _normalized_text(str(unit.get("text", "")))
+                if not re.search(symbol_span, text):
+                    continue
+                text_unit_id = str(unit.get("id", ""))
+                patterns = (
+                    (
+                        130,
+                        rf"{symbol_span}\s*[，,:：]?\s*(?:为|是|称为|又称|简称|叫做)\s*"
+                        rf"(?P<label>[\u4e00-\u9fff][^，,。；;：:（）()]{{1,23}})",
+                    ),
+                    (
+                        130,
+                        rf"(?:称为|又称|简称|叫做)\s*"
+                        rf"(?P<label>[A-Za-z\u4e00-\u9fff][^，,。；;：:（）()]{{1,23}})"
+                        rf"\s*[）)]\s*{symbol_span}",
+                    ),
+                    (
+                        120,
+                        rf"(?P<label>[^，,。；;：:（）()]{{2,24}})[，,]\s*"
+                        rf"(?:用|以)\s*{symbol_span}\s*(?:来)?(?:表示|记作)",
+                    ),
+                    (
+                        80,
+                        rf"(?P<label>[\u4e00-\u9fffA-Za-z]{{2,12}})\s+{symbol_span}",
+                    ),
+                )
+                for score, pattern in patterns:
+                    for match in re.finditer(pattern, text):
+                        label = _clean_chinese_display_name(match.group("label"))
+                        if not label:
+                            continue
+                        if score == 80 and (
+                            len(symbol) == 1
+                            or not re.search(r"[_()0-9Α-Ωα-ω]", symbol)
+                            or not label.endswith(DISPLAY_NAME_SUFFIXES)
+                        ):
+                            continue
+                        add_candidate(
+                            symbol,
+                            label,
+                            score=score,
+                            evidence_text=match.group(0),
+                            text_unit_id=text_unit_id,
+                        )
+
+    definitions: dict[str, tuple[str, str, str]] = {}
+    for key, values in candidates.items():
+        if not values:
+            continue
+        _score, _length, label, evidence_text, text_unit_id = sorted(
+            values,
+            key=lambda item: (-item[0], item[1], item[2]),
+        )[0]
+        definitions[key] = (label, evidence_text, text_unit_id)
+
+    localized = 0
+    definition_records: list[dict[str, Any]] = []
+    for key, (label, evidence_text, text_unit_id) in sorted(definitions.items()):
+        representative = sorted(symbol_forms[key], key=lambda item: (-len(item), item))[0]
+        definition_records.append({
+            "symbol": representative,
+            "chinese_name": label,
+            "evidence_text": evidence_text,
+            "text_unit_id": text_unit_id,
+        })
+
+    for node in nodes:
+        raw_name = str(node.get("name", "")).strip()
+        display_name = raw_name
+        matched_symbols: list[str] = []
+        for symbol in sorted(_symbol_tokens(raw_name), key=lambda item: -len(item)):
+            definition = definitions.get(_entity_key(symbol))
+            if not definition:
+                continue
+            label = definition[0]
+            matched_symbols.append(symbol)
+            if label in display_name:
+                display_name = display_name.replace(symbol, "")
+            else:
+                display_name = display_name.replace(symbol, label)
+        display_name = re.sub(r"\s*的\s*", "的", display_name)
+        display_name = re.sub(r"(?<=[A-Za-z])\s+(?=[\u4e00-\u9fff])", "", display_name)
+        display_name = re.sub(r"\s+", " ", display_name).strip(" ·•，,")
+        if matched_symbols and display_name and display_name != raw_name:
+            node["display_name"] = display_name
+            node["symbols"] = list(dict.fromkeys(matched_symbols))
+            node["display_name_source"] = "explicit_text_definition"
+            localized += 1
+
+    for chapter in graph.get("chapters", []):
+        if not isinstance(chapter, dict):
+            continue
+        for concept in chapter.get("concepts", []):
+            if not isinstance(concept, dict):
+                continue
+            entity_id = str(concept.get("entity_id") or concept.get("id") or "")
+            node = nodes_by_id.get(entity_id)
+            if not node or not node.get("display_name"):
+                continue
+            concept["source_entity_name"] = str(node.get("name", ""))
+            concept["name"] = _graph_display_name(node)
+
+    graph["symbol_definitions"] = definition_records
+    graph.setdefault("stats", {})["localized_entity_names"] = localized
+    return graph
+
+
 def build_graph_communities(
     nodes: list[dict[str, Any]],
     links: list[dict[str, Any]],
@@ -1884,9 +2075,9 @@ def build_graph_communities(
         ]
         ranked = sorted(
             members,
-            key=lambda node_id: (-graph.degree(node_id, weight="weight"), str(node_map[node_id].get("name", ""))),
+            key=lambda node_id: (-graph.degree(node_id, weight="weight"), _graph_display_name(node_map[node_id])),
         )
-        names = [str(node_map[node_id].get("name", "")) for node_id in ranked[:4]]
+        names = [_graph_display_name(node_map[node_id]) for node_id in ranked[:4]]
         communities.append({
             "id": f"community:0:{index}",
             "community": index,
@@ -1921,12 +2112,12 @@ def build_community_reports(
     reports: list[dict[str, Any]] = []
     for community in communities:
         entity_names = [
-            str(node_map[entity_id].get("name", ""))
+            _graph_display_name(node_map[entity_id])
             for entity_id in community.get("entity_ids", [])
             if entity_id in node_map
         ]
         relation_lines = [
-            f"{node_map[edge['source']]['name']}—{edge['relation']}→{node_map[edge['target']]['name']}"
+            f"{_graph_display_name(node_map[edge['source']])}—{edge['relation']}→{_graph_display_name(node_map[edge['target']])}"
             for relationship_id in community.get("relationship_ids", [])
             if (edge := edge_map.get(relationship_id))
             and edge.get("source") in node_map
@@ -1961,7 +2152,13 @@ def bind_chapter_knowledge_points(
     node_items = [item for item in nodes if item.get("id") and item.get("name")]
     exact: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for node in node_items:
-        for label in [str(node.get("name", "")), *map(str, node.get("aliases", []))]:
+        for label in [
+            str(node.get("name", "")),
+            str(node.get("display_name", "")),
+            *map(str, node.get("aliases", [])),
+        ]:
+            if not label:
+                continue
             values = exact[_entity_key(label)]
             if not any(str(item.get("id")) == str(node.get("id")) for item in values):
                 values.append(node)
@@ -1995,8 +2192,15 @@ def bind_chapter_knowledge_points(
                 contained = [
                     node for node in node_items
                     if (
-                        _compact(name) in _compact(str(node.get("name", "")))
-                        or _compact(str(node.get("name", ""))) in _compact(name)
+                        any(
+                            _compact(name) in _compact(label)
+                            or _compact(label) in _compact(name)
+                            for label in (
+                                str(node.get("name", "")),
+                                str(node.get("display_name", "")),
+                            )
+                            if label
+                        )
                     )
                     and (
                         not chapter_pages
@@ -2016,7 +2220,11 @@ def bind_chapter_knowledge_points(
                         and not chapter_pages.intersection(node.get("pages", []))
                     ):
                         continue
-                    labels = [str(node.get("name", "")), *map(str, node.get("aliases", []))]
+                    labels = [
+                        str(node.get("name", "")),
+                        str(node.get("display_name", "")),
+                        *map(str, node.get("aliases", [])),
+                    ]
                     score = max(
                         SequenceMatcher(None, _compact(name), _compact(label)).ratio()
                         for label in labels if label
@@ -2045,7 +2253,8 @@ def bind_chapter_knowledge_points(
                 **concept,
                 "id": entity_id,
                 "entity_id": entity_id,
-                "name": str(node["name"]),
+                "name": _graph_display_name(node),
+                "source_entity_name": str(node["name"]),
                 "source_concept_name": name,
                 "match_method": match_method,
             })
@@ -2272,6 +2481,14 @@ def build_semantic_knowledge_graph(
     nodes, edges, mentions, links, attribute_facts = _merge_graph_records(
         units, extractions, circuit_mentions
     )
+    text_units = [unit.to_dict() for unit in units]
+    display_metadata: dict[str, Any] = {
+        "nodes": nodes,
+        "edges": edges,
+        "text_units": text_units,
+        "stats": {},
+    }
+    enrich_semantic_display_names(display_metadata)
     communities = build_graph_communities(nodes, links)
     reports = build_community_reports(communities, nodes, edges)
     rejected_candidates = [
@@ -2317,10 +2534,11 @@ def build_semantic_knowledge_graph(
         "relationship_mentions": mentions,
         "relationship_links": links,
         "attribute_facts": attribute_facts,
-        "text_units": [unit.to_dict() for unit in units],
+        "text_units": text_units,
         "evidence": [*text_evidence, *circuit_evidence],
         "communities": communities,
         "community_reports": reports,
+        "symbol_definitions": display_metadata.get("symbol_definitions", []),
         "stats": {
             "entities": len(nodes),
             "relationships": len(edges),
@@ -2332,6 +2550,9 @@ def build_semantic_knowledge_graph(
             "extraction_method": "text_llm" if client is not None else "rule_fallback",
             "extraction_model": str(
                 getattr(getattr(client, "config", None), "model", "rule")
+            ),
+            "localized_entity_names": int(
+                display_metadata.get("stats", {}).get("localized_entity_names", 0)
             ),
             "repair_attempted_units": repair_attempted_units,
             "repair_recovered_relationships": repaired_relationships,

@@ -23,6 +23,7 @@ from backend.app.rag.multimodal import (
     project_student_knowledge_graph,
 )
 from backend.app.rag.ontology import is_course_concept
+from backend.app.rag.semantic_graph import enrich_semantic_display_names
 from backend.app.rag.stores import delete_qdrant_indexes, sync_neo4j_graph
 
 
@@ -303,6 +304,7 @@ class KnowledgeBaseManager:
                 },
             }
         graph = json.loads(path.read_text(encoding="utf-8"))
+        enrich_semantic_display_names(graph)
         nodes = [
             node for node in graph.get("nodes", [])
             if isinstance(node, dict) and node.get("type") == "entity"

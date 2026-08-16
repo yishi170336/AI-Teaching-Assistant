@@ -129,6 +129,7 @@ import {
   KnowledgeExplanation,
   KnowledgeGraph,
   KnowledgeGraphEvidence,
+  KnowledgeGraphNode,
   generateLearningPlanPpt,
   ModelCatalog,
   ModelConfig,
@@ -2190,6 +2191,10 @@ const clampGraphZoom = (value: number) => (
   Math.min(GRAPH_ZOOM_MAX, Math.max(GRAPH_ZOOM_MIN, value))
 )
 
+const graphNodeName = (node?: KnowledgeGraphNode) => (
+  node?.display_name?.trim() || node?.name?.trim() || ''
+)
+
 function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loading: boolean }) {
   const [selectedId, setSelectedId] = useState('')
   const [selectedEdgeKey, setSelectedEdgeKey] = useState('')
@@ -2363,7 +2368,7 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
         Number((degree.get(b.id) || 0) > 0) - Number((degree.get(a.id) || 0) > 0)
         || (degree.get(b.id) || 0) - (degree.get(a.id) || 0)
         || (b.evidence_count || 0) - (a.evidence_count || 0)
-        || a.name.localeCompare(b.name, 'zh-CN')
+        || graphNodeName(a).localeCompare(graphNodeName(b), 'zh-CN')
       ))
       .slice(0, limits.concepts)
     const selectedConcepts = new Set(concepts.map((node) => node.id))
@@ -2595,7 +2600,7 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
                 >
                   <circle r={node.type === 'document' ? 25 : node.type === 'page' ? 16 : node.type === 'concept' || node.type === 'entity' ? Math.min(22, 12 + node.degree) : node.type === 'circuit' ? 12 : 9} />
                   {(node.type !== 'page' || limits.pages <= 12 || selectedId === node.id) && (
-                    <text y={node.type === 'document' ? 40 : node.type === 'page' || node.type === 'concept' || node.type === 'entity' ? 32 : 23}>{node.name?.replace(/^电路图\s*[·•]\s*/, '').slice(0, 18) || typeLabel[node.type] || '资料'}</text>
+                    <text y={node.type === 'document' ? 40 : node.type === 'page' || node.type === 'concept' || node.type === 'entity' ? 32 : 23}>{graphNodeName(node).replace(/^电路图\s*[·•]\s*/, '').slice(0, 18) || typeLabel[node.type] || '资料'}</text>
                   )}
                 </g>
               ))}
@@ -2622,7 +2627,7 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
           {selectedEdge ? <>
             <span>原始关系</span>
             <h2><InlineMath content={selectedEdge.relation || selectedEdge.type} /></h2>
-            <p className="graph-relation-statement"><InlineMath content={selectedEdgeSource?.name || selectedEdge.source} /> <strong>{selectedEdge.relation || selectedEdge.type}</strong> <InlineMath content={selectedEdgeTarget?.name || selectedEdge.target} /></p>
+            <p className="graph-relation-statement"><InlineMath content={graphNodeName(selectedEdgeSource) || selectedEdge.source} /> <strong>{selectedEdge.relation || selectedEdge.type}</strong> <InlineMath content={graphNodeName(selectedEdgeTarget) || selectedEdge.target} /></p>
             <div className="graph-evidence-title">关系证据 {selectedEdge.evidence_count ? `· ${selectedEdge.evidence_count} 条` : ''}</div>
             {evidenceLoading && <div className="graph-evidence-state"><LoaderCircle className="spin" size={15} /> 正在读取证据…</div>}
             {evidenceError && <div className="graph-evidence-state error">{evidenceError}</div>}
@@ -2636,7 +2641,7 @@ function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loadin
               ))}
             </div>}
             {!evidenceLoading && !evidenceError && !selectedEvidence.length && <div className="graph-evidence-state">当前关系没有可展示的证据片段。</div>}
-          </> : selected ? <><span>{typeLabel[selected.type] || '知识节点'}</span><h2><InlineMath content={selected.name || '未命名节点'} /></h2>{selected.description && <p>{selected.description}</p>}<p>连接 {neighbors} 个知识实体{selected.evidence_count ? `，由 ${selected.evidence_count} 条原始证据支持` : ''}。页码与具体电路图只用于追溯来源，不作为知识图谱节点。</p>{selectedPages.length > 0 && <div className="graph-page-list">来源页码：{selectedPages.map((page) => `第 ${page} 页`).join('、')}</div>}</> : <><Network size={28} /><h2>探索知识关系</h2><p>{semanticGraph ? '点击实体查看说明，点击带文字的箭头查看原始关系及其教材或电路图证据。' : '这是旧版图谱；重建知识库后可查看实体之间的原始语义关系。'}</p></>}
+          </> : selected ? <><span>{typeLabel[selected.type] || '知识节点'}</span><h2><InlineMath content={graphNodeName(selected) || '未命名节点'} /></h2>{selected.display_name && selected.display_name !== selected.name && <p>教材原符号：<InlineMath content={selected.name} /></p>}{selected.description && <p>{selected.description}</p>}<p>连接 {neighbors} 个知识实体{selected.evidence_count ? `，由 ${selected.evidence_count} 条原始证据支持` : ''}。页码与具体电路图只用于追溯来源，不作为知识图谱节点。</p>{selectedPages.length > 0 && <div className="graph-page-list">来源页码：{selectedPages.map((page) => `第 ${page} 页`).join('、')}</div>}</> : <><Network size={28} /><h2>探索知识关系</h2><p>{semanticGraph ? '点击实体查看说明，点击带文字的箭头查看原始关系及其教材或电路图证据。' : '这是旧版图谱；重建知识库后可查看实体之间的原始语义关系。'}</p></>}
         </aside>
       </div>
       {chapters.length > 0 && (

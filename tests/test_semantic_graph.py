@@ -12,6 +12,7 @@ from backend.app.rag.semantic_graph import (
     bind_chapter_knowledge_points,
     build_semantic_knowledge_graph,
     build_semantic_text_units,
+    enrich_semantic_display_names,
     extract_text_unit_graphs,
 )
 
@@ -461,6 +462,47 @@ def test_formula_notation_variants_merge_as_aliases() -> None:
     assert len(graph["attribute_facts"]) == 10
     assert sum(len(node["aliases"]) for node in graph["nodes"]) == 4
     assert {node["name"] for node in graph["nodes"]} >= {"R_D", "r_d"}
+
+
+def test_formula_symbols_get_grounded_chinese_display_names() -> None:
+    graph = {
+        "nodes": [
+            {"id": "vt", "name": "V_T", "aliases": ["VT"]},
+            {"id": "vth", "name": "V_th", "aliases": []},
+            {"id": "germanium-vth", "name": "锗管的 V_th", "aliases": []},
+            {"id": "cj", "name": "C_j", "aliases": []},
+            {"id": "rd", "name": "R_D", "aliases": []},
+        ],
+        "edges": [],
+        "text_units": [
+            {
+                "id": "unit-vt",
+                "text": "V_T 为温度电压当量，室温下 V_T≈26 mV。",
+            },
+            {
+                "id": "unit-vth",
+                "text": "定义一个电压值 V_th，称为阈值电压，锗管的 V_th≈0.1 V。",
+            },
+            {
+                "id": "unit-cj",
+                "text": "PN结的总电容（称为 PN结电容）C_j 为两者之和。",
+            },
+            {"id": "unit-rd", "text": "R_D=V_DQ/I_DQ。"},
+        ],
+        "stats": {},
+    }
+
+    enrich_semantic_display_names(graph)
+    nodes = {node["name"]: node for node in graph["nodes"]}
+
+    assert nodes["V_T"]["display_name"] == "温度电压当量"
+    assert nodes["V_th"]["display_name"] == "阈值电压"
+    assert nodes["锗管的 V_th"]["display_name"] == "锗管的阈值电压"
+    assert nodes["C_j"]["display_name"] == "PN结电容"
+    assert "display_name" not in nodes["R_D"]
+    assert nodes["V_T"]["name"] == "V_T"
+    assert nodes["V_T"]["symbols"] == ["V_T"]
+    assert graph["stats"]["localized_entity_names"] == 4
 
 
 def test_chapter_points_reference_final_entities_and_quality_audit_passes() -> None:
