@@ -508,8 +508,18 @@ def _numbered_section_parts(value: str) -> tuple[tuple[int, ...], str]:
     return numbered_section_parts(value)
 
 
-def _section_is_visible_on_page(section: str, text: str) -> bool:
+def _section_is_visible_on_page(
+    section: str,
+    text: str,
+    blocks: Iterable[dict[str, Any]] | None = None,
+) -> bool:
     target = re.sub(r"\s+", "", section).replace("．", ".")
+    for block in blocks or []:
+        if not isinstance(block, dict) or block.get("type") != "section_heading":
+            continue
+        block_text = re.sub(r"\s+", "", str(block.get("text", ""))).replace("．", ".")
+        if block_text.startswith(target):
+            return True
     for raw_line in text.splitlines():
         line = re.sub(r"\s+", "", raw_line).replace("．", ".")
         if line.startswith(("图", "表", "式", "例", "【例")):
@@ -623,7 +633,11 @@ def validate_section_semantics(
 
             if (
                 section_source == "page-text"
-                and not _section_is_visible_on_page(document.section, document.text)
+                and not _section_is_visible_on_page(
+                    document.section,
+                    document.text,
+                    extra.get("text_blocks"),
+                )
             ):
                 critical_count += 1
                 issues.append({

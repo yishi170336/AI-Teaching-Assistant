@@ -197,6 +197,31 @@ def test_section_semantics_accepts_visible_structural_heading():
     assert report["verified_heading_pages"] == 1
 
 
+def test_section_semantics_accepts_heading_block_after_cleaning_merged_lines():
+    report = validate_section_semantics([
+        PageDocument(
+            text=(
+                "R_onP 与输入电压有关。(3.5.2)3.5.2CMOS 模拟开关"
+                "单管 MOS 开关的输入范围受限。"
+            ),
+            source="扫描教材.pdf",
+            page=201,
+            chapter="第三章 场效应晶体管及其放大电路",
+            section="3.5.2 CMOS 模拟开关",
+            extra={
+                "ocr_section_source": "page-text",
+                "text_blocks": [{
+                    "type": "section_heading",
+                    "text": "3.5.2 CMOS 模拟开关",
+                }],
+            },
+        ),
+    ])
+
+    assert report["status"] == "passed"
+    assert report["critical_issues"] == 0
+
+
 def test_pdf_subset_filename_preserves_original_source_pages(tmp_path):
     path = tmp_path / "lesson_pages_101_103.pdf"
     pdf = fitz.open()

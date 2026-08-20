@@ -569,7 +569,8 @@ def _ocr_heading_context_details(
     numbered_entry_count = sum(
         bool(re.match(r"^\*?\d+(?:\.\d+)+\s*\S", line)) for line in lines
     )
-    is_contents_page = (
+    structural_section = visible_structural_section(text)
+    is_contents_page = not structural_section and (
         "目录" in compact_lead
         or len({_chapter_marker(chapter) for chapter in visible_chapters}) >= 2
         or contents_entry_count >= 5
@@ -597,7 +598,6 @@ def _ocr_heading_context_details(
     if chapter_changed:
         previous_section = ""
 
-    structural_section = visible_structural_section(text)
     if structural_section:
         return chapter, structural_section, "structural-heading"
 

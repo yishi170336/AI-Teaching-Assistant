@@ -342,6 +342,28 @@ def test_ocr_heading_context_handles_summary_boundary_and_rejects_unit_heading()
     ) == (chapter, "本章小结")
 
 
+def test_ocr_heading_context_keeps_structural_heading_on_number_dense_page():
+    chapter = "第五章 反馈放大电路"
+    assert _ocr_heading_context(
+        {},
+        "本 章 小 结\n" + "\n".join(
+            f"({index}) 反馈放大电路知识总结。" for index in range(1, 7)
+        ),
+        chapter,
+        "5.5 计算机仿真例题",
+    ) == (chapter, "本章小结")
+
+    first_chapter = "第一章 半导体基础知识及二极管电路"
+    assert _ocr_heading_context(
+        {},
+        "习题\n" + "\n".join(
+            f"1.{index}.1 试分析题目中的半导体电路。" for index in range(1, 10)
+        ),
+        first_chapter,
+        "本章小结",
+    ) == (first_chapter, "习题")
+
+
 def test_toc_catalog_corrects_body_section_and_preserves_raw_provenance():
     documents = [
         PageDocument(
