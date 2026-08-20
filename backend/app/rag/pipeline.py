@@ -26,6 +26,7 @@ from backend.app.rag.graphrag_adapter import (
 from backend.app.rag.knowledge_document import (
     compile_knowledge_document,
     enrich_formula_knowledge,
+    enrich_knowledge_statements,
     knowledge_units_to_chunks,
     write_knowledge_document,
 )
@@ -47,6 +48,7 @@ from backend.app.rag.multimodal import (
     CompatibleMultimodalClient,
     LayoutElement,
     SCANNED_PAGE_PLACEHOLDER,
+    audit_visual_semantics,
     build_chapter_knowledge_summaries,
     build_local_knowledge_graph,
     enhance_pdf,
@@ -992,6 +994,16 @@ def build_knowledge_base(
         json.dumps(structured_questions, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
+    visual_quality = audit_visual_semantics(elements)
+    (output_dir / "visual_semantic_quality_audit.json").write_text(
+        json.dumps(visual_quality, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    if visual_quality["status"] == "failed":
+        raise RuntimeError(
+            "图像语义质量门禁失败："
+            f"{visual_quality['critical_issues']} 个电路类型与拓扑冲突"
+        )
+
     report(49, "knowledge_document", "正在融合正文、公式、电路图和表格知识")
     knowledge_units = compile_knowledge_document(documents, elements)
     if not knowledge_units:
@@ -1005,6 +1017,11 @@ def build_knowledge_base(
         knowledge_units,
         document_client,
         cache_path=output_dir / "knowledge_document_enrichment.jsonl",
+    )
+    knowledge_units = enrich_knowledge_statements(
+        knowledge_units,
+        document_client,
+        cache_path=output_dir / "knowledge_statements.jsonl",
     )
     write_knowledge_document(knowledge_units, output_dir)
 

@@ -13,11 +13,11 @@ import httpx
 import pandas as pd
 
 from backend.app.rag.embedding_runtime import encode_texts
-from backend.app.rag.knowledge_document import KnowledgeUnit
+from backend.app.rag.knowledge_document import KnowledgeStatement, KnowledgeUnit
 from backend.app.rag.multimodal import BuildModelConfig
 
 
-MICROSOFT_GRAPHRAG_SCHEMA_VERSION = "3.4-microsoft-graphrag-2.7"
+MICROSOFT_GRAPHRAG_SCHEMA_VERSION = "3.5-microsoft-graphrag-atomic-facts"
 QWEN_CHAT_TYPE = "circuitmind_qwen_chat"
 LOCAL_EMBEDDING_TYPE = "circuitmind_local_qwen3_embedding"
 
@@ -195,7 +195,7 @@ def register_graphrag_models() -> None:
 
 
 async def _run_textbook_extract_graph(config: Any, context: Any) -> Any:
-    """Strict-JSON textbook extractor feeding the official downstream workflows."""
+    """Feed normalized atomic facts into the official downstream workflows."""
 
     from graphrag.index.typing.workflow import WorkflowFunctionOutput
     from graphrag.utils.storage import load_table_from_storage, write_table_to_storage
@@ -221,29 +221,100 @@ async def _run_textbook_extract_graph(config: Any, context: Any) -> Any:
         for _, row in text_units_df.iterrows()
     ]
     additional = context.state.get("additional_context", {})
-    client = additional.get("textbook_graph_client")
-    cache_path = additional.get("textbook_extraction_cache")
-    if client is None:
-        raise RuntimeError("教材 GraphRAG 抽取器缺少 Qwen 客户端")
-    extractions = await asyncio.to_thread(
-        extract_text_unit_graphs,
-        units,
-        client,
-        cache_path=Path(cache_path) if cache_path else None,
-        batch_size=1,
-        max_workers=3,
-    )
+    statement_map = additional.get("textbook_statements", {})
+    extractions: dict[str, dict[str, Any]] = {}
+    if isinstance(statement_map, dict) and statement_map:
+        for _, row in text_units_df.iterrows():
+            unit_id = str(row["id"])
+            statements = [
+                statement_map[document_id]
+                for document_id in _as_list(row.get("document_ids"))
+                if document_id in statement_map
+            ]
+            relationships: list[dict[str, Any]] = []
+            attribute_facts: list[dict[str, Any]] = []
+            entities: dict[str, dict[str, Any]] = {}
+            for statement in statements:
+                if not isinstance(statement, dict):
+                    continue
+                subject = str(statement.get("subject", "")).strip()
+                evidence = str(statement.get("evidence_text", "")).strip()
+                if not subject or not evidence:
+                    continue
+                entities.setdefault(subject, {
+                    "name": subject,
+                    "type": str(statement.get("subject_type", "课程概念")),
+                    "description": evidence,
+                })
+                if statement.get("statement_type") == "attribute":
+                    attribute_facts.append({
+                        "subject": subject,
+                        "subject_type": str(statement.get("subject_type", "课程概念")),
+                        "relation_original": str(statement.get("predicate_original", "")),
+                        "relation_normalized": str(statement.get("predicate_normalized", "")),
+                        "value": str(statement.get("value", "")),
+                        "value_type": str(statement.get("value_type", "text")),
+                        "qualifiers": _as_list(statement.get("qualifiers")),
+                        "evidence_text": evidence,
+                        "evidence_id": str(statement.get("evidence_id", "")),
+                        "source_page": int(statement.get("source_page", 0) or 0),
+                        "modality": str(statement.get("modality", "text")),
+                        "confidence": float(statement.get("confidence", 0) or 0),
+                    })
+                    continue
+                target = str(statement.get("object", "")).strip()
+                if not target:
+                    continue
+                entities.setdefault(target, {
+                    "name": target,
+                    "type": str(statement.get("object_type", "课程概念")),
+                    "description": evidence,
+                })
+                relationships.append({
+                    "source": subject,
+                    "target": target,
+                    "relation_original": str(statement.get("predicate_original", "")),
+                    "relation_normalized": str(statement.get("predicate_normalized", "")),
+                    "qualifiers": _as_list(statement.get("qualifiers")),
+                    "evidence_text": evidence,
+                    "evidence_id": str(statement.get("evidence_id", "")),
+                    "source_page": int(statement.get("source_page", 0) or 0),
+                    "modality": str(statement.get("modality", "text")),
+                    "confidence": float(statement.get("confidence", 0) or 0),
+                    "strength": 1.0,
+                })
+            extractions[unit_id] = {
+                "entities": list(entities.values()),
+                "relationships": relationships,
+                "attribute_facts": attribute_facts,
+            }
+    else:
+        client = additional.get("textbook_graph_client")
+        cache_path = additional.get("textbook_extraction_cache")
+        if client is None:
+            raise RuntimeError("教材 GraphRAG 抽取器缺少 Qwen 客户端")
+        extractions = await asyncio.to_thread(
+            extract_text_unit_graphs,
+            units,
+            client,
+            cache_path=Path(cache_path) if cache_path else None,
+            batch_size=1,
+            max_workers=3,
+        )
 
     entity_values: dict[tuple[str, str], dict[str, Any]] = {}
-    relationship_values: dict[tuple[str, str], dict[str, Any]] = {}
+    relationship_values: dict[tuple[str, str, str], dict[str, Any]] = {}
+    attribute_values: list[dict[str, Any]] = []
     for unit in units:
         extraction = extractions.get(unit.id, {})
         descriptions_by_name: dict[str, list[str]] = {}
         for relation in extraction.get("relationships", []):
             if not isinstance(relation, dict):
                 continue
-            source = str(relation.get("source", "")).strip()
-            target = str(relation.get("target", "")).strip()
+            raw_source = str(relation.get("source", "")).strip()
+            raw_target = str(relation.get("target", "")).strip()
+            source = _canonical_entity_name(raw_source)
+            target = _canonical_entity_name(raw_target)
             evidence = str(relation.get("evidence_text", "")).strip()
             if source:
                 descriptions_by_name.setdefault(source, []).append(evidence)
@@ -251,12 +322,26 @@ async def _run_textbook_extract_graph(config: Any, context: Any) -> Any:
                 descriptions_by_name.setdefault(target, []).append(evidence)
             if not source or not target or not evidence:
                 continue
-            key = (source, target)
+            relation_normalized = str(
+                relation.get("relation_normalized", relation.get("relation_original", ""))
+            ).strip()
+            if (
+                _invalid_entity(source, str(next((item.get("type") for item in extraction.get("entities", []) if item.get("name") == raw_source), "课程概念")))
+                or _invalid_entity(target, str(next((item.get("type") for item in extraction.get("entities", []) if item.get("name") == raw_target), "课程概念")))
+            ):
+                continue
+            key = (source, target, relation_normalized)
             value = relationship_values.setdefault(key, {
                 "source": source,
                 "target": target,
                 "descriptions": [],
                 "relations": [],
+                "relation_normalized": relation_normalized,
+                "qualifiers": [],
+                "evidence_ids": [],
+                "source_pages": [],
+                "modalities": [],
+                "confidences": [],
                 "text_unit_ids": [],
                 "weight": 0.0,
             })
@@ -265,6 +350,17 @@ async def _run_textbook_extract_graph(config: Any, context: Any) -> Any:
             relation_original = str(relation.get("relation_original", "")).strip()
             if relation_original and relation_original not in value["relations"]:
                 value["relations"].append(relation_original)
+            for qualifier in _as_list(relation.get("qualifiers")):
+                if qualifier and qualifier not in value["qualifiers"]:
+                    value["qualifiers"].append(qualifier)
+            if relation.get("evidence_id"):
+                value["evidence_ids"].append(str(relation["evidence_id"]))
+            if relation.get("source_page"):
+                value["source_pages"].append(int(relation["source_page"]))
+            if relation.get("modality"):
+                value["modalities"].append(str(relation["modality"]))
+            if relation.get("confidence") is not None:
+                value["confidences"].append(float(relation.get("confidence", 0) or 0))
             value["text_unit_ids"].append(unit.id)
             value["weight"] += float(relation.get("strength", 1.0) or 1.0)
         for fact in extraction.get("attribute_facts", []):
@@ -274,12 +370,20 @@ async def _run_textbook_extract_graph(config: Any, context: Any) -> Any:
             evidence = str(fact.get("evidence_text", "")).strip()
             if subject and evidence:
                 descriptions_by_name.setdefault(subject, []).append(evidence)
+                canonical_subject = _canonical_entity_name(subject)
+                subject_type = str(fact.get("subject_type", "课程概念"))
+                if not _invalid_entity(canonical_subject, subject_type):
+                    attribute_values.append({
+                        **fact,
+                        "subject": canonical_subject,
+                        "text_unit_id": unit.id,
+                    })
         for entity in extraction.get("entities", []):
             if not isinstance(entity, dict):
                 continue
-            title = str(entity.get("name", "")).strip()
+            title = _canonical_entity_name(str(entity.get("name", "")).strip())
             entity_type = str(entity.get("type", "")).strip()
-            if not title or not entity_type:
+            if _invalid_entity(title, entity_type):
                 continue
             key = (title, entity_type)
             value = entity_values.setdefault(key, {
@@ -302,6 +406,7 @@ async def _run_textbook_extract_graph(config: Any, context: Any) -> Any:
         for value in relationship_values.values()
         for name in (value["source"], value["target"])
     }
+    connected_titles.update(str(value["subject"]) for value in attribute_values)
     entities = pd.DataFrame([
         {
             "title": value["title"],
@@ -320,20 +425,29 @@ async def _run_textbook_extract_graph(config: Any, context: Any) -> Any:
             "description": json.dumps({
                 "relation_original": value["relations"][0] if value["relations"] else "相关",
                 "relation_variants": value["relations"],
+                "relation_normalized": value["relation_normalized"],
                 "evidence_texts": value["descriptions"][:4],
+                "qualifiers": value["qualifiers"],
+                "evidence_ids": list(dict.fromkeys(value["evidence_ids"])),
+                "source_pages": sorted(set(value["source_pages"])),
+                "modalities": list(dict.fromkeys(value["modalities"])),
+                "confidence": min(value["confidences"]) if value["confidences"] else 1.0,
             }, ensure_ascii=False),
             "text_unit_ids": list(dict.fromkeys(value["text_unit_ids"])),
             "weight": value["weight"],
         }
         for value in relationship_values.values()
     ])
-    if entities.empty or relationships.empty:
+    attributes = pd.DataFrame(attribute_values)
+    if entities.empty or (relationships.empty and attributes.empty):
         raise RuntimeError("教材 GraphRAG JSON 抽取没有产生可用实体关系")
     await write_table_to_storage(entities, "entities", context.output_storage)
     await write_table_to_storage(relationships, "relationships", context.output_storage)
+    await write_table_to_storage(attributes, "attribute_facts", context.output_storage)
     return WorkflowFunctionOutput(result={
         "entities": entities,
         "relationships": relationships,
+        "attribute_facts": attributes,
     })
 
 
@@ -501,8 +615,10 @@ def _graphrag_config(
                 "size": 900,
                 "overlap": 0,
                 "group_by_columns": ["id"],
-                "prepend_metadata": True,
-                "chunk_size_includes_metadata": True,
+                # Each input document is already one evidence-backed atomic fact.
+                # Metadata must not consume the chunk budget or become extraction text.
+                "prepend_metadata": False,
+                "chunk_size_includes_metadata": False,
             },
             "output": {"type": "file", "base_dir": "output"},
             "cache": {"type": "file", "base_dir": "cache"},
@@ -537,21 +653,50 @@ def _graphrag_config(
 def _input_documents(units: Iterable[KnowledgeUnit]) -> pd.DataFrame:
     rows = []
     for unit in units:
+        title = " / ".join(unit.title_path) or unit.source
+        common_metadata = {
+            "knowledge_unit_id": unit.id,
+            "source": unit.source,
+            "chapter": unit.chapter,
+            "section": unit.section,
+            "page_start": unit.page_start,
+            "page_end": unit.page_end,
+            "evidence_ids": unit.evidence_ids,
+        }
+        if unit.statements:
+            for statement in unit.statements:
+                rows.append({
+                    "id": statement.id,
+                    "title": title,
+                    "text": statement.graph_text(),
+                    "creation_date": "",
+                    "metadata": json.dumps({
+                        **common_metadata,
+                        "statement_id": statement.id,
+                        "statement_type": statement.statement_type,
+                        "statement_modality": statement.modality,
+                        "statement_evidence_id": statement.evidence_id,
+                        "statement_source_page": statement.source_page,
+                    }, ensure_ascii=False),
+                })
+            continue
+        # Compatibility fallback for old indexes that have not generated statements.
         rows.append({
             "id": unit.id,
-            "title": " / ".join(unit.title_path) or unit.source,
+            "title": title,
             "text": unit.text,
             "creation_date": "",
-            "metadata": json.dumps({
-                "source": unit.source,
-                "chapter": unit.chapter,
-                "section": unit.section,
-                "page_start": unit.page_start,
-                "page_end": unit.page_end,
-                "evidence_ids": unit.evidence_ids,
-            }, ensure_ascii=False),
+            "metadata": json.dumps(common_metadata, ensure_ascii=False),
         })
     return pd.DataFrame(rows)
+
+
+def _statement_map(units: Iterable[KnowledgeUnit]) -> dict[str, dict[str, Any]]:
+    return {
+        statement.id: statement.to_dict()
+        for unit in units
+        for statement in unit.statements
+    }
 
 
 def _as_list(value: Any) -> list[str]:
@@ -639,7 +784,7 @@ def _canonical_entity_name(value: str) -> str:
 
 
 def _invalid_entity(name: str, entity_type: str) -> bool:
-    if not name or not entity_type or len(name) > 48:
+    if not name or not entity_type or len(name) > 32:
         return True
     if re.match(r"^(?:图|表|式|第?\d+页)", name):
         return True
@@ -647,11 +792,15 @@ def _invalid_entity(name: str, entity_type: str) -> bool:
         return True
     if re.match(r"^[TRCQLDU]_?\s*\d+", name, re.I):
         return True
+    if re.search(r"[TRCQLDU]_?\d+", name, re.I):
+        return True
     if re.match(r"^节点\s*[A-Za-z]?\d*$", name, re.I):
         return True
     if name in {"简单", "元件少", "很小", "很大", "较高", "较低", "流电阻大"}:
         return True
     if re.search(r"(?:稍有上翘|做不到|不能做到|不可能|可得)", name):
+        return True
+    if name.endswith(("的连接方式", "的限流", "的形状")):
         return True
     if name.endswith(("测量点", "测试点")):
         return True
@@ -665,7 +814,7 @@ def _invalid_entity(name: str, entity_type: str) -> bool:
     return False
 
 
-def _relationship_content(value: str) -> tuple[str, str]:
+def _relationship_payload(value: str) -> dict[str, Any]:
     description = re.sub(r"\s+", " ", str(value)).strip()
     try:
         payload = json.loads(description)
@@ -680,9 +829,39 @@ def _relationship_content(value: str) -> tuple[str, str]:
             )
         else:
             evidence = str(evidence_values).strip()
-        return relation[:80], evidence or relation
+        return {
+            "relation": relation[:80],
+            "relation_normalized": str(
+                payload.get("relation_normalized", relation)
+            ).strip() or relation,
+            "description": evidence or relation,
+            "qualifiers": _as_list(payload.get("qualifiers")),
+            "evidence_ids": _as_list(payload.get("evidence_ids")),
+            "source_pages": [
+                int(item) for item in _as_list(payload.get("source_pages"))
+                if str(item).isdigit()
+            ],
+            "modalities": _as_list(payload.get("modalities")),
+            "confidence": float(payload.get("confidence", 1.0) or 0.0),
+        }
     relation = re.split(r"[。；;]", description, maxsplit=1)[0][:80] or "相关"
-    return relation, description
+    return {
+        "relation": relation,
+        "relation_normalized": relation,
+        "description": description,
+        "qualifiers": [],
+        "evidence_ids": [],
+        "source_pages": [],
+        "modalities": [],
+        "confidence": 1.0,
+    }
+
+
+def _relationship_content(value: str) -> tuple[str, str]:
+    """Compatibility wrapper retained for existing callers and tests."""
+
+    payload = _relationship_payload(value)
+    return str(payload["relation"]), str(payload["description"])
 
 
 def _stable_graph_id(prefix: str, *values: object) -> str:
@@ -696,31 +875,65 @@ def convert_graphrag_outputs(
 ) -> dict[str, Any]:
     """Convert official Parquet outputs to the project's evidence-rich graph API."""
 
-    unit_map = {unit.id: unit for unit in units}
+    unit_values = list(units)
+    unit_map = {unit.id: unit for unit in unit_values}
+    statement_map = {
+        statement.id: (unit, statement)
+        for unit in unit_values
+        for statement in unit.statements
+    }
     entities_df = pd.read_parquet(output_path / "entities.parquet")
     relationships_df = pd.read_parquet(output_path / "relationships.parquet")
     text_units_df = pd.read_parquet(output_path / "text_units.parquet")
     communities_df = pd.read_parquet(output_path / "communities.parquet")
     reports_df = pd.read_parquet(output_path / "community_reports.parquet")
+    attributes_path = output_path / "attribute_facts.parquet"
+    attributes_df = (
+        pd.read_parquet(attributes_path)
+        if attributes_path.exists()
+        else pd.DataFrame()
+    )
 
     text_units: list[dict[str, Any]] = []
     text_unit_context: dict[str, dict[str, Any]] = {}
     for _, row in text_units_df.iterrows():
         document_ids = _as_list(row.get("document_ids"))
-        unit = next((unit_map[item] for item in document_ids if item in unit_map), None)
+        statement_pair = next(
+            (statement_map[item] for item in document_ids if item in statement_map),
+            None,
+        )
+        statement = statement_pair[1] if statement_pair else None
+        unit = statement_pair[0] if statement_pair else next(
+            (unit_map[item] for item in document_ids if item in unit_map), None
+        )
+        page_start = (
+            int(statement.source_page)
+            if statement and statement.source_page
+            else (unit.page_start if unit else 0)
+        )
+        page_end = page_start or (unit.page_end if unit else 0)
+        evidence_ids = (
+            [statement.evidence_id]
+            if statement and statement.evidence_id
+            else (unit.evidence_ids if unit else [])
+        )
         context = {
             "source": unit.source if unit else "",
-            "page_start": unit.page_start if unit else 0,
-            "page_end": unit.page_end if unit else 0,
+            "page_start": page_start,
+            "page_end": page_end,
             "chapter": unit.chapter if unit else "",
             "section": unit.section if unit else "",
-            "block_ids": unit.evidence_ids if unit else [],
+            "block_ids": evidence_ids,
+            "knowledge_unit_id": unit.id if unit else "",
+            "statement_ids": [
+                item for item in document_ids if item in statement_map
+            ],
         }
         text_unit = {
             "id": str(row["id"]),
             "text": str(row.get("text", "")),
             **context,
-            "modality": "multimodal_knowledge",
+            "modality": statement.modality if statement else "multimodal_knowledge",
             "image_path": None,
         }
         text_units.append(text_unit)
@@ -756,6 +969,7 @@ def convert_graphrag_outputs(
                 "text_unit_ids": text_unit_ids,
                 "evidence_count": len(text_unit_ids),
                 "pages": pages,
+                "source_pages": pages,
                 "relationship_count": 0,
                 "standalone": False,
             }
@@ -766,6 +980,7 @@ def convert_graphrag_outputs(
                 *existing["text_unit_ids"], *text_unit_ids
             ]))
             existing["pages"] = sorted(set([*existing["pages"], *pages]))
+            existing["source_pages"] = existing["pages"]
             if raw_name != existing["name"] and raw_name not in existing["aliases"]:
                 existing["aliases"].append(raw_name)
         official_to_node[str(row.get("id", ""))] = existing["id"]
@@ -780,15 +995,47 @@ def convert_graphrag_outputs(
     for _, row in relationships_df.iterrows():
         source = title_to_node.get(_entity_key(str(row.get("source", ""))))
         target = title_to_node.get(_entity_key(str(row.get("target", ""))))
-        relation, description = _relationship_content(str(row.get("description", "")))
+        payload = _relationship_payload(str(row.get("description", "")))
+        relation = str(payload["relation"])
+        relation_normalized = str(payload["relation_normalized"])
+        description = str(payload["description"])
         if not source or not target or source == target or not description:
             continue
-        edge_key = (source, target, description)
+        edge_key = (source, target, relation_normalized)
         if edge_key in seen_edges:
             continue
         seen_edges.add(edge_key)
         text_unit_ids = _as_list(row.get("text_unit_ids"))
-        edge_id = _stable_graph_id("relationship", source, target, description)
+        contextual_evidence = list(dict.fromkeys(
+            evidence_id
+            for text_unit_id in text_unit_ids
+            for evidence_id in _as_list(
+                text_unit_context.get(text_unit_id, {}).get("block_ids")
+            )
+        ))
+        evidence_ids = list(dict.fromkeys([
+            *_as_list(payload.get("evidence_ids")), *contextual_evidence
+        ]))
+        source_pages = sorted(set([
+            *[int(item) for item in payload.get("source_pages", [])],
+            *[
+                int(text_unit_context.get(item, {}).get("page_start", 0) or 0)
+                for item in text_unit_ids
+                if text_unit_context.get(item, {}).get("page_start")
+            ],
+        ]))
+        modalities = list(dict.fromkeys([
+            *_as_list(payload.get("modalities")),
+            *[
+                str(text_unit_context.get(item, {}).get("modality", ""))
+                for item in text_unit_ids
+                if text_unit_context.get(item, {}).get("modality")
+            ],
+        ]))
+        qualifiers = _as_list(payload.get("qualifiers"))
+        edge_id = _stable_graph_id(
+            "relationship", source, target, relation_normalized
+        )
         mention_ids: list[str] = []
         for text_unit_id in text_unit_ids or [""]:
             context = text_unit_context.get(text_unit_id, {})
@@ -803,13 +1050,19 @@ def convert_graphrag_outputs(
                 "source_mention": node_lookup[source]["name"],
                 "target_mention": node_lookup[target]["name"],
                 "relation": relation,
+                "relation_normalized": relation_normalized,
                 "evidence_text": description,
                 "strength": float(row.get("weight", 1.0) or 1.0),
                 "text_unit_id": text_unit_id,
-                "evidence_id": text_unit_id,
-                "source_modality": "multimodal_knowledge",
+                "evidence_id": (
+                    evidence_ids[0] if evidence_ids else text_unit_id
+                ),
+                "source_modality": (
+                    modalities[0] if modalities else "multimodal_knowledge"
+                ),
                 "source_page": int(context.get("page_start", 0) or 0),
-                "qualifier_text": "",
+                "qualifier_text": "；".join(qualifiers),
+                "confidence": float(payload.get("confidence", 1.0) or 0.0),
             })
         edge = {
             "id": edge_id,
@@ -817,13 +1070,17 @@ def convert_graphrag_outputs(
             "target": target,
             "type": relation,
             "relation": relation,
+            "relation_normalized": relation_normalized,
             "description": description,
             "mention_ids": mention_ids,
             "text_unit_ids": text_unit_ids,
-            "evidence_ids": text_unit_ids,
-            "evidence_count": len(text_unit_ids),
+            "evidence_ids": evidence_ids,
+            "evidence_count": len(evidence_ids),
+            "source_pages": source_pages,
+            "modalities": modalities,
+            "confidence": float(payload.get("confidence", 1.0) or 0.0),
             "weight": float(row.get("weight", 1.0) or 1.0),
-            "qualifier_texts": [],
+            "qualifier_texts": qualifiers,
         }
         edges.append(edge)
         official_to_edge[str(row.get("id", ""))] = edge_id
@@ -838,6 +1095,69 @@ def convert_graphrag_outputs(
             "text_unit_ids": text_unit_ids,
             "weight": float(row.get("weight", 1.0) or 1.0),
         })
+
+    attribute_facts: list[dict[str, Any]] = []
+    for _, row in attributes_df.iterrows():
+        subject_name = _canonical_entity_name(str(row.get("subject", "")))
+        subject = title_to_node.get(_entity_key(subject_name))
+        evidence_text = str(row.get("evidence_text", "")).strip()
+        if not subject or not evidence_text:
+            continue
+        text_unit_id = str(row.get("text_unit_id", ""))
+        context = text_unit_context.get(text_unit_id, {})
+        evidence_ids = list(dict.fromkeys([
+            *_as_list(row.get("evidence_id")),
+            *_as_list(context.get("block_ids")),
+        ]))
+        source_page = int(
+            row.get("source_page", 0) or context.get("page_start", 0) or 0
+        )
+        relation = str(row.get("relation_original", "")).strip() or "具有属性"
+        relation_normalized = str(
+            row.get("relation_normalized", relation)
+        ).strip() or relation
+        value = str(row.get("value", "")).strip()
+        fact_id = _stable_graph_id(
+            "attribute", subject, relation_normalized, value, text_unit_id
+        )
+        attribute_facts.append({
+            "id": fact_id,
+            "subject": subject,
+            "subject_name": node_lookup[subject]["name"],
+            "relation": relation,
+            "relation_normalized": relation_normalized,
+            "value": value,
+            "value_type": str(row.get("value_type", "text")),
+            "qualifiers": _as_list(row.get("qualifiers")),
+            "evidence_text": evidence_text,
+            "evidence_ids": evidence_ids,
+            "text_unit_id": text_unit_id,
+            "source_page": source_page,
+            "modality": str(
+                row.get("modality", context.get("modality", "text"))
+            ),
+            "confidence": float(row.get("confidence", 0.0) or 0.0),
+        })
+        node_lookup[subject]["evidence_count"] = max(
+            int(node_lookup[subject].get("evidence_count", 0)), len(evidence_ids)
+        )
+
+    used_node_ids = {
+        node_id
+        for edge in edges
+        for node_id in (str(edge["source"]), str(edge["target"]))
+    }
+    attribute_node_ids = {
+        str(fact["subject"]) for fact in attribute_facts
+    }
+    used_node_ids.update(attribute_node_ids)
+    nodes = [node for node in nodes if node["id"] in used_node_ids]
+    node_lookup = {node["id"]: node for node in nodes}
+    for node in nodes:
+        node["standalone"] = (
+            node["id"] in attribute_node_ids
+            and int(node.get("relationship_count", 0)) == 0
+        )
 
     communities: list[dict[str, Any]] = []
     for _, row in communities_df.iterrows():
@@ -865,6 +1185,17 @@ def convert_graphrag_outputs(
             "algorithm": "microsoft-graphrag-hierarchical-leiden",
         })
 
+    edge_communities: dict[str, list[str]] = {}
+    for community in communities:
+        for relationship_id in community["relationship_ids"]:
+            edge_communities.setdefault(relationship_id, []).append(community["id"])
+    for edge in edges:
+        community_ids = edge_communities.get(edge["id"], [])
+        edge["community_ids"] = community_ids
+        # Leiden communities list intra-community edges only. Cross-community is a
+        # valid explicit classification, not silently missing coverage.
+        edge["cross_community"] = not community_ids
+
     reports = [
         {
             "id": str(row.get("id", "")),
@@ -882,15 +1213,9 @@ def convert_graphrag_outputs(
         {
             **text_unit,
             "knowledge_elements": (
-                next(
-                    (
-                        unit.knowledge_elements
-                        for unit in unit_map.values()
-                        if unit.source == text_unit["source"]
-                        and unit.page_start <= int(text_unit["page_start"]) <= unit.page_end
-                    ),
-                    [],
-                )
+                unit_map.get(str(text_unit.get("knowledge_unit_id", ""))).knowledge_elements
+                if str(text_unit.get("knowledge_unit_id", "")) in unit_map
+                else []
             ),
         }
         for text_unit in text_units
@@ -901,7 +1226,7 @@ def convert_graphrag_outputs(
         "edges": edges,
         "relationship_mentions": mentions,
         "relationship_links": links,
-        "attribute_facts": [],
+        "attribute_facts": attribute_facts,
         "text_units": text_units,
         "evidence": evidence,
         "communities": communities,
@@ -911,9 +1236,42 @@ def convert_graphrag_outputs(
             "entities": len(nodes),
             "relationships": len(edges),
             "relationship_mentions": len(mentions),
-            "attribute_facts": 0,
+            "attribute_facts": len(attribute_facts),
             "text_units": len(text_units),
             "communities": len(communities),
+            "atomic_statements": len(statement_map),
+            "knowledge_units": len(unit_values),
+            "knowledge_units_without_statements": sum(
+                not unit.statements for unit in unit_values
+            ),
+            "knowledge_elements": sum(
+                bool(element.get("included_in_graph"))
+                for unit in unit_values for element in unit.knowledge_elements
+            ),
+            "knowledge_elements_with_statements": len({
+                statement.evidence_id
+                for _, statement in statement_map.values()
+                if statement.evidence_id
+                and any(
+                    statement.evidence_id == str(element.get("id", ""))
+                    for unit in unit_values for element in unit.knowledge_elements
+                    if element.get("included_in_graph")
+                )
+            }),
+            "expected_modalities": sorted({
+                str(element.get("type", ""))
+                for unit in unit_values for element in unit.knowledge_elements
+                if element.get("included_in_graph") and element.get("type")
+            }),
+            "statement_modalities": {
+                modality: sum(
+                    statement.modality == modality
+                    for _, statement in statement_map.values()
+                )
+                for modality in sorted({
+                    statement.modality for _, statement in statement_map.values()
+                })
+            },
             "extraction_method": "microsoft_graphrag",
             "extraction_model": "qwen3.7-flash",
             "embedding_model": "Qwen3-Embedding-0.6B",
@@ -923,6 +1281,9 @@ def convert_graphrag_outputs(
 
 def audit_microsoft_graphrag(graph: dict[str, Any]) -> dict[str, Any]:
     node_ids = {str(node.get("id", "")) for node in graph.get("nodes", [])}
+    edges = graph.get("edges", [])
+    attributes = graph.get("attribute_facts", [])
+    text_units = graph.get("text_units", [])
     untyped = sum(
         not str(node.get("entity_type", "")).strip() for node in graph.get("nodes", [])
     )
@@ -933,31 +1294,123 @@ def audit_microsoft_graphrag(graph: dict[str, Any]) -> dict[str, Any]:
     dangling = sum(
         str(edge.get("source", "")) not in node_ids
         or str(edge.get("target", "")) not in node_ids
-        for edge in graph.get("edges", [])
+        for edge in edges
     )
-    unsupported = sum(
-        not edge.get("evidence_ids") for edge in graph.get("edges", [])
+    dangling_attributes = sum(
+        str(fact.get("subject", "")) not in node_ids for fact in attributes
     )
-    critical = untyped + invalid_names + dangling + unsupported
+    unsupported_relationships = sum(
+        not edge.get("evidence_ids") or not str(edge.get("description", "")).strip()
+        for edge in edges
+    )
+    unsupported_attributes = sum(
+        not fact.get("evidence_ids") or not str(fact.get("evidence_text", "")).strip()
+        for fact in attributes
+    )
+    missing_pages = sum(
+        not node.get("source_pages") for node in graph.get("nodes", [])
+    )
+    used_node_ids = {
+        str(node_id)
+        for edge in edges
+        for node_id in (edge.get("source", ""), edge.get("target", ""))
+    }
+    used_node_ids.update(str(fact.get("subject", "")) for fact in attributes)
+    isolated = len(node_ids - used_node_ids)
+    fact_text_unit_ids = {
+        str(item)
+        for edge in edges
+        for item in _as_list(edge.get("text_unit_ids"))
+    }
+    fact_text_unit_ids.update(
+        str(fact.get("text_unit_id", "")) for fact in attributes
+        if fact.get("text_unit_id")
+    )
+    text_unit_ids = {str(item.get("id", "")) for item in text_units}
+    fact_coverage = (
+        len(fact_text_unit_ids & text_unit_ids) / len(text_unit_ids)
+        if text_unit_ids else 0.0
+    )
+    unclassified_community_edges = sum(
+        not edge.get("community_ids") and not edge.get("cross_community")
+        for edge in edges
+    )
+    no_facts = int(not edges and not attributes)
+    units_without_facts = int(
+        graph.get("stats", {}).get("knowledge_units_without_statements", 0) or 0
+    )
+    statement_modalities = set(
+        graph.get("stats", {}).get("statement_modalities", {})
+    )
+    expected_modalities = set(
+        graph.get("stats", {}).get("expected_modalities", [])
+    )
+    missing_modalities = sorted(expected_modalities - statement_modalities)
+    critical = sum((
+        untyped,
+        invalid_names,
+        dangling,
+        dangling_attributes,
+        unsupported_relationships,
+        unsupported_attributes,
+        isolated,
+        unclassified_community_edges,
+        no_facts,
+        units_without_facts,
+        len(missing_modalities),
+    ))
     issues = []
     for code, count in (
         ("untyped_entities", untyped),
         ("invalid_entity_names", invalid_names),
         ("dangling_relationships", dangling),
-        ("relationships_without_evidence", unsupported),
+        ("dangling_attribute_facts", dangling_attributes),
+        ("relationships_without_evidence", unsupported_relationships),
+        ("attributes_without_evidence", unsupported_attributes),
+        ("isolated_entities", isolated),
+        ("unclassified_community_relationships", unclassified_community_edges),
+        ("graph_without_facts", no_facts),
+        ("knowledge_units_without_facts", units_without_facts),
+        ("knowledge_modalities_without_facts", len(missing_modalities)),
     ):
         if count:
             issues.append({"severity": "critical", "code": code, "count": count})
+    warnings: list[tuple[str, int]] = []
+    if missing_pages:
+        warnings.append(("entities_without_source_pages", missing_pages))
+    uncovered_text_units = len(text_unit_ids - fact_text_unit_ids)
+    if text_unit_ids and fact_coverage < 0.75:
+        warnings.append(("low_atomic_fact_coverage", uncovered_text_units))
+    expected_elements = int(graph.get("stats", {}).get("knowledge_elements", 0) or 0)
+    covered_elements = int(
+        graph.get("stats", {}).get("knowledge_elements_with_statements", 0) or 0
+    )
+    element_coverage = covered_elements / expected_elements if expected_elements else 1.0
+    if expected_elements and element_coverage < 0.5:
+        warnings.append(("low_multimodal_element_fact_coverage", expected_elements - covered_elements))
+    for code, count in warnings:
+        issues.append({"severity": "warning", "code": code, "count": count})
     return {
-        "schema_version": "1.0-microsoft-graphrag-quality",
+        "schema_version": "2.0-microsoft-graphrag-quality",
         "status": "passed" if critical == 0 else "failed",
         "critical_issues": critical,
-        "warning_issues": 0,
+        "warning_issues": sum(count for _, count in warnings),
         "metrics": {
             "entities": len(node_ids),
-            "relationships": len(graph.get("edges", [])),
-            "text_units": len(graph.get("text_units", [])),
+            "relationships": len(edges),
+            "attribute_facts": len(attributes),
+            "facts": len(edges) + len(attributes),
+            "text_units": len(text_units),
+            "text_unit_fact_coverage": round(fact_coverage, 4),
+            "isolated_entities": isolated,
+            "entities_without_source_pages": missing_pages,
+            "cross_community_relationships": sum(
+                bool(edge.get("cross_community")) for edge in edges
+            ),
             "communities": len(graph.get("communities", [])),
+            "knowledge_units_without_facts": units_without_facts,
+            "missing_knowledge_modalities": missing_modalities,
+            "multimodal_element_fact_coverage": round(element_coverage, 4),
         },
         "issues": issues,
     }
@@ -1012,6 +1465,7 @@ def run_microsoft_graphrag(
             additional_context={
                 "textbook_graph_client": graph_client,
                 "textbook_extraction_cache": str(root_dir / "semantic_extractions.jsonl"),
+                "textbook_statements": _statement_map(unit_values),
             },
         )
         errors = [
@@ -1028,6 +1482,12 @@ def run_microsoft_graphrag(
     asyncio.run(build())
     graph = convert_graphrag_outputs(root_dir / "output", unit_values)
     audit = audit_microsoft_graphrag(graph)
+    (output_dir / "semantic_knowledge_graph.json").write_text(
+        json.dumps(graph, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (output_dir / "semantic_quality_audit.json").write_text(
+        json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     if audit["status"] != "passed":
         raise RuntimeError(
             "Microsoft GraphRAG 质量门禁失败："

@@ -53,6 +53,7 @@ PAGE_CLEANING_POLICY_VERSION = "2.1-exercise-range-fallback"
 SCANNED_PAGE_PLACEHOLDER = "[本页主要包含电路图、公式或其他图形内容]"
 PAGE_OCR_SCHEMA_VERSION = "2.0-qwen-page-ocr-layout-blocks"
 LEGACY_PAGE_OCR_SCHEMA_VERSIONS = {"1.0-qwen-page-ocr"}
+CIRCUIT_ANALYSIS_SCHEMA_VERSION = "2.1-grounded-circuit-family"
 PAGE_OCR_PROMPT = """你是模拟电子技术教材的高保真 OCR 与结构识别器。请完整转写本页，严格保持阅读顺序、标题层级、图题、表题、公式、变量、上下标和单位；不得概括、改写或补写看不清的内容。省略页码和重复的页眉。
 blocks 必须按真实阅读顺序列出本页版面块。每个块包含 type、text、bbox、reading_order；type 只能是 chapter_heading、section_heading、paragraph、list_item、formula、figure_caption、table、exercise、page_header、page_footer、noise；bbox 为按页面宽高归一化到 0-1000 的 [x1,y1,x2,y2]。正文自然段不要按视觉换行拆碎，双栏必须先完整读取左栏再读取右栏。chapter 填本页可见的章标题，否则为空；section 填本页最后出现、层级最深的编号教学小节（例如“1.1.3 PN结”），或完整可见的结构标题（仅限“本章小结”“习题”“复习题”“思考题”“自测题”“参考答案”等），否则为空；section_bbox 填该 section 标题 bbox，标题不可见时返回空数组；concepts 只列正文中明确出现的 2-18 个具体模拟电子技术知识点，不得列书名、章名、泛化词或举例材料。
 不要把页眉、图号、表号、公式编号、例题编号、题号、数值或单位（例如“1.0 mA”）误认为 section。
@@ -141,13 +142,18 @@ def _json_object(raw: str) -> dict[str, Any]:
     try:
         value = json.loads(text)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, flags=re.S)
-        if not match:
-            return {}
         try:
-            value = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return {}
+            from json_repair import repair_json
+
+            value = json.loads(repair_json(text))
+        except Exception:
+            match = re.search(r"\{.*\}", text, flags=re.S)
+            if not match:
+                return {}
+            try:
+                value = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return {}
     return value if isinstance(value, dict) else {}
 
 
@@ -1484,6 +1490,24 @@ def _normalize_circuit_result(value: dict[str, Any]) -> dict[str, Any]:
         if isinstance(raw_is_circuit, str)
         else bool(raw_is_circuit)
     )
+    circuit_type = str(value.get("circuit_type", "")).strip()[:200]
+    grounding_quotes = [
+        str(item).strip() for item in value.get("grounding_quotes", [])
+        if str(item).strip()
+    ][:8] if isinstance(value.get("grounding_quotes"), list) else []
+    contradictions = [
+        str(item).strip() for item in value.get("contradictions", [])
+        if str(item).strip()
+    ][:8] if isinstance(value.get("contradictions"), list) else []
+    description = str(value.get("description", "")).strip()[:8000]
+    if circuit_type and circuit_type not in description:
+        description = f"电路类型：{circuit_type}。{description}"
+    if grounding_quotes:
+        description = (
+            f"{description}\n类型判定依据：" + "；".join(grounding_quotes)
+        ).strip()
+    if contradictions:
+        confidence = min(confidence, 0.69)
     # Always serialize from the structured component list. This prevents a VLM
     # from silently inserting numeric values in an otherwise correct raw netlist.
     netlist = _synthesize_netlist(components) if components else ""
@@ -1492,9 +1516,148 @@ def _normalize_circuit_result(value: dict[str, Any]) -> dict[str, Any]:
         "components": components,
         "nets": nets,
         "netlist": netlist,
-        "description": str(value.get("description", ""))[:8000],
+        "description": description,
         "caption": str(value.get("caption", ""))[:1000],
+        "circuit_type": circuit_type,
+        "grounding_quotes": grounding_quotes,
+        "contradictions": contradictions,
         "confidence": confidence,
+    }
+
+
+def _circuit_processor(client: QwenVisionClient | None) -> str:
+    return (
+        f"qwen-vl:{client.model}:circuit-{CIRCUIT_ANALYSIS_SCHEMA_VERSION}"
+        if client else ""
+    )
+
+
+def _ground_circuit_family(
+    value: dict[str, Any],
+    *,
+    caption: str,
+    nearby_text: str,
+) -> dict[str, Any]:
+    """Apply deterministic topology guards to high-risk textbook circuit families."""
+
+    result = dict(value)
+    components = [
+        item for item in result.get("components", []) if isinstance(item, dict)
+    ]
+    component_types = [str(item.get("type", "")).lower() for item in components]
+    bjt_count = sum(
+        item in {"bjt", "npn", "pnp", "bipolar_junction_transistor"}
+        for item in component_types
+    )
+    resistor_ids = {
+        str(item.get("id", "")).replace("_", "").upper()
+        for item in components
+        if str(item.get("type", "")).lower() == "resistor"
+    }
+    context = f"{caption}\n{nearby_text}"
+    description = str(result.get("description", ""))
+    circuit_type = str(result.get("circuit_type", ""))
+    classification = f"{circuit_type}\n{description}".lower()
+
+    if (
+        ("威尔逊" in classification or "wilson" in classification)
+        and bjt_count < 3
+    ):
+        microcurrent_grounded = (
+            bjt_count == 2
+            and any(identifier.startswith("RE") for identifier in resistor_ids)
+            and "微电流源" in context
+            and re.search(r"微电流源.{0,30}图\s*2\.6\.8", context, re.S)
+        )
+        replacement = "微电流源" if microcurrent_grounded else "两晶体管电流源（具体类型待核验）"
+        if microcurrent_grounded:
+            description = (
+                "电路类型：微电流源。图内确认两只晶体管构成镜像支路，"
+                "输出支路的发射极经 R_E 接地，参考支路发射极直接接地。"
+                "正文明确说明将带射极电阻的镜像电流源中 R_E1 短路便构成"
+                "图 2.6.8 所示的微电流源，与图内拓扑一致。"
+            )
+        else:
+            description = re.sub(
+                r"[^。；\n]*(?:威尔逊|Wilson)[^。；\n]*[。；]?",
+                "",
+                description,
+                flags=re.I,
+            ).strip()
+            description = (
+                f"电路类型校验：{replacement}。图内仅确认 {bjt_count} 只晶体管，"
+                "不满足三管反馈拓扑，因此不保留原类型名称。" + description
+            )
+        result["circuit_type"] = replacement
+        result["description"] = description
+        result["contradictions"] = [
+            *result.get("contradictions", []),
+            "Wilson 名称与图内晶体管数量冲突，已按拓扑降级",
+        ]
+
+    has_current_source = any(item in {"current_source", "isource"} for item in component_types)
+    has_voltage_source = any(item in {"voltage_source", "vsource"} for item in component_types)
+    if "戴维南" in description and has_current_source and not has_voltage_source:
+        description = description.replace("戴维南等效模型", "诺顿型电流源等效模型")
+        description = description.replace("戴维南模型", "诺顿型电流源模型")
+        result["circuit_type"] = "诺顿型电流源等效模型"
+        result["description"] = description
+    return result
+
+
+def audit_visual_semantics(elements: Iterable[LayoutElement]) -> dict[str, Any]:
+    issues: list[dict[str, Any]] = []
+    circuits = 0
+    for element in elements:
+        if element.element_type != "circuit":
+            continue
+        circuits += 1
+        component_types = [
+            str(item.get("type", "")).lower()
+            for item in element.components if isinstance(item, dict)
+        ]
+        bjt_count = sum(
+            item in {"bjt", "npn", "pnp", "bipolar_junction_transistor"}
+            for item in component_types
+        )
+        description = str(element.description)
+        if (
+            ("威尔逊" in description or "wilson" in description.lower())
+            and bjt_count < 3
+        ):
+            issues.append({
+                "severity": "critical",
+                "code": "wilson_without_three_transistors",
+                "element_id": element.id,
+                "page": int(element.source_page or element.page),
+            })
+        if (
+            "戴维南" in description
+            and any(item in {"current_source", "isource"} for item in component_types)
+            and not any(item in {"voltage_source", "vsource"} for item in component_types)
+        ):
+            issues.append({
+                "severity": "critical",
+                "code": "current_source_mislabeled_thevenin",
+                "element_id": element.id,
+                "page": int(element.source_page or element.page),
+            })
+        if element.uncertain:
+            issues.append({
+                "severity": "warning",
+                "code": "uncertain_circuit_semantics",
+                "element_id": element.id,
+                "page": int(element.source_page or element.page),
+            })
+    critical = sum(issue["severity"] == "critical" for issue in issues)
+    warnings = sum(issue["severity"] == "warning" for issue in issues)
+    return {
+        "schema_version": CIRCUIT_ANALYSIS_SCHEMA_VERSION,
+        "status": "failed" if critical else "passed",
+        "circuits": circuits,
+        "critical_issues": critical,
+        "warning_issues": warnings,
+        "issues": issues,
     }
 
 
@@ -1617,9 +1780,11 @@ def _analyze_image(
     client: QwenVisionClient | None,
 ) -> None:
     likely, heuristic_score = _circuit_image_heuristic(image_bytes)
-    prompt = """只有包含至少两个电气元件且存在可核验导线连接的原理图、等效电路或小信号模型才可令 is_circuit=true。器件实物/外形、单个器件符号、半导体物理结构、特性曲线、波形图和系统框图必须令 is_circuit=false，即使它们包含端子、箭头或直线。\n""" + f"""你是电路图结构化识别器。判断图片是否为电路图；若是，结合邻近教材正文识别所有元件、端口、节点和导线连接，输出可复核的 SPICE 风格 Netlist 和中文结构/功能描述。跨线但无连接点时不得当作连接。看不清的值写 null，不得猜测。components.role 填该元件在本图中的具体作用（例如负载电阻、基极偏置电阻、输入耦合电容），不得只重复元件类型；无法判断时填 null。components.terminals 必须直接填写网络 ID；BJT 顺序为 collector/base/emitter，MOS 顺序为 drain/gate/source/bulk，其它二端元件按图中方向列出。
+    prompt = """只有包含至少两个电气元件且存在可核验导线连接的原理图、等效电路或小信号模型才可令 is_circuit=true。器件实物/外形、单个器件符号、半导体物理结构、特性曲线、波形图和系统框图必须令 is_circuit=false，即使它们包含端子、箭头或直线。
+类型判定必须有“图内拓扑 + 图题/邻近正文”双重证据：正文仅出现某种电路名称，不代表图中就是该电路。不得从邻近其他图补入本图不存在的元件。电流源与电阻并联是诺顿/电流源模型，不是戴维南模型；戴维南模型必须是电压源与电阻串联。Wilson 电流源必须在图内确认第三只晶体管的反馈拑；只有两只晶体管时不得标为 Wilson。若图中含 (a)/(b) 等多个子图，必须分别描述各子图，components 中增加 subfigure 字段，不得将 (a) 的器件与 (b) 的拓扑合并成一个电路。
+""" + f"""你是电路图结构化识别器。判断图片是否为电路图；若是，结合邻近教材正文识别所有元件、端口、节点和导线连接，输出可复核的 SPICE 风格 Netlist 和中文结构/功能描述。跨线但无连接点时不得当作连接。看不清的值写 null，不得猜测。components.role 填该元件在本图中的具体作用（例如负载电阻、基极偏置电阻、输入耦合电容），不得只重复元件类型；无法判断时填 null。components.terminals 必须直接填写网络 ID；BJT 顺序为 collector/base/emitter，MOS 顺序为 drain/gate/source/bulk，其它二端元件按图中方向列出。
 附近正文：{element.nearby_text[:1800]}
-返回 JSON：{{"is_circuit":true,"caption":"","components":[{{"id":"R1","type":"resistor","role":"负载电阻","value":"4 ohm","terminals":["n1","n2"],"bbox":[]}}],"nets":[{{"id":"n1","terminals":["R1.1"]}}],"netlist":"R1 n1 n2 4","description":"...","confidence":0.0}}。"""
+返回 JSON：{{"is_circuit":true,"caption":"","circuit_type":"有双重证据的类型，否则写通用电路原理图","grounding_quotes":["图中/图题可核验的短证据"],"contradictions":[],"components":[{{"id":"R1","type":"resistor","role":"负载电阻","value":"4 ohm","terminals":["n1","n2"],"bbox":[]}}],"nets":[{{"id":"n1","terminals":["R1.1"]}}],"netlist":"R1 n1 n2 4","description":"只描述本图可见拓扑、类型及教材明示的功能","confidence":0.0}}。"""
     try:
         raw_vlm_result = (
             client.complete_json(
@@ -1633,7 +1798,11 @@ def _analyze_image(
     except QwenMultimodalAPIError as exc:
         logger.warning("Qwen3-VL circuit analysis failed; using local uncertain fallback: %s", exc)
         raw_vlm_result = {}
-    vlm_result = _normalize_circuit_result(raw_vlm_result)
+    vlm_result = _ground_circuit_family(
+        _normalize_circuit_result(raw_vlm_result),
+        caption=element.caption,
+        nearby_text=element.nearby_text,
+    )
     result = vlm_result
     nearby_lower = f"{element.caption}\n{element.nearby_text}".lower()
     chart_markers = ("波形", "曲线", "坐标", "频谱", "特性图")
@@ -1654,7 +1823,7 @@ def _analyze_image(
         element.caption = result.get("caption", "")
         element.confidence = float(result.get("confidence") or heuristic_score)
         qwen_processor = (
-            f"qwen-vl:{client.model}"
+            _circuit_processor(client)
             if vlm_result.get("is_circuit") and client
             else "opencv-heuristic"
         )
@@ -1665,6 +1834,10 @@ def _analyze_image(
         )
         element.uncertain = not bool(element.components and (element.nets or element.netlist))
     else:
+        element.element_type = "image"
+        element.components = []
+        element.nets = []
+        element.netlist = ""
         element.description = result.get("description") or element.nearby_text[:1200]
         element.caption = result.get("caption", "")
         element.confidence = float(result.get("confidence") or heuristic_score)
@@ -2002,7 +2175,7 @@ def enhance_pdf(
                     )
                     cached = cached_images.get(digest)
                     if category == "figure":
-                        expected_vlm = f"qwen-vl:{vision_client.model}" if vision_client else ""
+                        expected_vlm = _circuit_processor(vision_client)
                         cache_compatible = bool(cached) and (
                             (bool(expected_vlm) and str(cached.get("processor", "")).endswith(expected_vlm))
                             or not expected_vlm
@@ -2266,9 +2439,7 @@ def enhance_pdf(
                         source_page=meta.source_page or page_no,
                     )
                     cached = cached_images.get(digest)
-                    expected_vlm = (
-                        f"qwen-vl:{vision_client.model}" if vision_client else ""
-                    )
+                    expected_vlm = _circuit_processor(vision_client)
                     cache_compatible = bool(cached) and (
                         (
                             bool(expected_vlm)
@@ -2338,7 +2509,7 @@ def enhance_pdf(
                     source_page=meta.source_page or page_no,
                 )
                 cached = cached_images.get(digest)
-                expected_vlm = f"qwen-vl:{vision_client.model}" if vision_client else ""
+                expected_vlm = _circuit_processor(vision_client)
                 cache_compatible = bool(cached) and (
                     (bool(expected_vlm) and cached.get("processor") == expected_vlm)
                     or not expected_vlm

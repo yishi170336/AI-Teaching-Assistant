@@ -12,7 +12,8 @@ from backend.app.rag.multimodal import LayoutElement
 from backend.app.rag.ontology import extract_course_concepts
 
 
-KNOWLEDGE_DOCUMENT_SCHEMA_VERSION = "1.0-textbook-multimodal"
+KNOWLEDGE_DOCUMENT_SCHEMA_VERSION = "2.0-textbook-atomic-statements"
+KNOWLEDGE_STATEMENT_SCHEMA_VERSION = "1.2-multimodal-coverage-facts"
 GRAPH_BLOCK_TYPES = {"paragraph", "list_item"}
 IGNORED_GRAPH_BLOCK_TYPES = {
     "chapter_heading",
@@ -28,6 +29,42 @@ IGNORED_GRAPH_BLOCK_TYPES = {
 
 
 @dataclass
+class KnowledgeStatement:
+    id: str
+    knowledge_unit_id: str
+    statement_type: str
+    subject: str
+    subject_type: str
+    predicate_original: str
+    predicate_normalized: str
+    object: str = ""
+    object_type: str = ""
+    value: str = ""
+    value_type: str = ""
+    qualifiers: list[str] = field(default_factory=list)
+    evidence_text: str = ""
+    evidence_id: str = ""
+    source_page: int = 0
+    modality: str = "text"
+    confidence: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def graph_text(self) -> str:
+        condition = "；适用条件：" + "；".join(self.qualifiers) if self.qualifiers else ""
+        if self.statement_type == "attribute":
+            return (
+                f"{self.subject}{self.predicate_original}{self.value}{condition}。"
+                f"\n证据定位：第{self.source_page}页 {self.evidence_id}"
+            )
+        return (
+            f"{self.subject}{self.predicate_original}{self.object}{condition}。"
+            f"\n证据定位：第{self.source_page}页 {self.evidence_id}"
+        )
+
+
+@dataclass
 class KnowledgeUnit:
     id: str
     source: str
@@ -40,6 +77,7 @@ class KnowledgeUnit:
     source_text: str
     evidence_ids: list[str] = field(default_factory=list)
     knowledge_elements: list[dict[str, Any]] = field(default_factory=list)
+    statements: list[KnowledgeStatement] = field(default_factory=list)
     quality: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,6 +91,121 @@ def _stable_id(*values: object) -> str:
 
 def _compact(value: str) -> str:
     return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _atomic_paragraphs(text: str, *, max_chars: int = 700) -> list[str]:
+    """Split only at semantic boundaries; never cut a formula or word by characters."""
+
+    values: list[str] = []
+    for paragraph in (part.strip() for part in re.split(r"\n\s*\n", text)):
+        if not paragraph:
+            continue
+        if len(paragraph) <= max_chars:
+            values.append(paragraph)
+            continue
+        sentences = [
+            item.strip()
+            for item in re.split(r"(?<=[。！？；;])\s*", paragraph)
+            if item.strip()
+        ]
+        current = ""
+        for sentence in sentences or [paragraph]:
+            if current and len(current) + len(sentence) > max_chars:
+                values.append(current)
+                current = ""
+            current = f"{current}{sentence}".strip()
+        if current:
+            values.append(current)
+    return values
+
+
+_ENTITY_TYPES = {
+    "课程概念",
+    "电路",
+    "器件与元件",
+    "电路参数",
+    "物理过程与效应",
+    "方法与模型",
+}
+
+
+def _statement_entity_type(value: Any) -> str:
+    raw = _compact(value)
+    aliases = {
+        "物理过程与性质": "物理过程与效应",
+        "方法": "方法与模型",
+        "模型": "方法与模型",
+        "参数": "电路参数",
+        "器件": "器件与元件",
+    }
+    value = aliases.get(raw, raw)
+    return value if value in _ENTITY_TYPES else "课程概念"
+
+
+def _concept_name(value: Any) -> str:
+    name = _compact(value).strip(" “”\"'，。；：")
+    if not name or len(name) > 48:
+        return ""
+    if re.match(r"^(?:图|表|式|第?\d+页)", name):
+        return ""
+    if re.fullmatch(r"[A-Za-zΑ-Ωα-ω0-9_{}()\[\].+\-/\s]+", name):
+        return ""
+    if re.fullmatch(r"[TRCQLDU]_?\d+(?:的.*)?", name, re.I):
+        return ""
+    local_symbols = re.findall(r"(?:[TRCQLDU]_?\d+|[IV]_[A-Za-z0-9]+|I[RO0])", name, re.I)
+    if "晶体管" in name and local_symbols:
+        return ""
+    for property_name in (
+        "参考电流", "输出电流", "集电极电流", "基极电流",
+        "发射极电流", "输出电阻", "限流电阻", "发射极电阻",
+    ):
+        name = re.sub(
+            re.escape(property_name) + r"(?:[_ ]?[A-Za-z0-9{}]+)?",
+            property_name,
+            name,
+            flags=re.I,
+        )
+    if re.search(r"[TRCQLDU]_?\d+", name, re.I):
+        return ""
+    if re.match(r"^节点\s*[A-Za-z]?\d*$", name, re.I):
+        return ""
+    if re.search(r"(?:图中|本式|其中|这时|可得|是基本|等于|导致).{4,}", name):
+        return ""
+    return name
+
+
+def _element_fact_subject(
+    source: dict[str, Any],
+    *,
+    section: str,
+) -> str:
+    caption = re.sub(
+        r"^(?:图|表|式)\s*[\d.]+(?:\s*[（(][a-zA-Z0-9]+[）)])?\s*",
+        "",
+        _compact(source.get("caption", "")),
+    ).strip("：: ")
+    if caption:
+        candidate = re.split(r"[，,。；;：:]", caption, maxsplit=1)[0]
+        candidate = re.sub(r"^所示的?(?:是)?", "", candidate).strip()
+        if value := _concept_name(candidate):
+            return value
+    meaning = _compact(source.get("meaning", ""))
+    match = re.search(
+        r"(?:电路类型[：:]|(?:该图|图中|本图)为|(?:该表|本表)总结)([^，,。；;]{2,28})",
+        meaning,
+    )
+    if match:
+        candidate = re.sub(r"[（(][^）)]*[）)]", "", match.group(1)).strip()
+        if value := _concept_name(candidate):
+            return value
+    section_name = re.sub(r"^\d+(?:\.\d+)+\s*", "", section).strip()
+    label = {
+        "formula": "公式知识",
+        "table": "表格知识",
+        "circuit": "电路图知识",
+        "image": "视觉知识",
+    }.get(str(source.get("modality", "")), "多模态知识")
+    return _concept_name(f"{section_name}{label}") or label
 
 
 def _page_body(document: PageDocument) -> str:
@@ -411,23 +564,378 @@ def enrich_formula_knowledge(
     return values
 
 
+def _statement_response_items(response: Any) -> list[Any]:
+    if not isinstance(response, dict):
+        return []
+    direct = response.get("statements")
+    if isinstance(direct, list):
+        return direct
+    for key in ("result", "data", "output"):
+        nested = response.get(key)
+        if isinstance(nested, dict) and isinstance(nested.get("statements"), list):
+            return nested["statements"]
+    items = response.get("items")
+    if isinstance(items, list):
+        if all(isinstance(item, dict) and item.get("subject") for item in items):
+            return items
+        flattened = [
+            statement
+            for item in items
+            if isinstance(item, dict) and isinstance(item.get("statements"), list)
+            for statement in item["statements"]
+        ]
+        if flattened:
+            return flattened
+    return []
+
+
+def _statement_qualifiers(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    labels = {
+        "condition": "条件",
+        "affected_object": "受影响对象",
+        "assumption": "假设",
+        "scope": "范围",
+    }
+    normalized: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            raw_value = _compact(item.get("value", item.get("text", "")))
+            raw_key = _compact(item.get("key", item.get("type", "")))
+            text = (
+                f"{labels.get(raw_key, raw_key)}：{raw_value}"
+                if raw_key and raw_value else raw_value
+            )
+        else:
+            text = _compact(item)
+        if text and text not in normalized:
+            normalized.append(text)
+    return normalized
+
+
+def enrich_knowledge_statements(
+    units: Iterable[KnowledgeUnit],
+    client: Any | None,
+    *,
+    cache_path: Path | None = None,
+) -> list[KnowledgeUnit]:
+    """Extract auditable concept-level facts before Microsoft GraphRAG runs."""
+
+    values = list(units)
+    if client is None or not getattr(getattr(client, "config", None), "enabled", False):
+        return values
+    model = str(getattr(client.config, "model", ""))
+    cache: dict[str, dict[str, Any]] = {}
+    if cache_path and cache_path.exists():
+        try:
+            for line in cache_path.read_text(encoding="utf-8").splitlines():
+                item = json.loads(line)
+                if isinstance(item, dict) and item.get("knowledge_unit_id"):
+                    cache[str(item["knowledge_unit_id"])] = item
+        except (OSError, ValueError, json.JSONDecodeError):
+            cache = {}
+
+    prompt = """你是电子电路教材的原子知识陈述编译器。输入 evidence_sources 含 OCR 正文和已验证的公式、表格、电路图语义。
+尽可能完整抽取教材明确陈述的核心事实，包括定义、组成、作用、条件、优缺点、因果、参数关系、设计目标和表格单元格知识。
+实体必须是脱离页面仍可理解的简短中文名词概念（建议不超过18字）。T1、晶体管T1、T1和T2、R_o、参考电流IR、节点A、图号、式号不得作为关系实体；必须改写为“参考支路晶体管”、“匹配晶体管对”、“参考电流”等概念。object 不得是整句命题，predicate_original 只保留谓词。
+公式若表达可概念化的关系，输出 relation；若只能保留等式或数值，输出 attribute，其 subject 仍必须是中文概念。
+电路类型只能使用正文或图题明确支持的名称；忽略局部节点和元件编号。
+每条事实必须填它所在的 evidence_source_id。evidence_text 必须逐字复制该 evidence_source 中能独立证明事实的最短连续片段；qualifiers 保留“当…时”、“若忽略…”等适用条件。对每个含独立知识的 formula/table/circuit/image 证据源，至少抽取1条事实。
+实体类型只能为：课程概念、电路、器件与元件、电路参数、物理过程与效应、方法与模型。
+返回 JSON：{"statements":[{"statement_type":"relation|attribute","subject":"...","subject_type":"...","predicate_original":"...","predicate_normalized":"...","object":"...","object_type":"...","value":"...","value_type":"formula|quantity|text","qualifiers":["..."],"evidence_source_id":"...","evidence_text":"...","confidence":0.0}]}。
+对每个知识单元返回 6-14 条不重复的高价值陈述；原文不足时宁可少输出，不得补充常识。
+    输入："""
+
+    for unit in values:
+        page_sources = [
+            {
+                "id": f"ocr:{unit.source}:p{int(match.group(1))}",
+                "page": int(match.group(1)),
+                "modality": "text",
+                "text": match.group(2),
+            }
+            for match in re.finditer(
+                r"\[第\s*(\d+)\s*页\]\s*\n(.*?)(?=\n\n\[第\s*\d+\s*页\]|\Z)",
+                unit.source_text,
+                flags=re.S,
+            )
+        ]
+        if not page_sources:
+            page_sources = [{
+                "id": unit.evidence_ids[0] if unit.evidence_ids else unit.id,
+                "page": unit.page_start,
+                "modality": "text",
+                "text": unit.text,
+            }]
+        elements = [
+            {
+                "id": str(element.get("id", "")),
+                "page": int(element.get("page", unit.page_start) or unit.page_start),
+                "modality": str(element.get("type", "text")),
+                "meaning": str(element.get("meaning", "")),
+                "text": "\n".join(filter(None, (
+                    str(element.get("meaning", "")),
+                    str(element.get("raw_text", ""))[:1800],
+                ))),
+                "caption": str(element.get("caption", "")),
+                "confidence": float(element.get("knowledge_confidence", element.get("confidence", 0)) or 0),
+            }
+            for element in unit.knowledge_elements
+            if element.get("included_in_graph")
+        ]
+        content_hash = hashlib.sha256(json.dumps(
+            {
+                "schema": KNOWLEDGE_STATEMENT_SCHEMA_VERSION,
+                "evidence_sources": [*page_sources, *elements],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")).hexdigest()
+        cached = cache.get(unit.id)
+        if (
+            cached
+            and cached.get("content_hash") == content_hash
+            and cached.get("model") == model
+            and cached.get("schema_version") == KNOWLEDGE_STATEMENT_SCHEMA_VERSION
+        ):
+            raw_statements = cached.get("statements", [])
+        else:
+            payload = {
+                "knowledge_unit_id": unit.id,
+                "chapter": unit.chapter,
+                "section": unit.section,
+                "page_start": unit.page_start,
+                "page_end": unit.page_end,
+                "evidence_sources": [*page_sources, *elements],
+            }
+            response: dict[str, Any] = {}
+            raw_statements: list[Any] = []
+            for attempt in range(2):
+                response = client.complete_json(
+                    prompt
+                    + json.dumps(payload, ensure_ascii=False)
+                    + (
+                        "\n上次未返回可解析的 statements 数组，"
+                        "请仅返回紧凑合法 JSON。"
+                        if attempt else ""
+                    )
+                )
+                raw_statements = _statement_response_items(response)
+                if raw_statements:
+                    break
+            coverage_response: dict[str, Any] = {}
+            if elements:
+                coverage_response = client.complete_json(
+                    """你是教材多模态事实补全器。对输入的每个 evidence_source 分别输出 1-2 条不重复、有教学价值的原子事实，不得跳过任何证据源。
+主体和客体必须是脱离图号仍可理解的中文概念，不得使用 T1、R_o、I_0、节点名或完整句子作实体。
+evidence_source_id 必须逐字复制对应 id；evidence_text 必须是该 source.text 中的最短连续原文。公式值或表格数值关系可用 attribute。
+仅返回 JSON：{"statements":[{"statement_type":"relation|attribute","subject":"...","subject_type":"课程概念|电路|器件与元件|电路参数|物理过程与效应|方法与模型","predicate_original":"...","predicate_normalized":"...","object":"...","object_type":"...","value":"...","value_type":"formula|quantity|text","qualifiers":[],"evidence_source_id":"...","evidence_text":"...","confidence":0.0}]}。
+输入："""
+                    + json.dumps({"evidence_sources": elements}, ensure_ascii=False)
+                )
+                raw_statements = [
+                    *raw_statements,
+                    *_statement_response_items(coverage_response),
+                ]
+            cache[unit.id] = {
+                "schema_version": KNOWLEDGE_STATEMENT_SCHEMA_VERSION,
+                "knowledge_unit_id": unit.id,
+                "content_hash": content_hash,
+                "model": model,
+                "statements": raw_statements,
+                "response_keys": sorted(response) if isinstance(response, dict) else [],
+                "coverage_response_keys": (
+                    sorted(coverage_response)
+                    if isinstance(coverage_response, dict) else []
+                ),
+            }
+
+        evidence_sources = [
+            (
+                str(source.get("text", "")),
+                str(source.get("id", "")),
+                int(source.get("page", unit.page_start) or unit.page_start),
+                str(source.get("modality", "text")),
+            )
+            for source in [*page_sources, *elements]
+            if str(source.get("id", "")) and str(source.get("text", "")).strip()
+        ]
+        evidence_by_id = {source_id: item for item in evidence_sources for source_id in [item[1]]}
+        statements: list[KnowledgeStatement] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for item in raw_statements if isinstance(raw_statements, list) else []:
+            if not isinstance(item, dict):
+                continue
+            statement_type = str(item.get("statement_type", "relation")).lower()
+            if statement_type not in {"relation", "attribute"}:
+                continue
+            subject = _concept_name(item.get("subject", ""))
+            predicate_original = _compact(item.get("predicate_original", ""))
+            predicate_normalized = _compact(
+                item.get("predicate_normalized", predicate_original)
+            )
+            object_name = _concept_name(item.get("object", "")) if statement_type == "relation" else ""
+            value = _compact(item.get("value", "")) if statement_type == "attribute" else ""
+            if (
+                not subject
+                or not predicate_original
+                or (statement_type == "relation" and not object_name)
+                or (statement_type == "attribute" and not value)
+            ):
+                continue
+            evidence_text = _compact(item.get("evidence_text", ""))
+            if not evidence_text:
+                continue
+            requested_source = evidence_by_id.get(
+                str(item.get("evidence_source_id", "")).strip()
+            )
+            matched_source = (
+                requested_source
+                if requested_source and evidence_text in _compact(requested_source[0])
+                else next(
+                (
+                    source
+                    for source in evidence_sources
+                    for source_text in [source[0]]
+                    if evidence_text and evidence_text in _compact(source_text)
+                ),
+                None,
+                )
+            )
+            if matched_source is None:
+                continue
+            try:
+                confidence = float(item.get("confidence", 0))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            if confidence < 0.65:
+                continue
+            key = (statement_type, subject, predicate_normalized, object_name or value)
+            if key in seen:
+                continue
+            seen.add(key)
+            _, source_id, source_page, source_modality = matched_source
+            qualifiers = _statement_qualifiers(item.get("qualifiers", []))
+            statements.append(KnowledgeStatement(
+                id="knowledge-statement:" + hashlib.sha1(
+                    f"{unit.id}|{key}|{evidence_text}".encode("utf-8")
+                ).hexdigest()[:20],
+                knowledge_unit_id=unit.id,
+                statement_type=statement_type,
+                subject=subject,
+                subject_type=_statement_entity_type(item.get("subject_type", "")),
+                predicate_original=predicate_original,
+                predicate_normalized=predicate_normalized or predicate_original,
+                object=object_name,
+                object_type=(
+                    _statement_entity_type(item.get("object_type", ""))
+                    if statement_type == "relation" else ""
+                ),
+                value=value,
+                value_type=(
+                    str(item.get("value_type", "text"))
+                    if statement_type == "attribute" else ""
+                ),
+                qualifiers=qualifiers,
+                evidence_text=evidence_text,
+                evidence_id=source_id,
+                source_page=source_page,
+                modality=source_modality,
+                confidence=confidence,
+            ))
+        covered_element_ids = {
+            statement.evidence_id for statement in statements
+        }
+        for source in elements:
+            source_id = str(source.get("id", ""))
+            if not source_id or source_id in covered_element_ids:
+                continue
+            evidence_source = _compact(
+                source.get("meaning", "") or source.get("text", "")
+            )
+            if len(evidence_source) < 8:
+                continue
+            summary_match = re.match(r".*?[。；;]", evidence_source)
+            summary = (
+                summary_match.group(0) if summary_match else evidence_source
+            )[:600].strip()
+            if len(summary) < 8:
+                continue
+            modality = str(source.get("modality", "text"))
+            subject = _element_fact_subject(source, section=unit.section)
+            predicate = {
+                "formula": "表达的公式知识",
+                "table": "总结的表格知识",
+                "circuit": "表达的电路图知识",
+                "image": "表达的视觉知识",
+            }.get(modality, "表达的多模态知识")
+            fallback_key = ("attribute", subject, "HAS_GROUNDED_SEMANTICS", summary)
+            if fallback_key in seen:
+                continue
+            seen.add(fallback_key)
+            try:
+                fallback_confidence = float(source.get("confidence", 0) or 0)
+            except (TypeError, ValueError):
+                fallback_confidence = 0.0
+            statements.append(KnowledgeStatement(
+                id="knowledge-statement:" + hashlib.sha1(
+                    f"{unit.id}|{source_id}|{summary}".encode("utf-8")
+                ).hexdigest()[:20],
+                knowledge_unit_id=unit.id,
+                statement_type="attribute",
+                subject=subject,
+                subject_type=("电路" if modality == "circuit" else "课程概念"),
+                predicate_original=predicate,
+                predicate_normalized="HAS_GROUNDED_SEMANTICS",
+                value=summary,
+                value_type="text",
+                evidence_text=summary,
+                evidence_id=source_id,
+                source_page=int(source.get("page", unit.page_start) or unit.page_start),
+                modality=modality,
+                confidence=max(0.65, min(1.0, fallback_confidence)),
+            ))
+            covered_element_ids.add(source_id)
+        unit.statements = statements
+        unit.quality["knowledge_statement_count"] = len(statements)
+        unit.quality["knowledge_statement_candidates"] = len(raw_statements)
+        if not statements:
+            unit.quality["status"] = "review"
+            warnings = unit.quality.setdefault("warnings", [])
+            if "no grounded atomic statements" not in warnings:
+                warnings.append("no grounded atomic statements")
+
+    if cache_path:
+        temporary = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        temporary.write_text(
+            "\n".join(
+                json.dumps(cache[key], ensure_ascii=False) for key in sorted(cache)
+            ),
+            encoding="utf-8",
+        )
+        temporary.replace(cache_path)
+    return values
+
+
 def _split_text(text: str, max_chars: int, overlap_chars: int) -> list[str]:
-    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+    paragraphs = _atomic_paragraphs(text, max_chars=max_chars)
     pieces: list[str] = []
     current = ""
     for paragraph in paragraphs:
-        candidates = [paragraph]
-        if len(paragraph) > max_chars:
-            candidates = [
-                paragraph[index : index + max_chars]
-                for index in range(0, len(paragraph), max_chars)
-            ]
-        for candidate in candidates:
-            if current and len(current) + len(candidate) + 2 > max_chars:
-                pieces.append(current)
-                overlap = current[-overlap_chars:] if overlap_chars else ""
-                current = overlap
-            current = f"{current}\n\n{candidate}".strip()
+        if current and len(current) + len(paragraph) + 2 > max_chars:
+            pieces.append(current)
+            overlap = ""
+            if overlap_chars:
+                sentences = [
+                    item.strip()
+                    for item in re.split(r"(?<=[。！？；;])\s*", current)
+                    if item.strip()
+                ]
+                if sentences and len(sentences[-1]) <= overlap_chars:
+                    overlap = sentences[-1]
+            current = overlap
+        current = f"{current}\n\n{paragraph}".strip()
     if current:
         pieces.append(current)
     return pieces
@@ -493,6 +1001,13 @@ def write_knowledge_document(units: Iterable[KnowledgeUnit], output_dir: Path) -
             unit.text,
             "",
         ])
+        if unit.statements:
+            lines.extend(["### 原子知识陈述", ""])
+            for statement in unit.statements:
+                lines.extend([
+                    f"- {statement.graph_text().replace(chr(10), ' ')}",
+                    "",
+                ])
         for element in unit.knowledge_elements:
             meaning = str(element.get("meaning", "")).strip()
             if meaning:

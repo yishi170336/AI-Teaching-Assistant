@@ -16,6 +16,7 @@ from backend.app.rag.pdf_extract_kit import DetectedRegion, PDFExtractKitAdapter
 from backend.app.rag.pipeline import KnowledgeBaseBuildCancelled
 from backend.app.rag.multimodal import (
     LayoutElement,
+    CIRCUIT_ANALYSIS_SCHEMA_VERSION,
     PAGE_OCR_SCHEMA_VERSION,
     SCANNED_PAGE_PLACEHOLDER,
     _analyze_image,
@@ -838,6 +839,85 @@ def test_unconfirmed_line_art_is_not_promoted_to_circuit(monkeypatch):
     assert element.element_type == "image"
     assert element.uncertain is True
     assert element.processor == "opencv-heuristic-unconfirmed"
+
+
+def test_circuit_family_prompt_prevents_norton_thevenin_confusion(monkeypatch):
+    class GroundedVision:
+        model = "qwen3-vl-flash"
+        prompt = ""
+
+        def complete_json(self, prompt, **_kwargs):
+            self.prompt = prompt
+            return {
+                "is_circuit": True,
+                "caption": "电流源模型",
+                "circuit_type": "诺顿等效电路",
+                "grounding_quotes": ["电流源与电阻并联"],
+                "contradictions": [],
+                "components": [
+                    {"id": "I1", "type": "current_source", "value": None, "terminals": ["out", "gnd"]},
+                    {"id": "R1", "type": "resistor", "value": None, "terminals": ["out", "gnd"]},
+                ],
+                "nets": [{"id": "out", "terminals": ["I1.1", "R1.1"]}],
+                "description": "电流源与电阻并联构成二端网络。",
+                "confidence": 0.96,
+            }
+
+    monkeypatch.setattr(
+        "backend.app.rag.multimodal._circuit_image_heuristic",
+        lambda _image: (True, 0.9),
+    )
+    client = GroundedVision()
+    element = LayoutElement(
+        id="norton", source="lesson.pdf", page=95, element_type="circuit",
+        bbox=[0, 0, 100, 100], nearby_text="输出端可用电流源模型表示。",
+        description="旧缓存错误标注为戴维南模型",
+        components=[{"id": "old", "type": "resistor", "terminals": ["a", "b"]}],
+    )
+
+    _analyze_image(element, _diagram_png(), client)
+
+    assert "诺顿/电流源模型" in client.prompt
+    assert "戴维南" not in element.description
+    assert "诺顿等效电路" in element.description
+    assert element.processor.endswith(
+        f"circuit-{CIRCUIT_ANALYSIS_SCHEMA_VERSION}"
+    )
+
+
+def test_two_transistor_microcurrent_source_cannot_be_labeled_wilson(monkeypatch):
+    class ConfusedVision:
+        model = "qwen3-vl-flash"
+
+        def complete_json(self, *_args, **_kwargs):
+            return {
+                "is_circuit": True,
+                "circuit_type": "威尔逊电流源",
+                "components": [
+                    {"id": "T1", "type": "bjt", "terminals": ["c1", "b", "gnd"]},
+                    {"id": "T2", "type": "bjt", "terminals": ["out", "b", "e2"]},
+                    {"id": "RE", "type": "resistor", "terminals": ["e2", "gnd"]},
+                ],
+                "nets": [{"id": "b", "terminals": ["T1.2", "T2.2"]}],
+                "description": "该图是威尔逊电流源。",
+                "confidence": 0.96,
+            }
+
+    monkeypatch.setattr(
+        "backend.app.rag.multimodal._circuit_image_heuristic",
+        lambda _image: (True, 0.9),
+    )
+    element = LayoutElement(
+        id="microcurrent", source="lesson.pdf", page=99,
+        element_type="circuit", bbox=[0, 0, 100, 100],
+        nearby_text="四、微电流源\n将带射极电阻的镜像电流源中的电阻 R_E1 短路，便构成了微电流源，如图 2.6.8 所示。",
+    )
+
+    _analyze_image(element, _diagram_png(), ConfusedVision())
+
+    assert element.element_type == "circuit"
+    assert "微电流源" in element.description
+    assert "威尔逊电流源" not in element.description
 
 
 def test_index_activation_replaces_complete_directory(tmp_path):
