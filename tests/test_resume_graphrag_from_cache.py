@@ -5,11 +5,62 @@ from pathlib import Path
 
 import pytest
 
+from backend.app.rag.knowledge_document import (
+    KnowledgeUnit,
+    enrich_formula_knowledge,
+    enrich_knowledge_statements,
+)
+from backend.app.rag.multimodal import BuildModelConfig
 from scripts.resume_graphrag_from_cache import (
     apply_cleaning_audit,
     load_layout_elements,
     load_page_documents,
 )
+
+
+class _FailAfterOneClient:
+    def __init__(self, first_response: dict[str, object]) -> None:
+        self.config = BuildModelConfig(
+            provider="qwen",
+            model="qwen3.7-flash",
+            api_key="test-key",
+            base_url="https://example.test/v1",
+        )
+        self.first_response = first_response
+        self.calls = 0
+
+    def complete_json(self, _prompt: str, **_kwargs: object) -> dict[str, object]:
+        self.calls += 1
+        if self.calls > 1:
+            raise RuntimeError("simulated interruption")
+        return self.first_response
+
+
+def _unit(index: int, *, formula: bool = False) -> KnowledgeUnit:
+    return KnowledgeUnit(
+        id=f"unit:{index}",
+        source="book.pdf",
+        title_path=["第一章"],
+        chapter="第一章",
+        section="1.1 电路",
+        page_start=index,
+        page_end=index,
+        text="电流源输出电阻很大。",
+        source_text=f"[第 {index} 页]\n电流源输出电阻很大。",
+        evidence_ids=[f"ocr:book.pdf:p{index}"],
+        knowledge_elements=(
+            [{
+                "id": f"formula:{index}",
+                "type": "formula",
+                "raw_text": "I=U/R",
+                "meaning": "",
+                "nearby_text": "欧姆定律",
+                "uncertain": False,
+                "included_in_graph": False,
+            }]
+            if formula else []
+        ),
+    )
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
@@ -84,3 +135,47 @@ def test_layout_cache_ignores_unknown_forward_compatible_fields(tmp_path: Path) 
     assert elements[0].element_type == "formula"
     assert elements[0].bbox == [1, 2, 3, 4]
 
+
+def test_formula_enrichment_checkpoints_each_completed_batch(tmp_path: Path) -> None:
+    cache_path = tmp_path / "formula.jsonl"
+    client = _FailAfterOneClient({"items": []})
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        enrich_formula_knowledge(
+            [_unit(1, formula=True), _unit(2, formula=True)],
+            client,
+            cache_path=cache_path,
+            batch_size=1,
+        )
+
+    rows = [json.loads(line) for line in cache_path.read_text(encoding="utf-8").splitlines()]
+    assert [row["knowledge_unit_id"] for row in rows] == ["unit:1"]
+
+
+def test_statement_enrichment_checkpoints_each_completed_unit(tmp_path: Path) -> None:
+    cache_path = tmp_path / "statements.jsonl"
+    client = _FailAfterOneClient({
+        "statements": [{
+            "statement_type": "relation",
+            "subject": "电流源",
+            "subject_type": "电路",
+            "predicate_original": "具有",
+            "predicate_normalized": "HAS_PROPERTY",
+            "object": "高输出电阻",
+            "object_type": "电路参数",
+            "qualifiers": [],
+            "evidence_source_id": "ocr:book.pdf:p1",
+            "evidence_text": "电流源输出电阻很大。",
+            "confidence": 0.95,
+        }]
+    })
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        enrich_knowledge_statements(
+            [_unit(1), _unit(2)],
+            client,
+            cache_path=cache_path,
+        )
+
+    rows = [json.loads(line) for line in cache_path.read_text(encoding="utf-8").splitlines()]
+    assert [row["knowledge_unit_id"] for row in rows] == ["unit:1"]

@@ -93,6 +93,20 @@ def _compact(value: str) -> str:
     return re.sub(r"\s+", " ", str(value)).strip()
 
 
+def _write_jsonl_cache(cache_path: Path, cache: dict[str, dict[str, Any]]) -> None:
+    """Atomically persist enrichment checkpoints so interrupted builds can resume."""
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    temporary.write_text(
+        "\n".join(
+            json.dumps(cache[key], ensure_ascii=False) for key in sorted(cache)
+        ),
+        encoding="utf-8",
+    )
+    temporary.replace(cache_path)
+
+
 def _atomic_paragraphs(text: str, *, max_chars: int = 700) -> list[str]:
     """Split only at semantic boundaries; never cut a formula or word by characters."""
 
@@ -519,6 +533,8 @@ def enrich_formula_knowledge(
                 "model": model,
                 "formulas": results[unit.id],
             }
+        if cache_path:
+            _write_jsonl_cache(cache_path, cache)
 
     for unit in values:
         by_id = {
@@ -553,14 +569,7 @@ def enrich_formula_knowledge(
             unit.quality["formula_knowledge_enriched"] = enriched_ids
 
     if cache_path:
-        temporary = cache_path.with_suffix(cache_path.suffix + ".tmp")
-        temporary.write_text(
-            "\n".join(
-                json.dumps(cache[key], ensure_ascii=False) for key in sorted(cache)
-            ),
-            encoding="utf-8",
-        )
-        temporary.replace(cache_path)
+        _write_jsonl_cache(cache_path, cache)
     return values
 
 
@@ -750,6 +759,8 @@ evidence_source_id 必须逐字复制对应 id；evidence_text 必须是该 sour
                     if isinstance(coverage_response, dict) else []
                 ),
             }
+            if cache_path:
+                _write_jsonl_cache(cache_path, cache)
 
         evidence_sources = [
             (
@@ -907,14 +918,7 @@ evidence_source_id 必须逐字复制对应 id；evidence_text 必须是该 sour
                 warnings.append("no grounded atomic statements")
 
     if cache_path:
-        temporary = cache_path.with_suffix(cache_path.suffix + ".tmp")
-        temporary.write_text(
-            "\n".join(
-                json.dumps(cache[key], ensure_ascii=False) for key in sorted(cache)
-            ),
-            encoding="utf-8",
-        )
-        temporary.replace(cache_path)
+        _write_jsonl_cache(cache_path, cache)
     return values
 
 
