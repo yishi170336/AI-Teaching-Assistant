@@ -207,10 +207,18 @@ def test_atomic_statements_are_documents_and_attribute_facts_survive_conversion(
         "id": "e2", "title": "高输出电阻", "type": "课程概念",
         "description": relation.evidence_text,
         "text_unit_ids": ["tu-relation"],
+    }, {
+        "id": "e3", "title": "温度稳定性", "type": "课程概念",
+        "description": "镜像电流源需具有良好的温度稳定性。",
+        "text_unit_ids": ["tu-relation"],
     }]).to_parquet(tmp_path / "entities.parquet")
     pd.DataFrame([{
         "id": "r1", "source": relation.subject, "target": relation.object,
         "description": '{"relation_original":"具有","relation_normalized":"HAS_PROPERTY","evidence_texts":["镜像电流源具有高输出电阻。"],"qualifiers":["晶体管参数匹配时"],"evidence_ids":["ocr:教材.pdf:p95"],"source_pages":[95],"modalities":["text"],"confidence":0.96}',
+        "weight": 1.0, "text_unit_ids": ["tu-relation"],
+    }, {
+        "id": "r2", "source": relation.subject, "target": "温度稳定性",
+        "description": '{"relation_original":"需具有","relation_normalized":"REQUIRES","evidence_texts":["镜像电流源需具有良好的温度稳定性。"],"evidence_ids":["ocr:教材.pdf:p95"],"source_pages":[95],"modalities":["text"],"confidence":0.9}',
         "weight": 1.0, "text_unit_ids": ["tu-relation"],
     }]).to_parquet(tmp_path / "relationships.parquet")
     pd.DataFrame([{
@@ -238,7 +246,10 @@ def test_atomic_statements_are_documents_and_attribute_facts_survive_conversion(
     assert graph["edges"][0]["qualifier_texts"] == ["晶体管参数匹配时"]
     assert graph["attribute_facts"][0]["evidence_ids"] == ["formula:p95:1"]
     assert graph["attribute_facts"][0]["source_page"] == 95
-    assert audit_microsoft_graphrag(graph)["metrics"]["text_unit_fact_coverage"] == 1.0
+    passed = audit_microsoft_graphrag(graph)
+    assert passed["metrics"]["text_unit_fact_coverage"] == 1.0
+    assert passed["metrics"]["community_context_relationship_coverage"] == 1.0
+    assert len(graph["communities"][0]["boundary_relationship_ids"]) == 1
 
     graph["stats"]["expected_modalities"] = ["formula", "image"]
     graph["stats"]["statement_modalities"] = {"formula": 1}

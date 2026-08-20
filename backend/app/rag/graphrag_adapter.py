@@ -470,9 +470,15 @@ async def _run_textbook_community_reports(config: Any, context: Any) -> Any:
         entity_ids = set(_as_list(community.get("entity_ids")))
         relationship_ids = set(_as_list(community.get("relationship_ids")))
         entity_records = entities.loc[entities["id"].astype(str).isin(entity_ids)]
+        entity_titles = set(entity_records["title"].astype(str))
         relationship_records = relationships.loc[
             relationships["id"].astype(str).isin(relationship_ids)
-        ]
+            | relationships["source"].astype(str).isin(entity_titles)
+            | relationships["target"].astype(str).isin(entity_titles)
+        ].copy()
+        relationship_records["boundary"] = ~relationship_records["id"].astype(str).isin(
+            relationship_ids
+        )
         context_value = {
             "entities": [
                 {
@@ -487,8 +493,9 @@ async def _run_textbook_community_reports(config: Any, context: Any) -> Any:
                     "source": str(item.get("source", "")),
                     "target": str(item.get("target", "")),
                     "description": str(item.get("description", ""))[:600],
+                    "boundary": bool(item.get("boundary", False)),
                 }
-                for item in relationship_records.to_dict("records")
+                for item in relationship_records.head(60).to_dict("records")
             ],
         }
         prompt = (
@@ -1186,12 +1193,32 @@ def convert_graphrag_outputs(
         })
 
     edge_communities: dict[str, list[str]] = {}
+    edge_boundary_communities: dict[str, list[str]] = {}
     for community in communities:
+        community_entity_ids = set(community["entity_ids"])
+        intra_relationship_ids = set(community["relationship_ids"])
+        boundary_relationship_ids = [
+            edge["id"]
+            for edge in edges
+            if edge["id"] not in intra_relationship_ids
+            and (
+                edge["source"] in community_entity_ids
+                or edge["target"] in community_entity_ids
+            )
+        ]
+        community["boundary_relationship_ids"] = boundary_relationship_ids
         for relationship_id in community["relationship_ids"]:
             edge_communities.setdefault(relationship_id, []).append(community["id"])
+        for relationship_id in boundary_relationship_ids:
+            edge_boundary_communities.setdefault(relationship_id, []).append(
+                community["id"]
+            )
     for edge in edges:
         community_ids = edge_communities.get(edge["id"], [])
         edge["community_ids"] = community_ids
+        edge["boundary_community_ids"] = edge_boundary_communities.get(
+            edge["id"], []
+        )
         # Leiden communities list intra-community edges only. Cross-community is a
         # valid explicit classification, not silently missing coverage.
         edge["cross_community"] = not community_ids
@@ -1332,8 +1359,16 @@ def audit_microsoft_graphrag(graph: dict[str, Any]) -> dict[str, Any]:
         if text_unit_ids else 0.0
     )
     unclassified_community_edges = sum(
-        not edge.get("community_ids") and not edge.get("cross_community")
+        not edge.get("community_ids")
+        and not edge.get("boundary_community_ids")
         for edge in edges
+    )
+    community_context_coverage = (
+        sum(
+            bool(edge.get("community_ids") or edge.get("boundary_community_ids"))
+            for edge in edges
+        ) / len(edges)
+        if edges else 1.0
     )
     no_facts = int(not edges and not attributes)
     units_without_facts = int(
@@ -1406,6 +1441,9 @@ def audit_microsoft_graphrag(graph: dict[str, Any]) -> dict[str, Any]:
             "entities_without_source_pages": missing_pages,
             "cross_community_relationships": sum(
                 bool(edge.get("cross_community")) for edge in edges
+            ),
+            "community_context_relationship_coverage": round(
+                community_context_coverage, 4
             ),
             "communities": len(graph.get("communities", [])),
             "knowledge_units_without_facts": units_without_facts,
