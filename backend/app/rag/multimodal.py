@@ -52,6 +52,7 @@ PAGE_CLEANING_POLICY_VERSION = "2.1-exercise-range-fallback"
 
 SCANNED_PAGE_PLACEHOLDER = "[本页主要包含电路图、公式或其他图形内容]"
 PAGE_OCR_SCHEMA_VERSION = "2.0-qwen-page-ocr-layout-blocks"
+LEGACY_PAGE_OCR_SCHEMA_VERSIONS = {"1.0-qwen-page-ocr"}
 PAGE_OCR_PROMPT = """你是模拟电子技术教材的高保真 OCR 与结构识别器。请完整转写本页，严格保持阅读顺序、标题层级、图题、表题、公式、变量、上下标和单位；不得概括、改写或补写看不清的内容。省略页码和重复的页眉。
 blocks 必须按真实阅读顺序列出本页版面块。每个块包含 type、text、bbox、reading_order；type 只能是 chapter_heading、section_heading、paragraph、list_item、formula、figure_caption、table、exercise、page_header、page_footer、noise；bbox 为按页面宽高归一化到 0-1000 的 [x1,y1,x2,y2]。正文自然段不要按视觉换行拆碎，双栏必须先完整读取左栏再读取右栏。chapter 填本页可见的章标题，否则为空；section 填本页最后出现、层级最深的编号教学小节（例如“1.1.3 PN结”），或完整可见的结构标题（仅限“本章小结”“习题”“复习题”“思考题”“自测题”“参考答案”等），否则为空；section_bbox 填该 section 标题 bbox，标题不可见时返回空数组；concepts 只列正文中明确出现的 2-18 个具体模拟电子技术知识点，不得列书名、章名、泛化词或举例材料。
 不要把页眉、图号、表号、公式编号、例题编号、题号、数值或单位（例如“1.0 mA”）误认为 section。
@@ -71,6 +72,7 @@ CHAPTER_SENTENCE_FRAGMENTS = (
 )
 SECTION_SENTENCE_FRAGMENTS = (
     "如图", "所示", "试求", "试画", "试分析", "已知", "求出", "判断",
+    "可得", "因此", "所以", "其中", "这时", "由此",
 )
 CHAPTER_EXERCISE_CONCEPT_PATTERN = re.compile(
     r"[？?]|图题\s*\d|判断下列|回答下列|试证明|哪些能够|怎样用|电路.*所示"
@@ -124,7 +126,7 @@ class LayoutElement:
     netlist: str = ""
     description: str = ""
     confidence: float = 0.0
-    processor: str = "pymupdf-fallback"
+    processor: str = "ocr-layout"
     uncertain: bool = False
     source_page: int | None = None
 
@@ -383,6 +385,56 @@ def _ocr_blocks(value: Any) -> list[dict[str, Any]]:
             "reading_order": reading_order,
         })
     return sorted(blocks, key=lambda item: int(item["reading_order"]))
+
+
+def _legacy_ocr_blocks(text: str) -> list[dict[str, Any]]:
+    """Promote legacy page text to layout blocks without inventing geometry."""
+
+    blocks: list[dict[str, Any]] = []
+    buffer: list[str] = []
+
+    def flush() -> None:
+        nonlocal buffer
+        paragraph = "".join(buffer).strip()
+        if paragraph:
+            blocks.append({
+                "type": "paragraph",
+                "text": paragraph,
+                "bbox": [],
+                "reading_order": len(blocks) + 1,
+            })
+        buffer = []
+
+    for raw_line in str(text).splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            flush()
+            continue
+        if re.match(r"^第[零〇一二三四五六七八九十百两0-9]+章", line):
+            flush()
+            block_type = "chapter_heading"
+        elif re.match(r"^\*?\d+(?:\.\d+){1,3}\s*\S+", line) and len(line) < 90:
+            flush()
+            block_type = "section_heading"
+        elif re.match(r"^(?:图|表)(?:题)?\s*\d", line):
+            flush()
+            block_type = "figure_caption"
+        elif len(line) < 180 and re.search(r"[=≈≠≤≥∑∫√]", line):
+            flush()
+            block_type = "formula"
+        else:
+            buffer.append(line)
+            if line.endswith(("。", "！", "？", "；", ":", "：")):
+                flush()
+            continue
+        blocks.append({
+            "type": block_type,
+            "text": line,
+            "bbox": [],
+            "reading_order": len(blocks) + 1,
+        })
+    flush()
+    return _ocr_blocks(blocks)
 
 
 def _normalize_chapter_heading(value: Any) -> str:
@@ -868,7 +920,7 @@ def _ocr_scanned_pages(
     document_hash: str,
     chapter_limit: int | None = None,
 ) -> list[PageDocument]:
-    """Recover the text layer of image-only textbook pages with a durable cache."""
+    """Recover every PDF page from OCR, using durable current/legacy caches."""
 
     def page_chapter(document: PageDocument) -> str:
         lines = [line.strip() for line in document.text.splitlines() if line.strip()]
@@ -917,23 +969,34 @@ def _ocr_scanned_pages(
         return limited_chapters(pages)
     cache_path = output_dir / f"{path.stem}.page_ocr.jsonl"
     cache_entries: dict[int, dict[str, Any]] = {}
+    migrated_legacy_cache = False
     if cache_path.exists():
         try:
             for line in cache_path.read_text(encoding="utf-8").splitlines():
                 item = json.loads(line)
+                schema_version = str(item.get("schema_version", "")) if isinstance(item, dict) else ""
                 if (
                     isinstance(item, dict)
-                    and item.get("schema_version") == PAGE_OCR_SCHEMA_VERSION
+                    and schema_version in {PAGE_OCR_SCHEMA_VERSION, *LEGACY_PAGE_OCR_SCHEMA_VERSIONS}
                     and item.get("document_hash") == document_hash
                     and (client is None or item.get("model") == client.model)
                     and str(item.get("text", "")).strip()
                 ):
+                    if schema_version in LEGACY_PAGE_OCR_SCHEMA_VERSIONS:
+                        item = {
+                            **item,
+                            "schema_version": PAGE_OCR_SCHEMA_VERSION,
+                            "migrated_from_schema": schema_version,
+                            "blocks": _legacy_ocr_blocks(str(item.get("text", ""))),
+                            "section_source": str(item.get("section_source", "legacy-cache")),
+                            "section_confidence": float(item.get("section_confidence", 0.6)),
+                        }
+                        migrated_legacy_cache = True
                     cache_entries[int(item["page"])] = item
         except (OSError, ValueError, json.JSONDecodeError):
             cache_entries = {}
-    reuse_near_complete_cache = _reuse_near_complete_page_ocr_cache(
-        pages, cache_entries
-    )
+    if migrated_legacy_cache:
+        _write_page_ocr_cache(cache_path, cache_entries)
 
     recovered: list[PageDocument] = []
     seen_chapter_markers: list[str] = []
@@ -988,8 +1051,6 @@ def _ocr_scanned_pages(
                         "text_blocks": cached_blocks,
                     },
                 )
-            elif recovered_document is None and reuse_near_complete_cache:
-                recovered_document = page_document
             elif recovered_document is None and client is None:
                 recovered_document = page_document
 
@@ -1147,92 +1208,6 @@ def _localized_nearby_text(
     return "\n".join(text for _, text in sorted(candidates, key=lambda item: item[0])[:3])[:1800]
 
 
-def _formula_text_from_words(page: fitz.Page, bbox: list[float]) -> str:
-    """Extract only glyphs inside a formula box instead of its containing paragraph."""
-
-    words: list[tuple[float, float, float, float, str, int, int, int]] = []
-    target = fitz.Rect(*bbox)
-    for raw in page.get_text("words"):
-        word_rect = fitz.Rect(raw[:4])
-        intersection = target & word_rect
-        if intersection.is_empty:
-            continue
-        overlap = intersection.get_area() / max(word_rect.get_area(), 1e-6)
-        if overlap >= 0.45:
-            words.append(raw)
-    words.sort(key=lambda item: (item[5], item[6], item[7], item[0]))
-    grouped: dict[tuple[int, int], list[str]] = {}
-    for word in words:
-        grouped.setdefault((int(word[5]), int(word[6])), []).append(str(word[4]))
-    lines = ["".join(parts) for _, parts in sorted(grouped.items())]
-    return "\n".join(line for line in lines if line).strip()
-
-
-def _formula_latex_from_pdf_geometry(page: fitz.Page, bbox: list[float]) -> str:
-    """Recover display-math structure from native PDF spans and coordinates."""
-
-    blocks = page.get_text("dict", clip=fitz.Rect(*bbox)).get("blocks", [])
-    lines: list[dict[str, Any]] = []
-    max_size = 0.0
-    for block in blocks:
-        if int(block.get("type", -1)) != 0:
-            continue
-        for line in block.get("lines", []):
-            spans = [span for span in line.get("spans", []) if str(span.get("text", "")).strip()]
-            if not spans:
-                continue
-            max_size = max(max_size, *(float(span.get("size", 0)) for span in spans))
-            lines.append({"bbox": list(line.get("bbox", [0, 0, 0, 0])), "spans": spans})
-    if not lines or max_size <= 0:
-        return ""
-
-    def format_span(span: dict[str, Any]) -> str:
-        text = re.sub(r"\s+", "", str(span.get("text", "")))
-        text = text.replace("β", r"\beta ").replace("α", r"\alpha ")
-        text = text.replace("γ", r"\gamma ").replace("Δ", r"\Delta ")
-        if not text:
-            return ""
-        if float(span.get("size", 0)) <= max_size * 0.72:
-            return "_{" + text + "}"
-        return text
-
-    for line in lines:
-        line["latex"] = "".join(format_span(span) for span in line["spans"])
-        main_origins = [
-            float(span.get("origin", [0, 0])[1])
-            for span in line["spans"]
-            if float(span.get("size", 0)) > max_size * 0.72
-        ]
-        line["baseline"] = sum(main_origins) / len(main_origins) if main_origins else float(line["bbox"][3])
-
-    equality_lines = [line for line in lines if "=" in str(line["latex"])]
-    if equality_lines:
-        equality = min(equality_lines, key=lambda item: float(item["bbox"][0]))
-        baseline = float(equality["baseline"])
-        rhs_lines = [
-            line for line in lines
-            if line is not equality and float(line["bbox"][0]) >= float(equality["bbox"][2]) - 1
-        ]
-        numerator = [line for line in rhs_lines if float(line["baseline"]) < baseline - 4]
-        denominator = [line for line in rhs_lines if float(line["baseline"]) > baseline + 4]
-        if numerator and denominator:
-            top = "".join(str(line["latex"]) for line in sorted(numerator, key=lambda item: item["bbox"][0]))
-            bottom = "".join(str(line["latex"]) for line in sorted(denominator, key=lambda item: item["bbox"][0]))
-            latex = str(equality["latex"]) + rf"\frac{{{top}}}{{{bottom}}}"
-        else:
-            same_baseline = [
-                line for line in rhs_lines if abs(float(line["baseline"]) - baseline) <= 4
-            ]
-            latex = str(equality["latex"]) + "".join(
-                str(line["latex"]) for line in sorted(same_baseline, key=lambda item: item["bbox"][0])
-            )
-    else:
-        latex = "".join(str(line["latex"]) for line in sorted(lines, key=lambda item: (item["baseline"], item["bbox"][0])))
-
-    latex = re.sub(r"\s+", " ", latex).strip()
-    return latex if re.search(r"[=+\-\\]", latex) else ""
-
-
 _FORMULA_NUMBER_PATTERN = re.compile(
     r"[（(]\s*((?:\d+\.)+\d+[A-Za-z]?)\s*[)）]\s*$"
 )
@@ -1306,6 +1281,7 @@ def _normalize_formula_result(value: dict[str, Any], fallback_text: str) -> dict
         "latex": latex,
         "plain_text": plain_text,
         "variables": value.get("variables", []) if isinstance(value.get("variables"), list) else [],
+        "knowledge": str(value.get("knowledge", "")).strip(),
         "confidence": confidence,
     }
 
@@ -1355,14 +1331,14 @@ def _recognize_formula(
         })
         return normalized
     prompt = f"""你是电子电路教材公式识别器。图片只包含一个独立公式。
-输出严格 JSON：{{"is_formula":true,"latex":"不含外层美元符号的 LaTeX","plain_text":"便于全文检索的线性文本","variables":[{{"symbol":"I_BQ","meaning":"静态基极电流"}}],"confidence":0.0}}。
+输出严格 JSON：{{"is_formula":true,"latex":"不含外层美元符号的 LaTeX","plain_text":"便于全文检索的线性文本","variables":[{{"symbol":"I_BQ","meaning":"静态基极电流"}}],"knowledge":"仅依据公式和邻近正文说明公式成立条件、变量关系及可直接推出的结论，不明确则为空","confidence":0.0}}。
 要求：准确恢复上下标、希腊字母、分数、绝对值、单位与公式编号；不得把邻近正文补进公式，不清楚的字符使用 ?，不得猜造数值。
 邻近正文仅用于消歧：{nearby_text[:800]}"""
     error = ""
     try:
         result = client.complete_json(prompt, image_bytes=image_bytes, image_mime="image/png")
     except QwenMultimodalAPIError as exc:
-        logger.warning("Qwen3-VL formula recognition failed; using PDF text fallback: %s", exc)
+        logger.warning("Qwen3-VL formula recognition failed; using page OCR fallback: %s", exc)
         result = {}
         error = str(exc)
     normalized = _normalize_formula_result(result, fallback_text)
@@ -1883,29 +1859,44 @@ def enhance_pdf(
         for page_no in sorted(allowed_pages):
             page = document[page_no - 1]
             meta = page_meta[page_no]
-            blocks = page.get_text(
-                "dict",
-                flags=fitz.TEXT_PRESERVE_LIGATURES | fitz.TEXT_PRESERVE_IMAGES,
-            ).get("blocks", [])
             text_blocks: list[tuple[list[float], str]] = []
-            for block in blocks:
-                if int(block.get("type", -1)) != 0:
+            text_block_types: list[str] = []
+            ocr_blocks = (
+                meta.extra.get("text_blocks", [])
+                if isinstance(meta.extra, dict)
+                else []
+            )
+            for block in ocr_blocks:
+                if not isinstance(block, dict):
                     continue
-                text = "\n".join(
-                    "".join(str(span.get("text", "")) for span in line.get("spans", []))
-                    for line in block.get("lines", [])
-                ).strip()
-                if text:
-                    text_blocks.append(([round(float(v), 2) for v in block.get("bbox", [0, 0, 0, 0])], text))
+                block_type = str(block.get("type", "paragraph")).strip().lower()
+                if block_type in {"page_header", "page_footer", "noise"}:
+                    continue
+                text = str(block.get("text", "")).strip()
+                normalized_bbox = block.get("bbox", [])
+                if not text or not isinstance(normalized_bbox, list) or len(normalized_bbox) != 4:
+                    continue
+                try:
+                    bbox = [
+                        round(float(normalized_bbox[0]) / 1000 * float(page.rect.width), 2),
+                        round(float(normalized_bbox[1]) / 1000 * float(page.rect.height), 2),
+                        round(float(normalized_bbox[2]) / 1000 * float(page.rect.width), 2),
+                        round(float(normalized_bbox[3]) / 1000 * float(page.rect.height), 2),
+                    ]
+                except (TypeError, ValueError):
+                    continue
+                text_blocks.append((bbox, text))
+                text_block_types.append(block_type)
 
             order = 0
             page_image_count = 0
-            for bbox, text in text_blocks:
+            for block_index, (bbox, text) in enumerate(text_blocks):
+                block_type = text_block_types[block_index]
                 element_type = (
                     "table"
-                    if _looks_like_table(text)
+                    if block_type == "table" or _looks_like_table(text)
                     else "formula"
-                    if not pdf_extract_kit.available and _looks_like_formula(text)
+                    if block_type == "formula" and not pdf_extract_kit.available
                     else "text"
                 )
                 element_id, digest = _element_id(path.name, page_no, order, text)
@@ -2051,15 +2042,11 @@ def enhance_pdf(
                                 pass
                             element.uncertain = not bool(element.text)
                     else:
-                        native_text = _formula_text_from_words(page, bbox_points)
-                        fallback_text = native_text or ocr_formula.get("plain_text", "")
-                        native_latex = _formula_latex_from_pdf_geometry(page, bbox_points)
+                        fallback_text = ocr_formula.get("plain_text", "")
                         expected_processor = (
-                            "pymupdf-geometry-latex"
-                            if native_latex
-                            else f"formula-vl:{vision_client.model}"
+                            f"formula-vl:{vision_client.model}"
                             if vision_client
-                            else "pymupdf-formula"
+                            else "page-ocr-formula"
                         )
                         cache_compatible = bool(cached) and (
                             str(cached.get("processor", "")).endswith(expected_processor)
@@ -2089,112 +2076,93 @@ def enhance_pdf(
                                     setattr(element, field_name, cached[field_name])
                             formula_audit["status"] = "cached"
                         else:
-                            if native_latex:
-                                result = _normalize_formula_result(
-                                    {
-                                        "is_formula": True,
-                                        "latex": native_latex,
-                                        "plain_text": re.sub(r"\s+", "", fallback_text),
-                                        "confidence": 0.98,
-                                    },
-                                    fallback_text,
+                            primary = (
+                                _recognize_formula(
+                                    vision_client, crop_bytes, fallback_text, nearby
                                 )
-                                formula_audit["attempts"].append({
-                                    "stage": "native-pdf-geometry",
-                                    "accepted": True,
-                                    "latex": native_latex,
-                                })
-                                formula_audit["status"] = "recognized"
-                            else:
-                                primary = (
-                                    _recognize_formula(
-                                        vision_client, crop_bytes, fallback_text, nearby
-                                    )
-                                    if crop_usable
-                                    else {
-                                        "model_accepted": False,
-                                        "raw_result": {},
-                                        "recognition_error": "primary-crop-unavailable",
-                                    }
+                                if crop_usable
+                                else {
+                                    "model_accepted": False,
+                                    "raw_result": {},
+                                    "recognition_error": "primary-crop-unavailable",
+                                }
+                            )
+                            formula_audit["attempts"].append({
+                                "stage": "qwen-primary",
+                                "accepted": primary.get("model_accepted", False),
+                                "result": primary.get("raw_result", {}),
+                                "error": primary.get("recognition_error", ""),
+                            })
+                            result = primary if primary.get("model_accepted") else None
+                            retry_path: Path | None = None
+                            for retry_number in range(settings.formula_vl_retry_count):
+                                if result is not None or vision_client is None:
+                                    break
+                                retry_bytes = _formula_retry_crop(
+                                    image_bgr, region.bbox_pixels
                                 )
-                                formula_audit["attempts"].append({
-                                    "stage": "qwen-primary",
-                                    "accepted": primary.get("model_accepted", False),
-                                    "result": primary.get("raw_result", {}),
-                                    "error": primary.get("recognition_error", ""),
-                                })
-                                result = primary if primary.get("model_accepted") else None
-                                retry_path: Path | None = None
-                                for retry_number in range(settings.formula_vl_retry_count):
-                                    if result is not None or vision_client is None:
-                                        break
-                                    retry_bytes = _formula_retry_crop(
-                                        image_bgr, region.bbox_pixels
-                                    )
-                                    if not retry_bytes or not _image_is_safe(retry_bytes):
-                                        formula_audit["attempts"].append({
-                                            "stage": f"qwen-retry-{retry_number + 1}",
-                                            "accepted": False,
-                                            "error": "retry-crop-unavailable",
-                                        })
-                                        break
-                                    retry_path = image_path.with_name(
-                                        image_path.stem + "-retry.png"
-                                    )
-                                    retry_path.write_bytes(retry_bytes)
-                                    retried = _recognize_formula(
-                                        vision_client, retry_bytes, fallback_text, nearby
-                                    )
+                                if not retry_bytes or not _image_is_safe(retry_bytes):
                                     formula_audit["attempts"].append({
                                         "stage": f"qwen-retry-{retry_number + 1}",
-                                        "accepted": retried.get("model_accepted", False),
-                                        "image_path": str(
-                                            retry_path.relative_to(output_dir)
-                                        ).replace("\\", "/"),
-                                        "result": retried.get("raw_result", {}),
-                                        "error": retried.get("recognition_error", ""),
+                                        "accepted": False,
+                                        "error": "retry-crop-unavailable",
                                     })
-                                    if retried.get("model_accepted"):
-                                        result = retried
-                                if result is not None:
-                                    result, reconciliation = _reconcile_formula_with_page_ocr(
-                                        result, ocr_formula
-                                    )
-                                    if reconciliation:
-                                        formula_audit["reconciliation"] = {
-                                            "source": "page-ocr",
-                                            "reason": reconciliation,
-                                            "latex": result.get("latex", ""),
-                                        }
-                                    formula_audit["status"] = "recognized"
-                                else:
-                                    fallback_latex = (
-                                        ocr_formula.get("latex", "")
-                                        or _formula_latex_from_ocr_text(fallback_text)
-                                    )
-                                    if fallback_latex or fallback_text:
-                                        result = _normalize_formula_result(
-                                            {
-                                                "is_formula": True,
-                                                "latex": fallback_latex,
-                                                "plain_text": fallback_text,
-                                                "confidence": 0.55,
-                                            },
-                                            fallback_text,
-                                        )
-                                        formula_audit["status"] = "fallback"
-                                        formula_audit["fallback_source"] = (
-                                            "page-ocr" if ocr_formula else "pymupdf-words"
-                                        )
-                                    else:
-                                        result = {
+                                    break
+                                retry_path = image_path.with_name(
+                                    image_path.stem + "-retry.png"
+                                )
+                                retry_path.write_bytes(retry_bytes)
+                                retried = _recognize_formula(
+                                    vision_client, retry_bytes, fallback_text, nearby
+                                )
+                                formula_audit["attempts"].append({
+                                    "stage": f"qwen-retry-{retry_number + 1}",
+                                    "accepted": retried.get("model_accepted", False),
+                                    "image_path": str(
+                                        retry_path.relative_to(output_dir)
+                                    ).replace("\\", "/"),
+                                    "result": retried.get("raw_result", {}),
+                                    "error": retried.get("recognition_error", ""),
+                                })
+                                if retried.get("model_accepted"):
+                                    result = retried
+                            if result is not None:
+                                result, reconciliation = _reconcile_formula_with_page_ocr(
+                                    result, ocr_formula
+                                )
+                                if reconciliation:
+                                    formula_audit["reconciliation"] = {
+                                        "source": "page-ocr",
+                                        "reason": reconciliation,
+                                        "latex": result.get("latex", ""),
+                                    }
+                                formula_audit["status"] = "recognized"
+                            else:
+                                fallback_latex = (
+                                    ocr_formula.get("latex", "")
+                                    or _formula_latex_from_ocr_text(fallback_text)
+                                )
+                                if fallback_latex or fallback_text:
+                                    result = _normalize_formula_result(
+                                        {
                                             "is_formula": True,
-                                            "latex": "",
-                                            "plain_text": "",
-                                            "variables": [],
-                                            "confidence": 0.0,
-                                        }
-                                        formula_audit["status"] = "uncertain"
+                                            "latex": fallback_latex,
+                                            "plain_text": fallback_text,
+                                            "confidence": 0.55,
+                                        },
+                                        fallback_text,
+                                    )
+                                    formula_audit["status"] = "fallback"
+                                    formula_audit["fallback_source"] = "page-ocr"
+                                else:
+                                    result = {
+                                        "is_formula": True,
+                                        "latex": "",
+                                        "plain_text": "",
+                                        "variables": [],
+                                        "confidence": 0.0,
+                                    }
+                                    formula_audit["status"] = "uncertain"
                             latex = str(result.get("latex", "")).strip()
                             plain_text = str(result.get("plain_text", "")).strip()
                             element.text = (
@@ -2205,7 +2173,10 @@ def enhance_pdf(
                             if not element.text:
                                 element.text = "独立公式（未能可靠转写，详见公式审计）"
                             variables = result.get("variables", [])
-                            if variables:
+                            formula_knowledge = str(result.get("knowledge", "")).strip()
+                            if formula_knowledge:
+                                element.description = formula_knowledge
+                            elif variables:
                                 element.description = "变量：" + json.dumps(
                                     variables, ensure_ascii=False
                                 )
@@ -2236,57 +2207,97 @@ def enhance_pdf(
                     elements.append(element)
                     order += 1
 
-            for block in blocks:
-                if pdfkit_figure_count:
-                    break
-                if int(block.get("type", -1)) != 1 or not block.get("image"):
-                    continue
-                bbox = [round(float(v), 2) for v in block.get("bbox", [0, 0, 0, 0])]
-                if _is_full_page_scan(
-                    bbox, float(page.rect.width), float(page.rect.height), meta
-                ):
-                    continue
-                image_counter += 1
-                if settings.multimodal_image_limit and image_counter > settings.multimodal_image_limit:
-                    break
-                image_bytes = bytes(block["image"])
-                if len(image_bytes) < 700 or not _image_is_safe(image_bytes):
-                    continue
-                ext = str(block.get("ext", "png")).lower()
-                if ext not in {"png", "jpg", "jpeg", "webp", "bmp"}:
-                    ext = "png"
-                element_id, digest = _element_id(path.name, page_no, order, image_bytes)
-                image_path = artifacts_dir / f"p{page_no:04d}-{element_id[:10]}.{ext}"
-                image_path.write_bytes(image_bytes)
-                nearby = "\n".join(text for _, text in text_blocks)[-3000:] or meta.text[-3000:]
-                element = LayoutElement(
-                    id=element_id, source=path.name, page=page_no, element_type="image",
-                    bbox=bbox, image_path=str(image_path.relative_to(output_dir)).replace("\\", "/"),
-                    reading_order=order, chapter=meta.chapter, section=meta.section,
-                    nearby_text=nearby, content_hash=digest,
-                    source_page=meta.source_page or page_no,
-                )
-                cached = cached_images.get(digest)
-                expected_vlm = f"qwen-vl:{vision_client.model}" if vision_client else ""
-                cache_compatible = bool(cached) and (
-                    (bool(expected_vlm) and cached.get("processor") == expected_vlm)
-                    or not expected_vlm
-                )
-                if cached and cache_compatible:
-                    for field_name in (
-                        "element_type", "caption", "components", "nets", "netlist",
-                        "description", "confidence", "processor", "uncertain",
+            if not pdfkit_figure_count:
+                seen_xrefs: set[int] = set()
+                for image_info in page.get_images(full=True):
+                    xref = int(image_info[0])
+                    if xref <= 0 or xref in seen_xrefs:
+                        continue
+                    seen_xrefs.add(xref)
+                    extracted = document.extract_image(xref)
+                    image_bytes = bytes(extracted.get("image", b""))
+                    if len(image_bytes) < 700 or not _image_is_safe(image_bytes):
+                        continue
+                    rects = page.get_image_rects(xref)
+                    bbox = (
+                        [round(float(value), 2) for value in tuple(rects[0])]
+                        if rects
+                        else [0.0, 0.0, float(page.rect.width), float(page.rect.height)]
+                    )
+                    if _is_full_page_scan(
+                        bbox, float(page.rect.width), float(page.rect.height), meta
                     ):
-                        if field_name in cached:
-                            setattr(element, field_name, cached[field_name])
-                    if element.components:
-                        element.netlist = _synthesize_netlist(element.components)
-                else:
-                    _analyze_image(element, image_bytes, vision_client)
-                _enforce_verified_circuit(element)
-                elements.append(element)
-                page_image_count += 1
-                order += 1
+                        continue
+                    image_counter += 1
+                    if (
+                        settings.multimodal_image_limit
+                        and image_counter > settings.multimodal_image_limit
+                    ):
+                        break
+                    ext = str(extracted.get("ext", "png")).lower()
+                    if ext not in {"png", "jpg", "jpeg", "webp", "bmp"}:
+                        ext = "png"
+                    element_id, digest = _element_id(
+                        path.name, page_no, order, image_bytes
+                    )
+                    image_path = artifacts_dir / (
+                        f"p{page_no:04d}-{element_id[:10]}.{ext}"
+                    )
+                    image_path.write_bytes(image_bytes)
+                    nearby = (
+                        "\n".join(text for _, text in text_blocks)[-3000:]
+                        or meta.text[-3000:]
+                    )
+                    element = LayoutElement(
+                        id=element_id,
+                        source=path.name,
+                        page=page_no,
+                        element_type="image",
+                        bbox=bbox,
+                        image_path=str(image_path.relative_to(output_dir)).replace(
+                            "\\", "/"
+                        ),
+                        reading_order=order,
+                        chapter=meta.chapter,
+                        section=meta.section,
+                        nearby_text=nearby,
+                        content_hash=digest,
+                        processor="pdf-image-object",
+                        source_page=meta.source_page or page_no,
+                    )
+                    cached = cached_images.get(digest)
+                    expected_vlm = (
+                        f"qwen-vl:{vision_client.model}" if vision_client else ""
+                    )
+                    cache_compatible = bool(cached) and (
+                        (
+                            bool(expected_vlm)
+                            and cached.get("processor") == expected_vlm
+                        )
+                        or not expected_vlm
+                    )
+                    if cached and cache_compatible:
+                        for field_name in (
+                            "element_type",
+                            "caption",
+                            "components",
+                            "nets",
+                            "netlist",
+                            "description",
+                            "confidence",
+                            "processor",
+                            "uncertain",
+                        ):
+                            if field_name in cached:
+                                setattr(element, field_name, cached[field_name])
+                        if element.components:
+                            element.netlist = _synthesize_netlist(element.components)
+                    else:
+                        _analyze_image(element, image_bytes, vision_client)
+                    _enforce_verified_circuit(element)
+                    elements.append(element)
+                    page_image_count += 1
+                    order += 1
 
             # Many electronic textbooks store schematics as PDF vector paths,
             # not raster images. Render such a page so Qwen3-VL can still see it.

@@ -6,6 +6,7 @@ import pytest
 
 from backend.app.rag.models import PageDocument
 from backend.app.rag.multimodal import LayoutElement
+from backend.app.rag.multimodal import SCANNED_PAGE_PLACEHOLDER
 from backend.app.rag.pipeline import (
     _formula_pipeline_stats,
     build_knowledge_base,
@@ -207,6 +208,8 @@ def test_pdf_subset_filename_preserves_original_source_pages(tmp_path):
 
     documents = extract_pdf(path)
     assert [document.source_page for document in documents] == [101, 102, 103]
+    assert all(document.text == SCANNED_PAGE_PLACEHOLDER for document in documents)
+    assert all(document.extra["native_text_layer_ignored"] for document in documents)
     chunks = chunk_documents(documents)
     assert {chunk.page_start for chunk in chunks} == {101, 102, 103}
 

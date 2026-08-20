@@ -19,6 +19,16 @@ from openpyxl import load_workbook
 from backend.app.config import settings
 from backend.app.rag.models import PageDocument, TextChunk
 from backend.app.rag.embedding_runtime import encode_texts
+from backend.app.rag.graphrag_adapter import (
+    audit_microsoft_graphrag,
+    run_microsoft_graphrag,
+)
+from backend.app.rag.knowledge_document import (
+    compile_knowledge_document,
+    enrich_formula_knowledge,
+    knowledge_units_to_chunks,
+    write_knowledge_document,
+)
 from backend.app.rag.section_titles import (
     chapter_number,
     is_measurement_section,
@@ -136,114 +146,34 @@ def clean_page_text(text: str, repeated_noise: set[str] | None = None) -> str:
     return "\n\n".join(paragraphs)
 
 
-def _native_text_blocks(
-    page: fitz.Page,
-    repeated_noise: set[str],
-) -> list[dict[str, Any]]:
-    """Convert a native PDF text layer into the same layout-block schema as OCR."""
-
-    page_width = max(1.0, float(page.rect.width))
-    page_height = max(1.0, float(page.rect.height))
-    blocks: list[dict[str, Any]] = []
-    raw_blocks = page.get_text(
-        "dict", flags=fitz.TEXT_PRESERVE_LIGATURES
-    ).get("blocks", [])
-    for index, raw in enumerate(raw_blocks, 1):
-        if int(raw.get("type", -1)) != 0:
-            continue
-        lines = [
-            _normalize_line("".join(str(span.get("text", "")) for span in line.get("spans", [])))
-            for line in raw.get("lines", [])
-        ]
-        lines = [line for line in lines if line and line not in repeated_noise]
-        if not lines:
-            continue
-        text = "\n".join(lines).strip()
-        compact = re.sub(r"\s+", " ", text).strip()
-        first_line = lines[0]
-        if re.match(r"^第[一二三四五六七八九十百0-9]+章", first_line):
-            block_type = "chapter_heading"
-        elif re.match(r"^\d+(?:\.\d+){1,3}\s*\S+", first_line) and len(compact) < 90:
-            block_type = "section_heading"
-        elif re.match(r"^(?:图|表)(?:题)?\s*\d", first_line):
-            block_type = "figure_caption"
-        elif re.match(r"^(?:[一二三四五六七八九十]+、|\(?\d+[.)）])", first_line):
-            block_type = "list_item"
-        elif len(compact) < 180 and re.search(r"[=≈≠≤≥∑∫√]", compact):
-            block_type = "formula"
-        else:
-            block_type = "paragraph"
-        bbox = [float(value) for value in raw.get("bbox", [0, 0, 0, 0])]
-        normalized_bbox = [
-            round(max(0.0, min(1000.0, bbox[0] / page_width * 1000)), 2),
-            round(max(0.0, min(1000.0, bbox[1] / page_height * 1000)), 2),
-            round(max(0.0, min(1000.0, bbox[2] / page_width * 1000)), 2),
-            round(max(0.0, min(1000.0, bbox[3] / page_height * 1000)), 2),
-        ]
-        blocks.append({
-            "id": f"native-block-{index}",
-            "type": block_type,
-            "text": text,
-            "bbox": normalized_bbox,
-            "reading_order": len(blocks) + 1,
-        })
-    return blocks
-
-
 def _is_chapter_title(title: str) -> bool:
     return bool(re.match(r"^第[一二三四五六七八九十百0-9]+章", title.replace(" ", "")))
 
 
 def extract_pdf(path: Path, chapter_limit: int | None = None) -> list[PageDocument]:
-    document = fitz.open(path)
-    toc = [item for item in document.get_toc(simple=True) if len(item) >= 3]
-    chapters = [(str(title).strip(), int(page)) for level, title, page in toc if level == 1 and _is_chapter_title(str(title).strip())]
-    if chapters:
-        start_page = chapters[0][1]
-        if chapter_limit and len(chapters) > chapter_limit:
-            end_page = chapters[chapter_limit][1] - 1
-        else:
-            end_page = document.page_count
-    else:
-        start_page, end_page = 1, document.page_count
+    """Create one OCR-required placeholder per PDF page.
 
-    raw_pages = [document[index - 1].get_text("text") for index in range(start_page, end_page + 1)]
-    repeated_noise = _edge_noise(raw_pages)
+    PyMuPDF is deliberately limited to page geometry/rendering in the PDF
+    pipeline. It is no longer used for native text, block, outline, or formula
+    extraction, so a stale or malformed PDF text layer cannot silently become
+    the knowledge source. ``chapter_limit`` is applied after OCR has recovered
+    real headings in ``_ocr_scanned_pages``.
+    """
+
+    document = fitz.open(path)
     page_docs: list[PageDocument] = []
     page_range_match = re.search(r"(?:pages?|页)[_-]?(\d+)[_-](\d+)", path.stem, re.I)
     source_page_offset = int(page_range_match.group(1)) - 1 if page_range_match else 0
-    for page_number, raw_text in zip(range(start_page, end_page + 1), raw_pages):
-        current_chapter = ""
-        current_section = ""
-        for level, title, toc_page in toc:
-            if int(toc_page) > page_number:
-                break
-            title = _normalize_line(re.sub(r"\s+", " ", str(title)).strip())
-            if level == 1 and _is_chapter_title(title):
-                current_chapter = title
-                current_section = ""
-            elif level >= 2:
-                current_section = title
-        text = clean_page_text(raw_text, repeated_noise)
-        page_object = document[page_number - 1]
-        text_blocks = _native_text_blocks(page_object, repeated_noise)
-        has_visual_content = bool(page_object.get_images(full=True)) or len(page_object.get_drawings()) >= 3
-        has_formula_content = bool(
-            re.search(r"[=+−±√∫ΣΩπ^_].*[A-Za-z0-9]|[A-Za-z0-9].*[=+−±√∫ΣΩπ^_]", text)
-        )
-        if len(text) < 30 and not has_visual_content and not has_formula_content:
-            continue
-        if not text:
-            text = SCANNED_PAGE_PLACEHOLDER
+    for page_number in range(1, document.page_count + 1):
         page_docs.append(
             PageDocument(
-                text=text,
+                text=SCANNED_PAGE_PLACEHOLDER,
                 source=path.name,
                 page=page_number,
-                chapter=current_chapter or path.stem,
-                section=current_section or current_chapter or path.stem,
+                chapter=path.stem,
+                section=path.stem,
                 source_page=source_page_offset + page_number,
-                extra={"text_blocks": text_blocks} if text_blocks else {},
+                extra={"ocr_required": True, "native_text_layer_ignored": True},
             )
         )
     document.close()
@@ -945,10 +875,10 @@ def _formula_pipeline_stats(output_dir: Path, elements: list[LayoutElement]) -> 
             else sum(element.uncertain for element in formulas)
         ),
         "recognition": (
-            "PDF-Extract-Kit localization + native PDF geometry LaTeX + "
-            f"qwen/{settings.qwen_circuit_vision_model} scan fallback"
+            "PDF-Extract-Kit localization + page OCR + "
+            f"qwen/{settings.qwen_circuit_vision_model} formula recognition"
             if settings.qwen_api_key
-            else "PDF-Extract-Kit localization + PyMuPDF text fallback"
+            else "PDF-Extract-Kit localization + page OCR formula fallback"
         ),
     }
 
@@ -1062,8 +992,24 @@ def build_knowledge_base(
         json.dumps(structured_questions, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    report(50, "chunking", "正在切分文本并整理多模态元素")
-    chunks = chunk_documents(documents) + multimodal_chunks(elements)
+    report(49, "knowledge_document", "正在融合正文、公式、电路图和表格知识")
+    knowledge_units = compile_knowledge_document(documents, elements)
+    if not knowledge_units:
+        raise RuntimeError(f"在 {resources_dir} 中没有编译出可用的教材知识单元")
+    document_client = (
+        CompatibleMultimodalClient(model_config)
+        if model_config and model_config.enabled
+        else None
+    )
+    knowledge_units = enrich_formula_knowledge(
+        knowledge_units,
+        document_client,
+        cache_path=output_dir / "knowledge_document_enrichment.jsonl",
+    )
+    write_knowledge_document(knowledge_units, output_dir)
+
+    report(52, "chunking", "正在按教材语义单元切分文本并整理多模态证据")
+    chunks = knowledge_units_to_chunks(knowledge_units) + multimodal_chunks(elements)
     if not chunks:
         raise RuntimeError(f"在 {resources_dir} 中没有提取到可索引内容")
     extraction_quality = validate_extracted_content(chunks)
@@ -1081,7 +1027,7 @@ def build_knowledge_base(
         json.dumps(cleaning_audits, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    report(55, "semantic_text_units", "正在恢复自然段并生成 GraphRAG TextUnits")
+    report(55, "semantic_text_units", "正在生成教材语义单元与 GraphRAG 输入")
     graph_model_config = model_config
     if (
         model_config
@@ -1090,28 +1036,37 @@ def build_knowledge_base(
     ):
         graph_model_config = replace(
             model_config,
-            model=settings.qwen_graph_model,
+            model="qwen3.7-flash",
             enable_thinking=False,
         )
-    graph_client = (
-        CompatibleMultimodalClient(graph_model_config)
-        if graph_model_config and graph_model_config.enabled
-        else None
-    )
-    report(60, "knowledge_graph", "正在使用文本大模型从教材段落抽取实体与原始关系")
-    semantic_graph = build_semantic_knowledge_graph(
-        documents,
-        elements,
-        client=graph_client,
-        extraction_cache_path=output_dir / "semantic_extractions.jsonl",
-    )
+    report(60, "knowledge_graph", "正在使用 Microsoft GraphRAG 构建实体关系与社区")
+    if graph_model_config and graph_model_config.enabled:
+        semantic_graph, semantic_audit = run_microsoft_graphrag(
+            knowledge_units,
+            output_dir,
+            graph_model_config,
+            embedding_model_path,
+        )
+    else:
+        # Unit tests and explicitly offline deployments retain a deterministic
+        # fallback; production Qwen builds always take the Microsoft path.
+        semantic_graph = build_semantic_knowledge_graph(
+            documents,
+            elements,
+            client=None,
+            extraction_cache_path=output_dir / "semantic_extractions.jsonl",
+        )
+        semantic_audit = audit_semantic_graph_quality(semantic_graph)
     chapter_summaries = build_chapter_knowledge_summaries(chunks)
     semantic_chapters, chapter_alignment = bind_chapter_knowledge_points(
         chapter_summaries, semantic_graph.get("nodes", [])
     )
     semantic_graph["chapters"] = semantic_chapters
     semantic_graph.setdefault("stats", {})["chapter_alignment"] = chapter_alignment
-    semantic_audit = audit_semantic_graph_quality(semantic_graph)
+    if str(semantic_graph.get("schema_version", "")).startswith("3.4-microsoft"):
+        semantic_audit = audit_microsoft_graphrag(semantic_graph)
+    else:
+        semantic_audit = audit_semantic_graph_quality(semantic_graph)
     semantic_audit["chapter_alignment"] = chapter_alignment
     (output_dir / "semantic_quality_audit.json").write_text(
         json.dumps(semantic_audit, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1209,6 +1164,7 @@ def build_knowledge_base(
         "dimension": int(embeddings.shape[1]),
         "documents": len(source_files),
         "text_pages": len(documents),
+        "knowledge_units": len(knowledge_units),
         "ocr_pages": sum(
             isinstance(item.extra, dict) and bool(item.extra.get("ocr_processor"))
             for item in documents
@@ -1229,7 +1185,8 @@ def build_knowledge_base(
             "neo4j": neo4j_status,
         },
         "semantic_knowledge_graph": {
-            "display_only": True,
+            "display_only": False,
+            "provider": semantic_graph.get("stats", {}).get("extraction_method", "fallback"),
             "nodes": len(semantic_graph["nodes"]),
             "edges": len(semantic_graph["edges"]),
             "chapters": len(semantic_chapters),
@@ -1271,7 +1228,7 @@ def build_knowledge_base(
         },
         "document_parsing": {
             "status": "ready",
-            "engine": "PyMuPDF text + Qwen3-VL scanned-page OCR + PDF-Extract-Kit layout",
+            "engine": "Qwen3-VL all-page OCR (cache-first) + PDF-Extract-Kit layout; PyMuPDF rendering only",
             "ocr_pages": metadata["ocr_pages"],
             "placeholder_text_chunks": extraction_quality["placeholder_text_chunks"],
             "layout_elements": len(elements),
@@ -1289,6 +1246,11 @@ def build_knowledge_base(
         },
         "knowledge_fusion": {
             "status": "ready",
+            "knowledge_document": "book_knowledge_document.json",
+            "knowledge_units": len(knowledge_units),
+            "graphrag_provider": semantic_graph.get("stats", {}).get("extraction_method", "fallback"),
+            "graphrag_model": semantic_graph.get("stats", {}).get("extraction_model", "rule"),
+            "embedding_model": Path(embedding_model_path).name,
             "vector_store": qdrant_status.get("mode", "faiss") if qdrant_status.get("enabled") else "faiss",
             "vector_points": len(chunks),
             "circuit_vector_points": qdrant_status.get("circuit_points", 0),

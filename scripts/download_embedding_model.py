@@ -7,8 +7,8 @@ from huggingface_hub import snapshot_download
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_REPOSITORY = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-DEFAULT_OUTPUT = ROOT_DIR / "models" / "paraphrase-multilingual-MiniLM-L12-v2"
+DEFAULT_REPOSITORY = "Qwen/Qwen3-Embedding-0.6B"
+DEFAULT_OUTPUT = ROOT_DIR / "models" / "Qwen3-Embedding-0.6B"
 
 # The upstream repository also contains duplicate ONNX, OpenVINO, TensorFlow,
 # and legacy PyTorch exports. The application loads safetensors through

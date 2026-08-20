@@ -16,11 +16,11 @@ from backend.app.rag.pdf_extract_kit import DetectedRegion, PDFExtractKitAdapter
 from backend.app.rag.pipeline import KnowledgeBaseBuildCancelled
 from backend.app.rag.multimodal import (
     LayoutElement,
+    PAGE_OCR_SCHEMA_VERSION,
     SCANNED_PAGE_PLACEHOLDER,
     _analyze_image,
     _apply_toc_section_catalog,
     _formula_candidates_from_page_text,
-    _formula_latex_from_pdf_geometry,
     _indexable_pdfkit_regions,
     _is_full_page_scan,
     _is_verified_circuit_result,
@@ -125,6 +125,47 @@ def test_scanned_page_ocr_recovers_text_hierarchy_concepts_and_cache(tmp_path):
     cached = _ocr_scanned_pages(pdf_path, docs, tmp_path, None, "doc-hash")
     assert cached[0].text == first[0].text
     assert cached[0].section == "1.1.3 PN结"
+
+
+def test_legacy_page_ocr_cache_is_migrated_and_reused_without_native_text(tmp_path):
+    pdf_path = tmp_path / "legacy.pdf"
+    pdf = fitz.open()
+    pdf.new_page(width=500, height=700)
+    pdf.save(pdf_path)
+    pdf.close()
+    cache_path = tmp_path / "legacy.page_ocr.jsonl"
+    cache_path.write_text(
+        json.dumps({
+            "schema_version": "1.0-qwen-page-ocr",
+            "document_hash": "legacy-hash",
+            "model": "qwen3-vl-flash",
+            "page": 1,
+            "source_page": 1,
+            "text": "第一章 半导体器件\n1.1 PN结\nPN结具有单向导电性。",
+            "chapter": "第一章 半导体器件",
+            "section": "1.1 PN结",
+            "concepts": ["PN结"],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    docs = [PageDocument(
+        SCANNED_PAGE_PLACEHOLDER,
+        pdf_path.name,
+        1,
+        pdf_path.stem,
+        pdf_path.stem,
+    )]
+
+    recovered = _ocr_scanned_pages(
+        pdf_path, docs, tmp_path, None, "legacy-hash"
+    )
+
+    assert recovered[0].text.endswith("PN结具有单向导电性。")
+    assert recovered[0].extra["ocr_processor"] == "qwen-vl:qwen3-vl-flash"
+    assert recovered[0].extra["text_blocks"]
+    migrated = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert migrated["schema_version"] == PAGE_OCR_SCHEMA_VERSION
+    assert migrated["migrated_from_schema"] == "1.0-qwen-page-ocr"
 
 
 def test_scanned_page_ocr_verifies_new_heading_with_high_resolution_crop(tmp_path):
@@ -1124,25 +1165,6 @@ def test_detected_formulas_survive_vl_rejection_with_page_ocr_fallback(
     assert formula_audit["detected"] == 3
     assert formula_audit["fallback"] == 3
     assert all(item["fallback_source"] == "page-ocr" for item in formula_audit["formulas"])
-
-
-def test_native_pdf_geometry_recovers_subscripts_and_fraction():
-    pdf = fitz.open()
-    page = pdf.new_page(width=240, height=120)
-    page.insert_text((10, 55), "I", fontsize=14)
-    page.insert_text((18, 56), "BQ", fontsize=7)
-    page.insert_text((30, 55), "=", fontsize=14)
-    page.insert_text((55, 44), "V", fontsize=14)
-    page.insert_text((64, 45), "BB", fontsize=7)
-    page.insert_text((76, 44), "-U", fontsize=14)
-    page.insert_text((92, 45), "BEQ", fontsize=7)
-    page.insert_text((75, 64), "R", fontsize=14)
-    page.insert_text((84, 65), "b", fontsize=7)
-
-    latex = _formula_latex_from_pdf_geometry(page, [5, 20, 130, 80])
-    pdf.close()
-
-    assert latex == r"I_{BQ}=\frac{V_{BB}-U_{BEQ}}{R_{b}}"
 
 
 def test_formula_symbols_map_to_course_concepts():

@@ -83,8 +83,9 @@ conda activate llm
 python scripts/download_embedding_model.py
 ```
 
-脚本只下载 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` 推理所需文件到
-`models/paraphrase-multilingual-MiniLM-L12-v2`，不会读取或写入任何 API Key。
+脚本只下载 `Qwen/Qwen3-Embedding-0.6B` 推理所需文件到
+`models/Qwen3-Embedding-0.6B`，不会读取或写入任何 API Key。查询会自动使用模型内置的
+retrieval instruct，教材文档向量不添加 instruct。
 
 项目包含默认向量库。启动方式取决于本地代码是否刚刚同步过他人的推送。
 
@@ -189,21 +190,23 @@ Excel/JSON 题库不会进入 RAG 知识库，也不会参与检索或图谱构�
 
 新版建库同时产出以下可审计数据：
 
-- `<教材名>.page_ocr.jsonl`：扫描版 PDF 的逐页 OCR、章/节与知识点缓存；文档哈希或视觉模型变化后自动失效。
-- `cleaning_audit.json`：`qwen3-vl-flash`/规则对每页的保留或丢弃决定及原因，原 PDF 永不物理修改。
+- `<教材名>.page_ocr.jsonl`：所有 PDF 页的逐页 OCR、版面块、章/节与知识点缓存；已有缓存优先复用，仅对缺失页重新 OCR。
+- `cleaning_audit.json`：`qwen3.7-flash`/规则对每页的保留或丢弃决定及原因，原 PDF 永不物理修改。
 - `multimodal_elements.jsonl`：文本、公式、表格、图片、电路图的页码、bbox、阅读顺序、原图路径和内容哈希。
 - `artifacts/`：从 PDF 提取的原始图片。
-- `knowledge_graph.json`：教材—原始页码—Chunk—课程概念—电路元件—网络关系；配置 Neo4j 后会同步到图数据库。
+- `book_knowledge_document.json` / `.md`：将完整 OCR 正文与经验证的电路图、公式、表格和普通图片语义合并为 GraphRAG 知识文档；图号、式号和局部符号只作证据，不作实体。
+- `graphrag/`：Microsoft GraphRAG 2.7.2 生成的 TextUnit、实体、关系、Leiden 社区、社区报告、Parquet 与 LanceDB 向量库。
+- `semantic_knowledge_graph.json`：带原文 TextUnit 证据的语义图谱；配置 Neo4j 后优先同步该图谱。`knowledge_graph.json` 仅保留为旧检索链路的兼容产物。
 - `chapter_knowledge_points.json`：按教材章节归档的知识点、证据数量与来源页；学生端可从知识图谱下方进入章节窗口查看。
 - `pipeline_audit.json`：清洗、解析、模态处理、融合、检索和应用六层状态与数量审计。
 - `qdrant/`：Linux/macOS 未配置 `QDRANT_URL` 时可使用 Qdrant 嵌入式持久化；同时保留 `vectors.faiss` 兼容回退。
 
-完整处理顺序为：原生文本提取或 `qwen3-vl-flash` 扫描页 OCR（恢复章/节与页面知识点）→ 大模型语义清洗（过滤版权/广告/噪声与独立习题页，并安全保留正文技术内容和带讲解的例题）→ PDF-Extract-Kit Layout/MFD 结构解析 → 文本 NLP → 独立公式筛选、原生 PDF 字形/坐标恢复 LaTeX（扫描件使用 `qwen3-vl-flash` 回退）→ `qwen3-vl-flash` 电路图识别 → 元件/网络/Netlist/描述融合 → 文本与多模态向量 → Qdrant/FAISS + BM25 + Neo4j/本地图 → 融合重排。行内数学符号保留在正文，不会各自生成公式 Chunk；构建结束会强制校验扫描页占位符比例、知识点数量、Chunk/向量数量、图边完整性、bbox 与题库隔离，校验失败的暂存索引不会被激活。
+完整处理顺序为：所有 PDF 页直接使用 `qwen3-vl-flash` OCR（缓存优先）→ `qwen3.7-flash` 语义清洗 → OCR 版面块与 PDF-Extract-Kit Layout/MFD 定位 → 公式截图 OCR 及自然语言知识转写 → 电路图、普通图片和表格视觉理解 → 编译完整知识文档 → Microsoft GraphRAG 分块、实体关系抽取、Leiden 社区与社区报告 → 本地 `Qwen3-Embedding-0.6B` 向量化 → Qdrant/FAISS + BM25 + Neo4j/本地图融合检索。PyMuPDF 仅用于页数、页面渲染、图片对象和矢量图形发现，不读取 PDF 文本层。行内数学符号保留在证据正文中，不作实体；仅可验证的公式含义、表格结论和电路语义进入三元组抽取。校验失败的暂存索引不会被激活。
 
 PDF-Extract-Kit 使用本地 GPU 与官方权重，Qwen3-VL 使用百炼 API：
 
 1. 在 `.env` 设置 `PDF_EXTRACT_KIT_DIR=third_party/PDF-Extract-Kit`；小样联调可用 `PDF_EXTRACT_KIT_PAGE_LIMIT=3`限制页数。
-2. 设置 `QWEN_CIRCUIT_VISION_MODEL=qwen3-vl-flash` 和 `QWEN_MULTIMODAL_EMBEDDING_MODEL=qwen3-vl-embedding`；电路图由 Flash 识别，图片与文本向量默认为 1024 维。
+2. 设置 `QWEN_CIRCUIT_VISION_MODEL=qwen3-vl-flash`；文本与 GraphRAG 向量固定使用 `models/Qwen3-Embedding-0.6B`（1024 维），图片向量可按需使用 `QWEN_MULTIMODAL_EMBEDDING_MODEL=qwen3-vl-embedding`。
 3. 设置 `RERANK_MODEL_PATH` 可额外启用 CrossEncoder 重排；未配置时仍使用向量、BM25、图关系和图片相似度融合。
 
 Qdrant 和 Neo4j 可用 Docker 启动：

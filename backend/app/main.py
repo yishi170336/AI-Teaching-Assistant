@@ -644,9 +644,10 @@ def knowledge_build_model_config() -> BuildModelConfig:
     """Keep knowledge-base specialist models separate from the chat selection."""
     return BuildModelConfig(
         provider="qwen",
-        model=QWEN_VL_FALLBACK_MODEL,
+        model="qwen3.7-flash",
         api_key=settings.qwen_api_key,
         base_url=settings.qwen_base_url,
+        enable_thinking=False,
     )
 
 

@@ -439,7 +439,12 @@ class HybridRetriever:
             return []
         excluded_count = len(self.chunks) - len(searchable)
         candidate_count = min(len(self.chunks), max(k * 4, 16) + excluded_count)
-        query_embedding = encode_texts(self.embedding_model_path, [query], batch_size=1)
+        query_embedding = encode_texts(
+            self.embedding_model_path,
+            [query],
+            batch_size=1,
+            purpose="query",
+        )
         vector_map, _vector_backend = self._vector_search(query_embedding, candidate_count)
         vector_map = {index: score for index, score in vector_map.items() if index in searchable}
         bm25_values = self._bm25.get_scores(tokenize(query))

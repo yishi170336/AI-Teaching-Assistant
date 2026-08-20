@@ -38,3 +38,34 @@ def test_embedding_checkpoint_is_initialized_once_across_concurrent_retrievers(t
     assert len(calls) == 1
     assert all(result.shape == (1, 4) for result in results)
     reset_embedding_runtime_for_tests()
+
+
+def test_qwen3_embedding_uses_query_instruction_only_for_queries(tmp_path, monkeypatch):
+    reset_embedding_runtime_for_tests()
+    calls = []
+
+    class FakeSentenceTransformer:
+        prompts = {}
+
+        def __init__(self, _path, device):
+            assert device == "cpu"
+
+        def encode(self, texts, **kwargs):
+            calls.append((list(texts), kwargs))
+            return np.ones((len(texts), 6), dtype=np.float32)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        types.SimpleNamespace(SentenceTransformer=FakeSentenceTransformer),
+    )
+    model_path = tmp_path / "Qwen3-Embedding-0.6B"
+    model_path.mkdir()
+
+    encode_texts(model_path, ["教材正文"], purpose="document")
+    encode_texts(model_path, ["什么是镜像电流源"], purpose="query")
+
+    assert "prompt" not in calls[0][1]
+    assert "analog-electronics" in calls[1][1]["prompt"]
+    assert calls[0][1]["batch_size"] == 4
+    reset_embedding_runtime_for_tests()

@@ -76,6 +76,7 @@ def test_student_chat_uses_request_selected_model(monkeypatch):
         SimpleNamespace(
             qwen_api_key="server-qwen-key",
             qwen_base_url="https://dashscope.example/v1",
+            qwen_cleaning_model="qwen3.7-flash",
         ),
     )
     payload = ChatRequest(
@@ -191,7 +192,8 @@ def test_knowledge_build_uses_specialist_without_changing_chat_model(monkeypatch
     config = main_module.knowledge_build_model_config()
 
     assert config.provider == "qwen"
-    assert config.model == "qwen3-vl-flash"
+    assert config.model == "qwen3.7-flash"
+    assert config.enable_thinking is False
     assert config.api_key == "server-qwen-key"
     assert config.base_url == "https://dashscope.example/v1"
 
@@ -203,6 +205,7 @@ def test_knowledge_build_ignores_legacy_browser_model_credentials(monkeypatch):
         SimpleNamespace(
             qwen_api_key="server-qwen-key",
             qwen_base_url="https://dashscope.example/v1",
+            qwen_cleaning_model="qwen3.7-flash",
         ),
     )
 
@@ -216,7 +219,7 @@ def test_knowledge_build_ignores_legacy_browser_model_credentials(monkeypatch):
     config = main_module.knowledge_build_model_config()
 
     assert payload.model_dump() == {"knowledge_base": "default", "chapter_limit": None}
-    assert config.model == "qwen3-vl-flash"
+    assert config.model == "qwen3.7-flash"
     assert config.api_key == "server-qwen-key"
     assert config.base_url == "https://dashscope.example/v1"
 

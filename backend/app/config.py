@@ -29,7 +29,7 @@ class Settings:
     resources_dir: Path = ROOT_DIR / "RAG_Resources"
     vector_stores_dir: Path = ROOT_DIR / "data" / "vector_stores"
     embedding_model_path: Path = ROOT_DIR / os.getenv(
-        "EMBEDDING_MODEL_PATH", "models/paraphrase-multilingual-MiniLM-L12-v2"
+        "EMBEDDING_MODEL_PATH", "models/Qwen3-Embedding-0.6B"
     )
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "qwen3.5:2b")
@@ -46,7 +46,7 @@ class Settings:
     qwen_circuit_vision_model: str = os.getenv(
         "QWEN_CIRCUIT_VISION_MODEL", "qwen3-vl-flash"
     )
-    qwen_cleaning_model: str = os.getenv("QWEN_CLEANING_MODEL", "qwen3.7-plus")
+    qwen_cleaning_model: str = os.getenv("QWEN_CLEANING_MODEL", "qwen3.7-flash")
     qwen_homework_extraction_model: str = os.getenv(
         "QWEN_HOMEWORK_EXTRACTION_MODEL", "qwen3-vl-flash"
     )

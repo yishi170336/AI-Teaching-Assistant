@@ -6,6 +6,7 @@ from typing import Any
 
 _SECTION_SENTENCE_FRAGMENTS = (
     "如图", "所示", "试求", "试画", "试分析", "已知", "求出", "判断",
+    "可得", "因此", "所以", "其中", "这时", "由此",
 )
 
 _STRUCTURAL_SECTION_ALIASES = {

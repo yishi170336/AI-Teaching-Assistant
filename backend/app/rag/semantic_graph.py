@@ -22,7 +22,7 @@ from backend.app.rag.ontology import COURSE_CONCEPTS, component_role
 logger = logging.getLogger(__name__)
 
 SEMANTIC_GRAPH_SCHEMA_VERSION = "3.3-graphrag-semantic"
-GRAPH_EXTRACTION_VERSION = "2026-08-text-llm-v11"
+GRAPH_EXTRACTION_VERSION = "2026-08-text-llm-v12-graphrag-json"
 TERMINAL_PUNCTUATION = ("。", "！", "？", "!", "?", "；", ";")
 EXCLUDED_SECTION_PATTERN = re.compile(
     r"(?:目录|前言|绪论|习题|复习题|思考题|自测题|参考答案|答案索引|版权|内容简介)"
@@ -641,7 +641,7 @@ GRAPH_EXTRACTION_PROMPT = """你是教材 GraphRAG 三元组抽取专家。输�
 7. 对 circuit 模态，只抽取图中器件、连接和邻近正文明确支持的知识；不得凭常识猜测电路功能。
 8. 不要输出独立 entities 数组；图实体将严格由通过校验的三元组端点和属性主语生成。
 9. 输出前逐条自检实体完整性、三元组方向、指代唯一性和原文跨度。没有可靠事实时返回空数组，不要为了连图制造关系。
-10. V_T、C_j、V_th 等公式符号可以作为原文实体或属性主语，必须保留原始写法，不要凭常识改名；程序会依据同一 TextUnit 中明确出现的中文定义生成中文展示名。
+10. V_T、C_j、V_th 等公式符号、公式编号和公式右值不得作为关系实体；数值或公式只进入 attribute_facts。只有正文明确给出中文物理含义时，才抽取对应的中文概念实体。
 
 抽取示例：
 - “半导体器件包括半导体二极管、双极型晶体管。”应输出“半导体器件—包括—半导体二极管”和“半导体器件—包括—双极型晶体管”，不得反向。

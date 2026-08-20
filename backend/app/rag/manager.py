@@ -116,6 +116,33 @@ class KnowledgeBaseManager:
     def index_dir(self, knowledge_base: str) -> Path:
         return settings.vector_stores_dir / self.validate_id(knowledge_base)
 
+    @staticmethod
+    def _index_embedding_model(index_dir: Path) -> Path:
+        """Use the checkpoint that created an existing index during migration.
+
+        Changing the configured default from MiniLM (384 dimensions) to Qwen3
+        (1024 dimensions) must not make an old, still-active FAISS snapshot
+        unreadable while its replacement is being built.
+        """
+
+        meta_path = index_dir / "index_meta.json"
+        if meta_path.exists():
+            try:
+                value = str(
+                    json.loads(meta_path.read_text(encoding="utf-8")).get(
+                        "embedding_model", ""
+                    )
+                ).strip()
+                if value:
+                    candidate = Path(value)
+                    if not candidate.is_absolute():
+                        candidate = settings.root_dir / candidate
+                    if candidate.exists():
+                        return candidate
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+        return settings.embedding_model_path
+
     def source_file(self, knowledge_base: str, source_name: str) -> Path:
         if not source_name or Path(source_name).name != source_name:
             raise ValueError("资料名称不合法")
@@ -138,7 +165,7 @@ class KnowledgeBaseManager:
             knowledge_base = index_dir.name
             try:
                 self._retrievers[knowledge_base] = HybridRetriever(
-                    index_dir, settings.embedding_model_path
+                    index_dir, self._index_embedding_model(index_dir)
                 )
                 meta = self._retrievers[knowledge_base].meta
                 self._states[knowledge_base] = {
@@ -631,7 +658,7 @@ class KnowledgeBaseManager:
                 if current is not None:
                     current.close()
                 self._retrievers[knowledge_base] = await asyncio.to_thread(
-                    HybridRetriever, final_dir, settings.embedding_model_path
+                    HybridRetriever, final_dir, self._index_embedding_model(final_dir)
                 )
             except Exception:
                 logger.exception("Failed to restore knowledge base %s", knowledge_base)
@@ -693,7 +720,9 @@ class KnowledgeBaseManager:
             await asyncio.to_thread(self._activate_index, final_dir, staging_dir)
             staging_dir = None
             self._update_progress(knowledge_base, 97, "graph_sync", "正在同步知识图谱存储")
-            graph = json.loads((final_dir / "knowledge_graph.json").read_text(encoding="utf-8"))
+            semantic_path = final_dir / "semantic_knowledge_graph.json"
+            graph_path = semantic_path if semantic_path.exists() else final_dir / "knowledge_graph.json"
+            graph = json.loads(graph_path.read_text(encoding="utf-8"))
             neo4j_status = await asyncio.to_thread(sync_neo4j_graph, knowledge_base, graph)
             meta["knowledge_graph"]["neo4j"] = neo4j_status
             (final_dir / "index_meta.json").write_text(

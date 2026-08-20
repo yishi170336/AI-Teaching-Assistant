@@ -11,6 +11,11 @@ _registry_lock = threading.RLock()
 _models: dict[str, Any] = {}
 _encode_locks: dict[str, threading.RLock] = {}
 
+QWEN3_QUERY_PROMPT = (
+    "Instruct: Given a Chinese analog-electronics question, retrieve relevant "
+    "textbook passages that answer the question\nQuery:"
+)
+
 
 def _key(model_path: Path) -> str:
     return str(model_path.resolve())
@@ -43,15 +48,29 @@ def encode_texts(
     *,
     batch_size: int = 32,
     show_progress_bar: bool = False,
+    purpose: str = "document",
 ) -> np.ndarray:
     model, encode_lock = get_embedding_model(model_path)
+    items = list(texts)
+    encode_kwargs: dict[str, Any] = {}
+    is_qwen3_embedding = "qwen3-embedding" in model_path.name.lower()
+    if purpose == "query" and is_qwen3_embedding:
+        # Qwen3-Embedding is instruction-aware on the query side. Documents
+        # intentionally remain unprompted, as recommended by the model card.
+        encode_kwargs["prompt"] = QWEN3_QUERY_PROMPT
+    if is_qwen3_embedding:
+        # The 0.6B checkpoint is materially larger than MiniLM. Keep ingestion
+        # memory bounded on CPU/consumer GPUs while callers may still request a
+        # larger generic SentenceTransformer batch.
+        batch_size = min(batch_size, 4)
     with encode_lock:
         return model.encode(
-            list(texts),
+            items,
             batch_size=batch_size,
             show_progress_bar=show_progress_bar,
             normalize_embeddings=True,
             convert_to_numpy=True,
+            **encode_kwargs,
         ).astype(np.float32)
 
 
