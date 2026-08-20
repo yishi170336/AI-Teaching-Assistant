@@ -209,6 +209,13 @@ PDF-Extract-Kit 使用本地 GPU 与官方权重，Qwen3-VL 使用百炼 API：
 2. 设置 `QWEN_CIRCUIT_VISION_MODEL=qwen3-vl-flash`；文本与 GraphRAG 向量固定使用 `models/Qwen3-Embedding-0.6B`（1024 维），图片向量可按需使用 `QWEN_MULTIMODAL_EMBEDDING_MODEL=qwen3-vl-embedding`。
 3. 设置 `RERANK_MODEL_PATH` 可额外启用 CrossEncoder 重排；未配置时仍使用向量、BM25、图关系和图片相似度融合。
 
+GraphRAG 构建结果可以直接生成静态 PNG、可交互 HTML 和 GraphML。脚本通过 Microsoft GraphRAG 2.7.2 的 `create_graph` 读取原生 `entities.parquet` / `relationships.parquet`，自关系会由质量层过滤；HTML 支持按来源页和文本、公式、电路图、表格等知识模态筛选：
+
+```powershell
+conda run -n llm python scripts/visualize_graphrag_graph.py `<GraphRAG输出目录>/output `
+  --output tmp/graphrag-visualization --pages 95-99 --title "第95-99页 GraphRAG 知识图谱"
+```
+
 Qdrant 和 Neo4j 可用 Docker 启动：
 
 ```powershell
