@@ -24,10 +24,20 @@ def main() -> None:
         type=Path,
         help="覆盖索引目录；默认 data/vector_stores/<knowledge-base>",
     )
+    parser.add_argument(
+        "--graph-file",
+        type=Path,
+        help="显式指定图 JSON；默认优先 semantic_knowledge_graph.json",
+    )
     args = parser.parse_args()
 
     index_dir = (args.index_dir or settings.vector_stores_dir / args.knowledge_base).resolve()
-    graph_path = index_dir / "knowledge_graph.json"
+    graph_path = args.graph_file or (
+        index_dir / "semantic_knowledge_graph.json"
+        if (index_dir / "semantic_knowledge_graph.json").is_file()
+        else index_dir / "knowledge_graph.json"
+    )
+    graph_path = graph_path.resolve()
     if not graph_path.is_file():
         raise FileNotFoundError(f"知识图谱不存在：{graph_path}")
     if not (settings.neo4j_uri and settings.neo4j_password):
@@ -41,7 +51,12 @@ def main() -> None:
     meta_path = index_dir / "index_meta.json"
     if meta_path.is_file():
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        meta.setdefault("knowledge_graph", {})["neo4j"] = status
+        target = (
+            "semantic_knowledge_graph"
+            if graph_path.name == "semantic_knowledge_graph.json"
+            else "knowledge_graph"
+        )
+        meta.setdefault(target, {})["neo4j"] = status
         meta_path.write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
         )

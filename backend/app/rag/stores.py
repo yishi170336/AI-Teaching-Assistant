@@ -4,6 +4,7 @@ import base64
 import logging
 import hashlib
 import json
+import math
 import mimetypes
 import re
 from pathlib import Path
@@ -320,8 +321,170 @@ def _build_qwen_multimodal_collection(
         }
 
 
+def _neo4j_token(value: Any, fallback: str) -> str:
+    """Return a compact, readable Neo4j label/type token from trusted graph data."""
+
+    token = re.sub(r"[^\w\u3400-\u9fff]+", "_", str(value or "").strip(), flags=re.UNICODE)
+    token = token.strip("_")[:80]
+    if token and token.isascii():
+        token = token.upper()
+    return token or fallback
+
+
+def _cypher_identifier(value: str) -> str:
+    """Quote a data-derived Cypher identifier without making it executable."""
+
+    return "`" + value.replace("`", "``") + "`"
+
+
+def _neo4j_property_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Path):
+        return str(value)
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+        if any(isinstance(item, (dict, list, tuple, set)) for item in items):
+            return json.dumps(items, ensure_ascii=False, sort_keys=True)
+        items = [item for item in items if item is not None]
+        if not items:
+            return []
+        scalar_types = {type(item) for item in items}
+        if scalar_types <= {str} or scalar_types <= {bool} or scalar_types <= {int}:
+            return items
+        if scalar_types <= {int, float}:
+            return [float(item) for item in items]
+        return [str(item) for item in items]
+    return str(value)
+
+
+def _neo4j_properties(values: dict[str, Any]) -> dict[str, Any]:
+    properties: dict[str, Any] = {}
+    for key, value in values.items():
+        converted = _neo4j_property_value(value)
+        if converted is not None:
+            properties[str(key)] = converted
+    return properties
+
+
+def _prepare_neo4j_graph(
+    knowledge_base: str,
+    graph: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Prepare semantic nodes/edges as Neo4j-safe flat property maps."""
+
+    attribute_facts: dict[str, list[dict[str, Any]]] = {}
+    for fact in graph.get("attribute_facts", []):
+        if not isinstance(fact, dict):
+            continue
+        subject = str(fact.get("subject", "")).strip()
+        if subject:
+            attribute_facts.setdefault(subject, []).append(fact)
+
+    community_memberships: dict[str, list[str]] = {}
+    community_titles: dict[str, list[str]] = {}
+    for community in graph.get("communities", []):
+        if not isinstance(community, dict):
+            continue
+        community_id = str(community.get("id", community.get("community", ""))).strip()
+        community_title = str(community.get("title", "")).strip()
+        for entity_id in community.get("entity_ids", []):
+            key = str(entity_id)
+            if community_id:
+                community_memberships.setdefault(key, []).append(community_id)
+            if community_title:
+                community_titles.setdefault(key, []).append(community_title)
+
+    nodes: list[dict[str, Any]] = []
+    node_ids: set[str] = set()
+    for position, node in enumerate(graph.get("nodes", []), 1):
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id", "")).strip()
+        if not node_id or node_id in node_ids:
+            continue
+        node_ids.add(node_id)
+        entity_type = str(
+            node.get("entity_type") or node.get("type") or "KnowledgeEntity"
+        ).strip()
+        display_name = str(
+            node.get("display_name") or node.get("name") or node.get("title") or node_id
+        ).strip()
+        facts = attribute_facts.get(node_id, [])
+        properties = {
+            **node,
+            "knowledge_base": knowledge_base,
+            "display_name": display_name,
+            "entity_label": _neo4j_token(entity_type, "KNOWLEDGE_ENTITY"),
+            "community_ids": list(dict.fromkeys(community_memberships.get(node_id, []))),
+            "community_titles": list(dict.fromkeys(community_titles.get(node_id, []))),
+            "attribute_fact_count": len(facts),
+        }
+        if facts:
+            properties["attribute_facts_json"] = json.dumps(
+                facts, ensure_ascii=False, sort_keys=True
+            )
+        nodes.append({
+            "id": node_id,
+            "knowledge_base": knowledge_base,
+            "label": _neo4j_token(entity_type, "KNOWLEDGE_ENTITY"),
+            "properties": _neo4j_properties(properties),
+            "position": position,
+        })
+
+    edges: list[dict[str, Any]] = []
+    edge_ids: set[str] = set()
+    for position, edge in enumerate(graph.get("edges", []), 1):
+        if not isinstance(edge, dict):
+            continue
+        source = str(edge.get("source", "")).strip()
+        target = str(edge.get("target", "")).strip()
+        if source not in node_ids or target not in node_ids or source == target:
+            continue
+        relation_original = str(
+            edge.get("relation") or edge.get("type") or "RELATED"
+        ).strip()
+        relation_normalized = str(
+            edge.get("relation_normalized") or relation_original
+        ).strip()
+        relationship_type = _neo4j_token(relation_normalized, "RELATED")
+        edge_id = str(edge.get("id", "")).strip() or str(uuid5(
+            NAMESPACE_URL,
+            f"{knowledge_base}:{source}:{relationship_type}:{target}:{position}",
+        ))
+        if edge_id in edge_ids:
+            continue
+        edge_ids.add(edge_id)
+        properties = {
+            **edge,
+            "id": edge_id,
+            "knowledge_base": knowledge_base,
+            "relation": relation_original,
+            "relation_normalized": relation_normalized,
+            "relationship_type": relationship_type,
+        }
+        edges.append({
+            "id": edge_id,
+            "source": source,
+            "target": target,
+            "knowledge_base": knowledge_base,
+            "relationship_type": relationship_type,
+            "properties": _neo4j_properties(properties),
+            "position": position,
+        })
+    return nodes, edges
+
+
 def sync_neo4j_graph(knowledge_base: str, graph: dict[str, Any]) -> dict[str, Any]:
-    """Optionally mirror the local graph into Neo4j using parameterized Cypher."""
+    """Mirror a graph into Neo4j with typed labels, relations and evidence properties."""
 
     if not (settings.neo4j_uri and settings.neo4j_password):
         return {"enabled": False, "reason": "NEO4J_URI/NEO4J_PASSWORD not configured"}
@@ -334,8 +497,13 @@ def sync_neo4j_graph(knowledge_base: str, graph: dict[str, Any]) -> dict[str, An
             auth=(settings.neo4j_user, settings.neo4j_password),
         )
         driver.verify_connectivity()
-        nodes = [dict(node, knowledge_base=knowledge_base) for node in graph.get("nodes", [])]
-        edges = [dict(edge, knowledge_base=knowledge_base) for edge in graph.get("edges", [])]
+        nodes, edges = _prepare_neo4j_graph(knowledge_base, graph)
+        nodes_by_label: dict[str, list[dict[str, Any]]] = {}
+        for node in nodes:
+            nodes_by_label.setdefault(str(node["label"]), []).append(node)
+        edges_by_type: dict[str, list[dict[str, Any]]] = {}
+        for edge in edges:
+            edges_by_type.setdefault(str(edge["relationship_type"]), []).append(edge)
 
         def replace_graph(tx: Any) -> None:
             tx.run(
@@ -346,23 +514,48 @@ def sync_neo4j_graph(knowledge_base: str, graph: dict[str, Any]) -> dict[str, An
                 """
                 UNWIND $nodes AS item
                 MERGE (n:KnowledgeEntity {knowledge_base: item.knowledge_base, id: item.id})
-                SET n += item
+                SET n += item.properties
                 """,
                 nodes=nodes,
             ).consume()
-            tx.run(
-                """
+            for label, items in nodes_by_label.items():
+                tx.run(
+                    f"""
+                    UNWIND $nodes AS item
+                    MATCH (n:KnowledgeEntity {{knowledge_base: item.knowledge_base, id: item.id}})
+                    SET n:{_cypher_identifier(label)}
+                    """,
+                    nodes=items,
+                ).consume()
+            for relationship_type, items in edges_by_type.items():
+                tx.run(
+                    f"""
                 UNWIND $edges AS item
-                MATCH (a:KnowledgeEntity {knowledge_base: item.knowledge_base, id: item.source})
-                MATCH (b:KnowledgeEntity {knowledge_base: item.knowledge_base, id: item.target})
-                MERGE (a)-[r:RELATED {relation: item.type}]->(b)
-                """,
-                edges=edges,
-            ).consume()
+                MATCH (a:KnowledgeEntity {{knowledge_base: item.knowledge_base, id: item.source}})
+                MATCH (b:KnowledgeEntity {{knowledge_base: item.knowledge_base, id: item.target}})
+                    MERGE (a)-[r:{_cypher_identifier(relationship_type)} {{knowledge_base: item.knowledge_base, id: item.id}}]->(b)
+                    SET r += item.properties
+                    """,
+                    edges=items,
+                ).consume()
 
         with driver.session(database=settings.neo4j_database) as session:
             session.execute_write(replace_graph)
-        return {"enabled": True, "nodes": len(nodes), "edges": len(edges)}
+        return {
+            "enabled": True,
+            "knowledge_base": knowledge_base,
+            "nodes": len(nodes),
+            "edges": len(edges),
+            "node_labels": {
+                label: len(items) for label, items in sorted(nodes_by_label.items())
+            },
+            "relationship_types": {
+                relation: len(items) for relation, items in sorted(edges_by_type.items())
+            },
+            "attribute_facts": sum(
+                int(node["properties"].get("attribute_fact_count", 0)) for node in nodes
+            ),
+        }
     except Exception as exc:
         logger.warning("Neo4j unavailable; local graph JSON remains active: %s", exc)
         return {"enabled": False, "reason": str(exc)}
