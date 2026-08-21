@@ -44,7 +44,12 @@ from backend.app.rag.ontology import (
     is_course_concept,
     normalize_concept_name,
 )
-from backend.app.rag.paddleocr_vl import PaddleOCRVLClient
+from backend.app.rag.paddleocr_vl import (
+    PaddleOCRVLAPIClient,
+    PaddleOCRVLClient,
+    PaddleOCRVLConfig,
+    create_paddleocr_vl_client,
+)
 from backend.app.rag.multimodal import (
     BuildModelConfig,
     CompatibleMultimodalClient,
@@ -975,6 +980,7 @@ def build_knowledge_base(
     *,
     chapter_limit: int | None = None,
     model_config: BuildModelConfig | None = None,
+    ocr_config: PaddleOCRVLConfig | None = None,
     knowledge_base_id: str | None = None,
     sync_graph_store: bool = True,
     progress_callback: BuildProgressCallback | None = None,
@@ -1012,7 +1018,20 @@ def build_knowledge_base(
         if path.suffix.lower() in QUESTION_BANK_EXTENSIONS
     ]
     source_count = max(1, len(source_files))
-    paddle_ocr_client: PaddleOCRVLClient | None = None
+    resolved_ocr_config = ocr_config or PaddleOCRVLConfig(
+        provider=settings.paddleocr_provider,
+        api_token=settings.paddleocr_api_token,
+        api_job_url=settings.paddleocr_api_job_url,
+        api_model=settings.paddleocr_api_model,
+        api_poll_interval_seconds=settings.paddleocr_api_poll_interval_seconds,
+        api_timeout_seconds=settings.paddleocr_api_timeout_seconds,
+        device=settings.paddleocr_device,
+        engine=settings.paddleocr_engine,
+        dtype=settings.paddleocr_dtype,
+        pipeline_version=settings.paddleocr_pipeline_version,
+        model_source=settings.paddleocr_model_source,
+    )
+    paddle_ocr_client: PaddleOCRVLClient | PaddleOCRVLAPIClient | None = None
     paddle_ocr_runtime: dict[str, Any] = {}
     paddle_ocr_memory_audit: dict[str, Any] = {}
     try:
@@ -1025,13 +1044,7 @@ def build_knowledge_base(
             suffix = path.suffix.lower()
             if suffix == ".pdf":
                 if paddle_ocr_client is None:
-                    paddle_ocr_client = PaddleOCRVLClient(
-                        device=settings.paddleocr_device,
-                        engine=settings.paddleocr_engine,
-                        dtype=settings.paddleocr_dtype,
-                        pipeline_version=settings.paddleocr_pipeline_version,
-                        model_source=settings.paddleocr_model_source,
-                    )
+                    paddle_ocr_client = create_paddleocr_vl_client(resolved_ocr_config)
                     paddle_ocr_runtime = dict(paddle_ocr_client.cache_identity)
                 extracted = extract_pdf(path, chapter_limit)
                 extracted, pdf_elements, audit = enhance_pdf(

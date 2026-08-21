@@ -135,6 +135,7 @@ import {
   ModelCatalog,
   ModelConfig,
   ModelProviderId,
+  OCRModelConfig,
   MistakeItem,
   PhotoRecognition,
   PracticeExercise,
@@ -208,6 +209,26 @@ const providerLabels: Record<ModelProviderId, string> = {
 
 const fallbackModelCatalog: ModelCatalog = {
   default: { provider: CHAT_MODEL_PROVIDER, model: CHAT_MODEL },
+  ocr: {
+    default_provider: 'local',
+    model: 'PaddleOCR-VL-1.6',
+    api_job_url: 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs',
+    api_configured: false,
+    providers: [
+      {
+        id: 'local',
+        label: '本地 PaddleOCR-VL 1.6',
+        description: '使用本机 GPU/CPU，教材页面不上传',
+        configured: true,
+      },
+      {
+        id: 'api',
+        label: 'PaddleOCR-VL 1.6 API',
+        description: '逐页调用 Paddle AI Studio 作业 API',
+        configured: false,
+      },
+    ],
+  },
   providers: [
     {
       id: 'ollama',
@@ -4708,18 +4729,22 @@ function ModelSettingsModal({
 }) {
   const active = useChatStore((state) => state.modelConfig)
   const activeVision = useChatStore((state) => state.visionModelConfig)
+  const activeOCR = useChatStore((state) => state.ocrModelConfig)
   const setModelConfig = useChatStore((state) => state.setModelConfig)
   const setVisionModelConfig = useChatStore((state) => state.setVisionModelConfig)
+  const setOCRModelConfig = useChatStore((state) => state.setOCRModelConfig)
   const [draft, setDraft] = useState<ModelConfig>(active)
   const [visionDraft, setVisionDraft] = useState<VisionModelConfig>(activeVision)
+  const [ocrDraft, setOCRDraft] = useState<OCRModelConfig>(activeOCR)
   const { message: toast } = AntApp.useApp()
 
   useEffect(() => {
     if (open) {
       setDraft(active)
       setVisionDraft(activeVision)
+      setOCRDraft(activeOCR)
     }
-  }, [open, active, activeVision])
+  }, [open, active, activeVision, activeOCR])
 
   const provider = catalog.providers.find((item) => item.id === draft.provider)
     || fallbackModelCatalog.providers[0]
@@ -4736,6 +4761,8 @@ function ModelSettingsModal({
   const visionModels = qwenProvider.vision_model_options
     || fallbackModelCatalog.providers.find((item) => item.id === 'qwen')!.vision_model_options!
   const sharesQwenCredentials = draft.provider === 'qwen'
+  const ocrProvider = catalog.ocr.providers.find((item) => item.id === ocrDraft.provider)
+    || fallbackModelCatalog.ocr.providers[0]
 
   const chooseProvider = (id: ModelProviderId) => {
     const next = catalog.providers.find((item) => item.id === id)
@@ -4774,11 +4801,20 @@ function ModelSettingsModal({
       toast.warning('请填写 Qwen 视觉模型 API Base URL')
       return
     }
+    if (ocrDraft.provider === 'api' && !catalog.ocr.api_configured && !ocrDraft.apiToken.trim()) {
+      toast.warning('请填写 PaddleOCR-VL API Token，或在后端环境变量中配置')
+      return
+    }
     setModelConfig({ ...draft, model: draft.model.trim(), baseUrl: draft.baseUrl.trim() })
     setVisionModelConfig({
       ...visionDraft,
       model: visionDraft.model.trim(),
       baseUrl: visionDraft.baseUrl.trim() || qwenProvider.base_url,
+    })
+    setOCRModelConfig({
+      ...ocrDraft,
+      model: 'PaddleOCR-VL-1.6',
+      jobUrl: ocrDraft.jobUrl.trim() || catalog.ocr.api_job_url,
     })
     onClose()
     if (!visionDraft.apiKey.trim() && !qwenProvider.configured && !sharesQwenCredentials) {
@@ -4800,6 +4836,13 @@ function ModelSettingsModal({
     setVisionModelConfig(cleared)
     setVisionDraft((value) => ({ ...value, apiKey: '' }))
     toast.success('已清除当前浏览器保存的 Qwen 视觉 API Key')
+  }
+
+  const clearSavedOCRApiToken = () => {
+    const cleared = { ...activeOCR, apiToken: '' }
+    setOCRModelConfig(cleared)
+    setOCRDraft((value) => ({ ...value, apiToken: '' }))
+    toast.success('已清除当前浏览器保存的 PaddleOCR-VL API Token')
   }
 
   const providerIcon = (id: ModelProviderId) => {
@@ -4838,7 +4881,7 @@ function ModelSettingsModal({
         <span className="modal-icon"><ServerCog size={22} /></span>
         <div>
           <h2>选择与配置模型</h2>
-          <p>配置用于学生交互、图片理解和知识讲解文本生成；知识库与题库使用后端既定模型。</p>
+          <p>配置学生交互、图片理解以及知识库 PaddleOCR-VL 的本地/API 运行方式。</p>
         </div>
       </div>
 
@@ -4902,6 +4945,75 @@ function ModelSettingsModal({
           </div>
         )}
 
+        <div className="vision-config-section">
+          <div className="vision-config-heading">
+            <span className="modal-icon"><ScanLine size={18} /></span>
+            <div>
+              <strong>知识库 OCR</strong>
+              <small>构建教材时可选本地 PaddleOCR-VL 1.6 或官方作业 API。</small>
+            </div>
+          </div>
+          <div className="model-field">
+            <label>OCR 运行方式</label>
+            <Segmented<OCRModelConfig['provider']>
+              block
+              value={ocrDraft.provider}
+              options={catalog.ocr.providers.map((item) => ({
+                value: item.id,
+                label: item.id === 'local' ? '本地 GPU/CPU' : 'PaddleOCR API',
+              }))}
+              onChange={(provider) => setOCRDraft((value) => ({
+                ...value,
+                provider,
+                model: 'PaddleOCR-VL-1.6',
+                jobUrl: catalog.ocr.api_job_url,
+              }))}
+              aria-label="选择知识库 OCR 运行方式"
+            />
+            <small className="model-status-hint">{ocrProvider.description}</small>
+          </div>
+          <div className="model-field">
+            <label>OCR 模型</label>
+            <Input value="PaddleOCR-VL-1.6" disabled prefix={<ScanLine size={15} />} />
+          </div>
+          {ocrDraft.provider === 'api' && (
+            <>
+              <div className="model-field">
+                <label>PaddleOCR API Token</label>
+                <Input.Password
+                  value={ocrDraft.apiToken}
+                  onChange={(event) => setOCRDraft((value) => ({
+                    ...value,
+                    apiToken: event.target.value,
+                  }))}
+                  placeholder={catalog.ocr.api_configured
+                    ? '后端已配置；留空即可使用'
+                    : '保存后仅在当前浏览器中保留'}
+                  prefix={<KeyRound size={15} />}
+                  autoComplete="off"
+                />
+                {activeOCR.apiToken && (
+                  <button type="button" className="clear-api-key" onClick={clearSavedOCRApiToken}>
+                    清除已保存的 PaddleOCR API Token
+                  </button>
+                )}
+              </div>
+              <div className="model-field">
+                <label>API Job URL</label>
+                <Input
+                  value={catalog.ocr.api_job_url}
+                  disabled
+                  prefix={<Cloud size={15} />}
+                />
+              </div>
+              <div className="model-security-note cloud">
+                <ShieldCheck size={16} />
+                <span>选择 API 后，教材页面会发送到 Paddle AI Studio；Token 仅保存在后端环境变量或当前浏览器，不写入构建任务文件。</span>
+              </div>
+            </>
+          )}
+        </div>
+
         {draft.provider !== 'ollama' && (
           <>
             <div className="model-field">
@@ -4937,7 +5049,7 @@ function ModelSettingsModal({
             {draft.provider === 'ollama'
               ? '模型在本机运行；题目、检索上下文和回答不会发送到第三方模型服务。'
               : sharesQwenCredentials
-                ? '文本答疑、图片理解和知识讲解文本会使用这套共享 API；知识库与题库不会读取此配置。API Key 仅保存在当前浏览器。'
+                ? '文本答疑、图片理解和知识讲解文本会使用这套共享 API；知识库 OCR 使用上方独立的 PaddleOCR 配置。API Key 仅保存在当前浏览器。'
                 : '使用云端模型时，题目、最近对话及检索上下文会发送到所选 API；配置和 API Key 会保存在此浏览器的本地存储中，不写入项目文件。'}
           </span>
         </div>
@@ -5036,6 +5148,7 @@ function StudentPageContent() {
   const syncKnowledgeBases = useChatStore((state) => state.syncKnowledgeBases)
   const modelConfig = useChatStore((state) => state.modelConfig)
   const visionModelConfig = useChatStore((state) => state.visionModelConfig)
+  const ocrModelConfig = useChatStore((state) => state.ocrModelConfig)
   const setModelConfig = useChatStore((state) => state.setModelConfig)
   const loadSession = useChatStore((state) => state.loadSession)
   const clear = useChatStore((state) => state.clear)
@@ -5624,7 +5737,12 @@ function StudentPageContent() {
 
   const uploadRequest: NonNullable<UploadProps['customRequest']> = async (options) => {
     try {
-      const result = await uploadKnowledgeFile(options.file as File, knowledgeBase)
+      const result = await uploadKnowledgeFile(
+        options.file as File,
+        knowledgeBase,
+        undefined,
+        ocrModelConfig,
+      )
       options.onSuccess?.(result)
       upsertBuildStatus(result.build)
       toast.success(result.message)
@@ -5638,7 +5756,7 @@ function StudentPageContent() {
 
   const rebuildCurrentKnowledgeBase = async () => {
     try {
-      const result = await rebuildKnowledgeBase(knowledgeBase)
+      const result = await rebuildKnowledgeBase(knowledgeBase, ocrModelConfig)
       upsertBuildStatus(result.build)
       toast.success(result.message)
       void refreshStatuses()
@@ -5703,7 +5821,12 @@ function StudentPageContent() {
     const internalId = createKnowledgeBaseInternalId()
     setCreatingKnowledgeBase(true)
     try {
-      const result = await uploadKnowledgeFile(newKbFile, internalId, displayName)
+      const result = await uploadKnowledgeFile(
+        newKbFile,
+        internalId,
+        displayName,
+        ocrModelConfig,
+      )
       setKnowledgeBase(internalId)
       upsertBuildStatus(result.build)
       setNewKbFile(null)

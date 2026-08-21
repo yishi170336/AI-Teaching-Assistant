@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import io
+import json
 import logging
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+
+import requests
+from PIL import Image
 
 
 logger = logging.getLogger(__name__)
@@ -17,6 +23,8 @@ PADDLEOCR_VL_SCHEMA_VERSION = "3.0-paddleocr-vl-layout-evidence"
 PADDLEOCR_VL_GIT_REVISION = "2661c7c0ef5c613e8f93c6e93b2e052399f0f854"
 PADDLEOCR_VL_PIPELINE_VERSION = "v1.6"
 PADDLEOCR_VL_MODEL_ID = f"PaddleOCR-VL@{PADDLEOCR_VL_GIT_REVISION[:12]}"
+PADDLEOCR_VL_API_MODEL = "PaddleOCR-VL-1.6"
+PADDLEOCR_VL_API_JOB_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
 
 
 class PaddleOCRVLUnavailableError(RuntimeError):
@@ -25,6 +33,28 @@ class PaddleOCRVLUnavailableError(RuntimeError):
 
 class PaddleOCRVLInferenceError(RuntimeError):
     """Raised when a page cannot be parsed by PaddleOCR-VL."""
+
+
+@dataclass(frozen=True)
+class PaddleOCRVLConfig:
+    provider: str = "local"
+    api_token: str = field(default="", repr=False)
+    api_job_url: str = PADDLEOCR_VL_API_JOB_URL
+    api_model: str = PADDLEOCR_VL_API_MODEL
+    api_poll_interval_seconds: float = 5.0
+    api_timeout_seconds: float = 900.0
+    device: str = "gpu:0"
+    engine: str = "transformers"
+    dtype: str = "float16"
+    pipeline_version: str = PADDLEOCR_VL_PIPELINE_VERSION
+    model_source: str = "BOS"
+
+    def __post_init__(self) -> None:
+        if self.provider not in {"local", "api"}:
+            raise ValueError(f"Unsupported PaddleOCR-VL provider: {self.provider}")
+        if self.provider == "api" and not self.api_token:
+            raise PaddleOCRVLUnavailableError("PaddleOCR-VL API 未配置访问令牌")
+
 
 
 @dataclass(frozen=True)
@@ -587,6 +617,292 @@ class PaddleOCRVLClient:
 
     def __exit__(self, *_args: object) -> None:
         self.close()
+
+
+class PaddleOCRVLAPIClient:
+    """PaddleOCR-VL 1.6 job API client with the same page-block contract as local OCR."""
+
+    def __init__(
+        self,
+        *,
+        token: str,
+        job_url: str = PADDLEOCR_VL_API_JOB_URL,
+        model: str = PADDLEOCR_VL_API_MODEL,
+        poll_interval_seconds: float = 5.0,
+        timeout_seconds: float = 900.0,
+        session: Any | None = None,
+    ) -> None:
+        if not token.strip():
+            raise PaddleOCRVLUnavailableError("PaddleOCR-VL API 未配置访问令牌")
+        self._token = token.strip()
+        self._job_url = job_url.rstrip("/")
+        self._api_model = model.strip() or PADDLEOCR_VL_API_MODEL
+        self._poll_interval_seconds = max(0.0, float(poll_interval_seconds))
+        self._timeout_seconds = max(10.0, float(timeout_seconds))
+        self._session = session or requests.Session()
+        self.model = self._api_model
+        self._model_revision = f"aistudio-api:{self._api_model}"
+
+    @property
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"bearer {self._token}"}
+
+    @property
+    def cache_identity(self) -> dict[str, str]:
+        return {
+            "requested_device": "api",
+            "device": "remote",
+            "engine": "aistudio-api",
+            "dtype": "remote",
+            "pipeline_version": PADDLEOCR_VL_PIPELINE_VERSION,
+            "model_revision": self._model_revision,
+            "model": self._api_model,
+        }
+
+    @property
+    def memory_audit(self) -> dict[str, float | str]:
+        return {
+            "device": "remote",
+            "peak_allocated_mib": 0.0,
+            "peak_reserved_mib": 0.0,
+        }
+
+    @staticmethod
+    def _response_payload(response: Any, *, action: str) -> dict[str, Any]:
+        try:
+            payload = response.json()
+        except (TypeError, ValueError) as exc:
+            raise PaddleOCRVLInferenceError(
+                f"PaddleOCR-VL API {action}返回了无效 JSON（HTTP {response.status_code}）"
+            ) from exc
+        if not 200 <= int(response.status_code) < 300:
+            message = ""
+            if isinstance(payload, dict):
+                data = payload.get("data")
+                message = str(
+                    payload.get("msg")
+                    or payload.get("message")
+                    or (data.get("errorMsg") if isinstance(data, dict) else "")
+                    or ""
+                ).strip()
+            detail = f"：{message}" if message else ""
+            raise PaddleOCRVLInferenceError(
+                f"PaddleOCR-VL API {action}失败（HTTP {response.status_code}）{detail}"
+            )
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+            raise PaddleOCRVLInferenceError(
+                f"PaddleOCR-VL API {action}响应缺少 data 对象"
+            )
+        return payload["data"]
+
+    def _submit(self, image_bytes: bytes, *, source: str, page: int) -> str:
+        optional_payload = {
+            "useDocOrientationClassify": False,
+            "useDocUnwarping": False,
+            "useChartRecognition": False,
+            "useOcrForImageBlock": False,
+            "formatBlockContent": False,
+            "mergeLayoutBlocks": True,
+            "returnMarkdownImages": False,
+        }
+        try:
+            response = self._session.post(
+                self._job_url,
+                headers=self._headers,
+                data={
+                    "model": self._api_model,
+                    "optionalPayload": json.dumps(optional_payload),
+                },
+                files={
+                    "file": (
+                        f"page-{page}.png",
+                        image_bytes,
+                        "image/png",
+                    )
+                },
+                timeout=min(120.0, self._timeout_seconds),
+            )
+        except requests.RequestException as exc:
+            raise PaddleOCRVLInferenceError(
+                f"PaddleOCR-VL API 提交 {source} 第 {page} 页失败：{exc}"
+            ) from exc
+        data = self._response_payload(response, action="提交作业")
+        job_id = str(data.get("jobId", "")).strip()
+        if not job_id:
+            raise PaddleOCRVLInferenceError("PaddleOCR-VL API 提交响应缺少 jobId")
+        return job_id
+
+    def _wait_for_result_url(self, job_id: str) -> str:
+        deadline = time.monotonic() + self._timeout_seconds
+        while True:
+            if time.monotonic() >= deadline:
+                raise PaddleOCRVLInferenceError(
+                    f"PaddleOCR-VL API 作业 {job_id} 超时"
+                )
+            try:
+                response = self._session.get(
+                    f"{self._job_url}/{job_id}",
+                    headers=self._headers,
+                    timeout=min(60.0, self._timeout_seconds),
+                )
+            except requests.RequestException as exc:
+                raise PaddleOCRVLInferenceError(
+                    f"PaddleOCR-VL API 查询作业 {job_id} 失败：{exc}"
+                ) from exc
+            data = self._response_payload(response, action="查询作业")
+            state = str(data.get("state", "")).strip().lower()
+            if state == "done":
+                result_url = data.get("resultUrl")
+                json_url = (
+                    str(result_url.get("jsonUrl", "")).strip()
+                    if isinstance(result_url, dict) else ""
+                )
+                if not json_url:
+                    raise PaddleOCRVLInferenceError(
+                        f"PaddleOCR-VL API 作业 {job_id} 缺少 JSONL 结果地址"
+                    )
+                return json_url
+            if state == "failed":
+                message = str(data.get("errorMsg", "")).strip()
+                raise PaddleOCRVLInferenceError(
+                    f"PaddleOCR-VL API 作业 {job_id} 失败"
+                    + (f"：{message}" if message else "")
+                )
+            if state not in {"pending", "running"}:
+                raise PaddleOCRVLInferenceError(
+                    f"PaddleOCR-VL API 作业 {job_id} 返回未知状态：{state or 'missing'}"
+                )
+            time.sleep(self._poll_interval_seconds)
+
+    def _download_result(self, json_url: str) -> list[dict[str, Any]]:
+        try:
+            # The pre-signed object-storage URL must not receive the Paddle token.
+            response = requests.get(json_url, timeout=min(120.0, self._timeout_seconds))
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise PaddleOCRVLInferenceError(
+                f"PaddleOCR-VL API 下载 JSONL 结果失败：{exc}"
+            ) from exc
+        values: list[dict[str, Any]] = []
+        for line_number, line in enumerate(response.text.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise PaddleOCRVLInferenceError(
+                    f"PaddleOCR-VL API JSONL 第 {line_number} 行无效"
+                ) from exc
+            if isinstance(item, dict):
+                values.append(item)
+        if not values:
+            raise PaddleOCRVLInferenceError("PaddleOCR-VL API 返回了空 JSONL")
+        return values
+
+    @staticmethod
+    def _page_result(
+        jsonl_values: list[dict[str, Any]],
+        *,
+        image_bytes: bytes,
+        source: str,
+        page: int,
+    ) -> dict[str, Any]:
+        parsing_pages: list[dict[str, Any]] = []
+        for line in jsonl_values:
+            result = line.get("result")
+            if not isinstance(result, dict):
+                continue
+            values = result.get("layoutParsingResults", [])
+            if isinstance(values, list):
+                parsing_pages.extend(item for item in values if isinstance(item, dict))
+        if not parsing_pages:
+            raise PaddleOCRVLInferenceError(
+                f"PaddleOCR-VL API 未返回 {source} 第 {page} 页的版面结果"
+            )
+        page_value = parsing_pages[0]
+        pruned = page_value.get("prunedResult")
+        if not isinstance(pruned, dict):
+            raise PaddleOCRVLInferenceError(
+                f"PaddleOCR-VL API {source} 第 {page} 页缺少 prunedResult"
+            )
+        raw = _json_safe(pruned)
+        if not isinstance(raw, dict):
+            raw = {}
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            width, height = image.size
+        raw["input_path"] = source
+        raw.setdefault("page_index", max(0, page - 1))
+        raw.setdefault("page_count", 1)
+        raw.setdefault("width", width)
+        raw.setdefault("height", height)
+        raw.setdefault("model_settings", {})
+        raw.setdefault("layout_det_res", {"boxes": []})
+        raw.setdefault("parsing_res_list", [])
+        return raw
+
+    def predict_page(
+        self,
+        image_bytes: bytes,
+        *,
+        source: str,
+        page: int,
+    ) -> dict[str, Any]:
+        job_id = self._submit(image_bytes, source=source, page=page)
+        json_url = self._wait_for_result_url(job_id)
+        raw = self._page_result(
+            self._download_result(json_url),
+            image_bytes=image_bytes,
+            source=source,
+            page=page,
+        )
+        blocks = normalize_paddle_result(raw, source=source, page=page)
+        for block in blocks:
+            block["source_engine"] = "paddleocr-vl-api"
+            block["model_revision"] = self._model_revision
+        if not blocks:
+            parsing_values = raw.get("parsing_res_list", [])
+            raise PaddleOCRVLInferenceError(
+                f"PaddleOCR-VL API 未识别出 {source} 第 {page} 页的版面块"
+                f"（parsing_count="
+                f"{len(parsing_values) if isinstance(parsing_values, list) else 'invalid'}）"
+            )
+        return {
+            "raw": compact_paddle_result(raw),
+            "blocks": blocks,
+            "width": int(_safe_float(raw.get("width"))),
+            "height": int(_safe_float(raw.get("height"))),
+        }
+
+    def close(self) -> None:
+        close = getattr(self._session, "close", None)
+        if callable(close):
+            close()
+
+    def __enter__(self) -> PaddleOCRVLAPIClient:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+
+def create_paddleocr_vl_client(
+    config: PaddleOCRVLConfig,
+) -> PaddleOCRVLClient | PaddleOCRVLAPIClient:
+    if config.provider == "api":
+        return PaddleOCRVLAPIClient(
+            token=config.api_token,
+            job_url=config.api_job_url,
+            model=config.api_model,
+            poll_interval_seconds=config.api_poll_interval_seconds,
+            timeout_seconds=config.api_timeout_seconds,
+        )
+    return PaddleOCRVLClient(
+        device=config.device,
+        engine=config.engine,
+        dtype=config.dtype,
+        pipeline_version=config.pipeline_version,
+        model_source=config.model_source,
+    )
 
 
 def stable_block_content_hash(block: dict[str, Any]) -> str:

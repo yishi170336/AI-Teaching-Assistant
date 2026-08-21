@@ -13,7 +13,7 @@ from backend.app.rag import manager as manager_module
 from backend.app.rag.models import PageDocument, TextChunk
 from backend.app.rag.manager import KnowledgeBaseManager
 from backend.app.rag.pdf_extract_kit import DetectedRegion, PDFExtractKitAdapter
-from backend.app.rag.paddleocr_vl import PaddleOCRVLInferenceError
+from backend.app.rag.paddleocr_vl import PaddleOCRVLConfig, PaddleOCRVLInferenceError
 from backend.app.rag.pipeline import KnowledgeBaseBuildCancelled
 from backend.app.rag.multimodal import (
     LayoutElement,
@@ -1128,6 +1128,7 @@ def test_background_build_reports_progress_and_preserves_cache_on_cancel(tmp_pat
     resources.mkdir()
     indexes.mkdir()
     manager = KnowledgeBaseManager()
+    ocr_secret = "test-paddle-api-secret"
     cleaned_qdrant: list[str] = []
     monkeypatch.setattr(manager, "resource_dir", lambda _knowledge_base: resources)
     monkeypatch.setattr(manager, "index_dir", lambda knowledge_base: indexes / knowledge_base)
@@ -1136,7 +1137,16 @@ def test_background_build_reports_progress_and_preserves_cache_on_cancel(tmp_pat
         lambda path: cleaned_qdrant.append(path.name),
     )
 
-    async def fake_worker(knowledge_base, _job_path, _progress_path, _result_path, _api_key):
+    async def fake_worker(
+        knowledge_base,
+        _job_path,
+        _progress_path,
+        _result_path,
+        _api_key,
+        paddleocr_api_token,
+    ):
+        assert paddleocr_api_token == ocr_secret
+        assert ocr_secret not in _job_path.read_text(encoding="utf-8")
         manager._update_progress(knowledge_base, 42, "embedding", "正在生成向量")
         while manager._states[knowledge_base]["state"] != "cancelling":
             await asyncio.sleep(0.01)
@@ -1145,7 +1155,11 @@ def test_background_build_reports_progress_and_preserves_cache_on_cancel(tmp_pat
     monkeypatch.setattr(manager, "_run_build_subprocess", fake_worker)
 
     async def scenario():
-        started = manager.start_build("cancel-me", display_name="模拟电子技术")
+        started = manager.start_build(
+            "cancel-me",
+            display_name="模拟电子技术",
+            ocr_config=PaddleOCRVLConfig(provider="api", api_token=ocr_secret),
+        )
         assert started["state"] == "building"
         assert started["display_name"] == "模拟电子技术"
         await asyncio.sleep(0.05)

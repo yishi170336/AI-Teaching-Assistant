@@ -62,6 +62,15 @@ export type VisionModelConfig = {
   baseUrl: string
 }
 
+export type OCRProviderId = 'local' | 'api'
+
+export type OCRModelConfig = {
+  provider: OCRProviderId
+  model: 'PaddleOCR-VL-1.6'
+  apiToken: string
+  jobUrl: string
+}
+
 export type ModelOption = {
   value: string
   label: string
@@ -169,6 +178,18 @@ export type ModelCatalog = {
   default: { provider: ModelProviderId; model: string }
   providers: ModelProviderInfo[]
   ollama_available?: boolean
+  ocr: {
+    default_provider: OCRProviderId
+    model: 'PaddleOCR-VL-1.6'
+    api_job_url: string
+    api_configured: boolean
+    providers: Array<{
+      id: OCRProviderId
+      label: string
+      description: string
+      configured: boolean
+    }>
+  }
 }
 
 export type KnowledgeGraphNode = {
@@ -2030,11 +2051,18 @@ export async function uploadKnowledgeFile(
   file: File,
   knowledgeBase: string,
   displayName?: string,
+  ocrConfig?: OCRModelConfig,
 ) {
   const data = new FormData()
   data.append('file', file)
   data.append('knowledge_base', knowledgeBase)
   if (displayName?.trim()) data.append('display_name', displayName.trim())
+  if (ocrConfig) {
+    data.append('ocr_provider', ocrConfig.provider)
+    if (ocrConfig.provider === 'api' && ocrConfig.apiToken.trim()) {
+      data.append('paddleocr_api_token', ocrConfig.apiToken.trim())
+    }
+  }
   data.append('rebuild', 'true')
   const response = await fetch('/api/upload', { method: 'POST', body: data })
   const result = await response.json()
@@ -2044,6 +2072,7 @@ export async function uploadKnowledgeFile(
 
 export async function rebuildKnowledgeBase(
   knowledgeBase: string,
+  ocrConfig?: OCRModelConfig,
 ) {
   const response = await fetch('/api/kb/rebuild', {
     method: 'POST',
@@ -2051,6 +2080,11 @@ export async function rebuildKnowledgeBase(
     body: JSON.stringify({
       knowledge_base: knowledgeBase,
       chapter_limit: null,
+      ocr_provider: ocrConfig?.provider,
+      paddleocr_api_token:
+        ocrConfig?.provider === 'api' && ocrConfig.apiToken.trim()
+          ? ocrConfig.apiToken.trim()
+          : undefined,
     }),
   })
   const result = await response.json()

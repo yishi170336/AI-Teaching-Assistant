@@ -50,6 +50,7 @@ from backend.app.context_state import (
 )
 from backend.app.rag.manager import KnowledgeBaseManager
 from backend.app.rag.multimodal import BuildModelConfig
+from backend.app.rag.paddleocr_vl import PaddleOCRVLConfig
 from backend.app.schemas import (
     AnswerReportCreateRequest,
     ChatRequest,
@@ -651,6 +652,29 @@ def knowledge_build_model_config() -> BuildModelConfig:
     )
 
 
+def knowledge_build_ocr_config(
+    provider: str | None = None,
+    api_token: str = "",
+) -> PaddleOCRVLConfig:
+    resolved_provider = (provider or settings.paddleocr_provider).strip().lower()
+    if resolved_provider not in {"local", "api"}:
+        raise ValueError("知识库 OCR 运行方式仅支持 local 或 api")
+    resolved_token = api_token.strip() or settings.paddleocr_api_token
+    return PaddleOCRVLConfig(
+        provider=resolved_provider,
+        api_token=resolved_token,
+        api_job_url=settings.paddleocr_api_job_url,
+        api_model=settings.paddleocr_api_model,
+        api_poll_interval_seconds=settings.paddleocr_api_poll_interval_seconds,
+        api_timeout_seconds=settings.paddleocr_api_timeout_seconds,
+        device=settings.paddleocr_device,
+        engine=settings.paddleocr_engine,
+        dtype=settings.paddleocr_dtype,
+        pipeline_version=settings.paddleocr_pipeline_version,
+        model_source=settings.paddleocr_model_source,
+    )
+
+
 @app.post("/api/kb/rebuild")
 async def rebuild_knowledge_base(payload: KnowledgeBaseRebuildRequest) -> dict[str, Any]:
     config = knowledge_build_model_config()
@@ -659,11 +683,23 @@ async def rebuild_knowledge_base(payload: KnowledgeBaseRebuildRequest) -> dict[s
             status_code=503,
             detail="未配置 QWEN_API_KEY，schema 4.0 图谱构建不能启动；旧活动索引保持不变。",
         )
+    api_token = (
+        payload.paddleocr_api_token.get_secret_value().strip()
+        if payload.paddleocr_api_token is not None else ""
+    )
+    try:
+        ocr_config = knowledge_build_ocr_config(payload.ocr_provider, api_token)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+        ) from exc
     try:
         build_state = knowledge_bases.start_build(
             payload.knowledge_base,
             chapter_limit=payload.chapter_limit,
             model_config=config,
+            ocr_config=ocr_config,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -672,7 +708,11 @@ async def rebuild_knowledge_base(payload: KnowledgeBaseRebuildRequest) -> dict[s
         "knowledge_base": payload.knowledge_base,
         "state": "building",
         "build": build_state,
-        "message": "多模态知识库已开始后台重建",
+        "message": (
+            "多模态知识库已开始后台重建（PaddleOCR-VL API）"
+            if ocr_config.provider == "api" else
+            "多模态知识库已开始后台重建（本地 PaddleOCR-VL）"
+        ),
     }
 
 
@@ -688,7 +728,7 @@ async def cancel_knowledge_base_build(knowledge_base: str) -> dict[str, Any]:
         "ok": True,
         "knowledge_base": knowledge_base,
         "state": state,
-        "message": "取消请求已提交，正在清理未完成缓存",
+        "message": "取消请求已提交，已完成的 OCR 和图谱缓存将保留",
     }
 
 
@@ -851,6 +891,29 @@ async def available_models() -> dict[str, Any]:
     return {
         "default": {"provider": default_provider, "model": default_model},
         "ollama_available": bool(model_health.get("ok")),
+        "ocr": {
+            "default_provider": (
+                settings.paddleocr_provider
+                if settings.paddleocr_provider in {"local", "api"} else "local"
+            ),
+            "model": settings.paddleocr_api_model,
+            "api_job_url": settings.paddleocr_api_job_url,
+            "api_configured": bool(settings.paddleocr_api_token),
+            "providers": [
+                {
+                    "id": "local",
+                    "label": "本地 PaddleOCR-VL 1.6",
+                    "description": "使用本机 GPU/CPU，教材页面不上传",
+                    "configured": True,
+                },
+                {
+                    "id": "api",
+                    "label": "PaddleOCR-VL 1.6 API",
+                    "description": "逐页调用 Paddle AI Studio 作业 API",
+                    "configured": bool(settings.paddleocr_api_token),
+                },
+            ],
+        },
         "providers": [
             {
                 "id": "ollama",
@@ -2578,6 +2641,8 @@ async def upload(
     knowledge_base: str = Form("default"),
     display_name: str = Form(""),
     rebuild: bool = Form(True),
+    ocr_provider: str = Form(""),
+    paddleocr_api_token: str = Form(""),
 ) -> dict[str, Any]:
     try:
         knowledge_base = knowledge_bases.validate_id(knowledge_base)
@@ -2616,10 +2681,18 @@ async def upload(
                 detail="文件已保存，但未配置 QWEN_API_KEY，schema 4.0 图谱构建未启动。",
             )
         try:
+            ocr_config = knowledge_build_ocr_config(
+                ocr_provider or None,
+                paddleocr_api_token,
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        try:
             build_state = knowledge_bases.start_build(
                 knowledge_base,
                 chapter_limit=None,
                 model_config=build_model,
+                ocr_config=ocr_config,
                 display_name=normalized_display_name,
             )
         except RuntimeError as exc:

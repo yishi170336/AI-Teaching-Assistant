@@ -21,6 +21,7 @@ from backend.app.rag.retrieval_regression import (
     load_regression_cases,
 )
 from backend.app.rag.multimodal import BuildModelConfig
+from backend.app.rag.paddleocr_vl import PaddleOCRVLConfig
 from backend.app.rag.multimodal import (
     build_chapter_knowledge_summaries,
     build_local_knowledge_graph,
@@ -509,6 +510,7 @@ class KnowledgeBaseManager:
         *,
         chapter_limit: int | None = None,
         model_config: BuildModelConfig | None = None,
+        ocr_config: PaddleOCRVLConfig | None = None,
         display_name: str | None = None,
     ) -> dict[str, Any]:
         knowledge_base = self.validate_id(knowledge_base)
@@ -544,6 +546,7 @@ class KnowledgeBaseManager:
                 knowledge_base,
                 chapter_limit=chapter_limit,
                 model_config=model_config,
+                ocr_config=ocr_config,
                 display_name=resolved_display_name,
             )
         )
@@ -623,9 +626,11 @@ class KnowledgeBaseManager:
         progress_path: Path,
         result_path: Path,
         api_key: str,
+        paddleocr_api_token: str,
     ) -> None:
         environment = os.environ.copy()
         environment["CIRCUITMIND_BUILD_API_KEY"] = api_key
+        environment["CIRCUITMIND_PADDLEOCR_API_TOKEN"] = paddleocr_api_token
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
@@ -667,6 +672,7 @@ class KnowledgeBaseManager:
         *,
         chapter_limit: int | None,
         model_config: BuildModelConfig | None,
+        ocr_config: PaddleOCRVLConfig | None,
         display_name: str,
     ) -> None:
         staging_dir: Path | None = None
@@ -724,6 +730,10 @@ class KnowledgeBaseManager:
             result_path = staging_dir / ".build-result.json"
             model_payload = asdict(model_config) if model_config is not None else None
             build_api_key = str(model_payload.pop("api_key", "")) if model_payload else ""
+            ocr_payload = asdict(ocr_config) if ocr_config is not None else None
+            paddleocr_api_token = (
+                str(ocr_payload.pop("api_token", "")) if ocr_payload else ""
+            )
             job_path.write_text(json.dumps({
                 "knowledge_base": knowledge_base,
                 "resources_dir": str(resource_dir),
@@ -731,11 +741,17 @@ class KnowledgeBaseManager:
                 "embedding_model_path": str(settings.embedding_model_path),
                 "chapter_limit": chapter_limit,
                 "model_config": model_payload,
+                "ocr_config": ocr_payload,
                 "progress_path": str(progress_path),
                 "result_path": str(result_path),
             }, ensure_ascii=False), encoding="utf-8")
             await self._run_build_subprocess(
-                knowledge_base, job_path, progress_path, result_path, build_api_key
+                knowledge_base,
+                job_path,
+                progress_path,
+                result_path,
+                build_api_key,
+                paddleocr_api_token,
             )
             meta = json.loads(
                 (staging_dir / "index_meta.json").read_text(encoding="utf-8")

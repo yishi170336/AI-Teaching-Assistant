@@ -131,6 +131,19 @@ class Settings:
     paddleocr_device: str = os.getenv("PADDLEOCR_DEVICE", "gpu:0")
     paddleocr_engine: str = os.getenv("PADDLEOCR_ENGINE", "transformers")
     paddleocr_dtype: str = os.getenv("PADDLEOCR_DTYPE", "float16")
+    paddleocr_provider: str = os.getenv("PADDLEOCR_PROVIDER", "local").strip().lower()
+    paddleocr_api_token: str = os.getenv("PADDLEOCR_API_TOKEN", "")
+    paddleocr_api_job_url: str = os.getenv(
+        "PADDLEOCR_API_JOB_URL",
+        "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs",
+    )
+    paddleocr_api_model: str = os.getenv("PADDLEOCR_API_MODEL", "PaddleOCR-VL-1.6")
+    paddleocr_api_poll_interval_seconds: float = float(
+        os.getenv("PADDLEOCR_API_POLL_INTERVAL_SECONDS", "5")
+    )
+    paddleocr_api_timeout_seconds: float = float(
+        os.getenv("PADDLEOCR_API_TIMEOUT_SECONDS", "900")
+    )
     paddleocr_pipeline_version: str = os.getenv(
         "PADDLEOCR_PIPELINE_VERSION", "v1.6"
     )

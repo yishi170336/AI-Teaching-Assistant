@@ -218,7 +218,12 @@ def test_knowledge_build_ignores_legacy_browser_model_credentials(monkeypatch):
     )
     config = main_module.knowledge_build_model_config()
 
-    assert payload.model_dump() == {"knowledge_base": "default", "chapter_limit": None}
+    assert payload.model_dump() == {
+        "knowledge_base": "default",
+        "chapter_limit": None,
+        "ocr_provider": None,
+        "paddleocr_api_token": None,
+    }
     assert config.model == "qwen3.7-flash"
     assert config.api_key == "server-qwen-key"
     assert config.base_url == "https://dashscope.example/v1"
@@ -250,6 +255,10 @@ def test_models_endpoint_exposes_separate_qwen_option_groups(monkeypatch):
             deepseek_model="deepseek-v4-flash",
             deepseek_api_key="",
             deepseek_base_url="https://deepseek.example/v1",
+            paddleocr_provider="local",
+            paddleocr_api_model="PaddleOCR-VL-1.6",
+            paddleocr_api_job_url="https://paddle.example/jobs",
+            paddleocr_api_token="server-paddle-token",
         ),
     )
     catalog = asyncio.run(main_module.available_models())
@@ -259,6 +268,9 @@ def test_models_endpoint_exposes_separate_qwen_option_groups(monkeypatch):
     assert [item["value"] for item in qwen["vision_model_options"]] == QWEN_VISION_MODELS
     assert qwen["default_model"] == "qwen3.7-plus"
     assert qwen["default_vision_model"] == "qwen3-vl-flash"
+    assert catalog["ocr"]["default_provider"] == "local"
+    assert catalog["ocr"]["model"] == "PaddleOCR-VL-1.6"
+    assert catalog["ocr"]["api_configured"] is True
 
 
 def test_custom_provider_requires_key_and_base_url():

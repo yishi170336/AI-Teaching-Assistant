@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { AttachmentInfo, ContextStateSummary, ConversationFocus, KBStatus, MistakeCandidateDraft, ModelConfig, ModelProviderId, PhotoRecognition, PracticeExercise, PracticeGrading, QuestionRecommendation, QuestionReference, QuestionSummary, ResolvedContext, SourceInfo, StoredMessage, streamChat, uploadChatAttachment, VisionModelConfig } from '../lib/api'
+import { AttachmentInfo, ContextStateSummary, ConversationFocus, KBStatus, MistakeCandidateDraft, ModelConfig, ModelProviderId, OCRModelConfig, PhotoRecognition, PracticeExercise, PracticeGrading, QuestionRecommendation, QuestionReference, QuestionSummary, ResolvedContext, SourceInfo, StoredMessage, streamChat, uploadChatAttachment, VisionModelConfig } from '../lib/api'
 
 export type ChatMode = 'auto' | 'answer' | 'quiz' | 'plan' | 'recommend' | 'explain'
 export type ChatScene = 'chat' | 'image_answer' | 'quiz_grade'
@@ -47,6 +47,7 @@ const sessionKey = 'circuitmind-session-id'
 const studentKey = 'circuitmind-student-id'
 const modelConfigKey = 'circuitmind-model-config'
 const visionModelConfigKey = 'circuitmind-vision-model-config'
+const ocrModelConfigKey = 'circuitmind-ocr-model-config'
 const defaultKnowledgeBaseKey = 'circuitmind-default-knowledge-base'
 export const CHAT_MODEL_PROVIDER: ModelProviderId = 'qwen'
 export const CHAT_MODEL = 'qwen3.7-plus'
@@ -65,6 +66,13 @@ const defaultVisionModelConfig: VisionModelConfig = {
   model: QWEN_VL_FALLBACK_MODEL,
   apiKey: '',
   baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+}
+
+const defaultOCRModelConfig: OCRModelConfig = {
+  provider: 'local',
+  model: 'PaddleOCR-VL-1.6',
+  apiToken: '',
+  jobUrl: 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs',
 }
 
 function getSessionId() {
@@ -150,6 +158,28 @@ function getVisionModelConfig(): VisionModelConfig {
   }
 }
 
+function normalizedOCRModelConfig(value: Partial<OCRModelConfig>): OCRModelConfig {
+  return {
+    provider: value.provider === 'api' ? 'api' : 'local',
+    model: 'PaddleOCR-VL-1.6',
+    apiToken: typeof value.apiToken === 'string' ? value.apiToken : '',
+    jobUrl: typeof value.jobUrl === 'string' && value.jobUrl.trim()
+      ? value.jobUrl.trim()
+      : defaultOCRModelConfig.jobUrl,
+  }
+}
+
+function getOCRModelConfig(): OCRModelConfig {
+  try {
+    const stored = JSON.parse(localStorage.getItem(ocrModelConfigKey) || '{}')
+    const config = normalizedOCRModelConfig(stored)
+    localStorage.setItem(ocrModelConfigKey, JSON.stringify(config))
+    return config
+  } catch {
+    return defaultOCRModelConfig
+  }
+}
+
 function getDefaultKnowledgeBase(): string {
   const stored = localStorage.getItem(defaultKnowledgeBaseKey)?.trim() || ''
   return /^[A-Za-z0-9_-]{1,48}$/.test(stored) ? stored : ''
@@ -208,6 +238,7 @@ type ChatState = {
   defaultKnowledgeBase: string
   modelConfig: ModelConfig
   visionModelConfig: VisionModelConfig
+  ocrModelConfig: OCRModelConfig
   messages: ChatMessage[]
   streaming: boolean
   stage: string
@@ -232,6 +263,7 @@ type ChatState = {
   syncKnowledgeBases: (knowledgeBases: KBStatus[]) => void
   setModelConfig: (config: ModelConfig) => void
   setVisionModelConfig: (config: VisionModelConfig) => void
+  setOCRModelConfig: (config: OCRModelConfig) => void
   addAttachments: (files: File[]) => Promise<void>
   removeAttachment: (localId: string) => void
   activateMessage: (messageId: string, bindFocus?: boolean) => void
@@ -250,6 +282,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   defaultKnowledgeBase: initialKnowledgeBase,
   modelConfig: getModelConfig(),
   visionModelConfig: getVisionModelConfig(),
+  ocrModelConfig: getOCRModelConfig(),
   messages: [],
   streaming: false,
   stage: '',
@@ -322,6 +355,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
     localStorage.setItem(visionModelConfigKey, JSON.stringify(normalized))
     set({ visionModelConfig: normalized })
+  },
+  setOCRModelConfig: (ocrModelConfig) => {
+    const normalized = normalizedOCRModelConfig(ocrModelConfig)
+    localStorage.setItem(ocrModelConfigKey, JSON.stringify(normalized))
+    set({ ocrModelConfig: normalized })
   },
   addAttachments: async (files) => {
     const available = Math.max(0, 5 - get().pendingAttachments.length)

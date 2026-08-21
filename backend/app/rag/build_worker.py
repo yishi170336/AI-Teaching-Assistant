@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from backend.app.rag.multimodal import BuildModelConfig
+from backend.app.rag.paddleocr_vl import PaddleOCRVLConfig
 from backend.app.rag.pipeline import build_knowledge_base
 
 
@@ -74,6 +75,12 @@ def run(job_path: Path) -> int:
     if model_value:
         model_value["api_key"] = os.environ.get("CIRCUITMIND_BUILD_API_KEY", "")
     model_config = BuildModelConfig(**model_value) if model_value else None
+    ocr_value = job.get("ocr_config")
+    if ocr_value:
+        ocr_value["api_token"] = os.environ.get(
+            "CIRCUITMIND_PADDLEOCR_API_TOKEN", ""
+        )
+    ocr_config = PaddleOCRVLConfig(**ocr_value) if ocr_value else None
 
     def report(progress: int, stage: str, message: str) -> None:
         _write_json(progress_path, {
@@ -89,6 +96,7 @@ def run(job_path: Path) -> int:
             Path(job["embedding_model_path"]),
             chapter_limit=job.get("chapter_limit"),
             model_config=model_config,
+            ocr_config=ocr_config,
             knowledge_base_id=job["knowledge_base"],
             sync_graph_store=False,
             progress_callback=report,

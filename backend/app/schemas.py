@@ -4,7 +4,7 @@ import re
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 
 class QuestionReference(BaseModel):
@@ -738,6 +738,8 @@ class KBStatus(BaseModel):
 class KnowledgeBaseRebuildRequest(BaseModel):
     knowledge_base: str = Field(default="default", min_length=1, max_length=48)
     chapter_limit: int | None = Field(default=None, ge=1)
+    ocr_provider: Literal["local", "api"] | None = None
+    paddleocr_api_token: SecretStr | None = Field(default=None)
 
     @field_validator("knowledge_base")
     @classmethod
