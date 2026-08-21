@@ -29,11 +29,13 @@ from backend.app.rag.multimodal import (
     PAGE_OCR_SCHEMA_VERSION,
     SCANNED_PAGE_PLACEHOLDER,
     _analyze_image,
+    _append_visual_element_checkpoint,
     _apply_toc_section_catalog,
     _formula_candidates_from_page_text,
     _indexable_pdfkit_regions,
     _is_full_page_scan,
     _is_verified_circuit_result,
+    _load_visual_element_cache,
     _normalize_circuit_result,
     _normalize_formula_result,
     _ocr_heading_context,
@@ -47,6 +49,7 @@ from backend.app.rag.multimodal import (
     _safe_partial_noise_fragment,
     _summarize_table,
     _table_fact_description,
+    _visual_cache_compatible,
     audit_visual_semantics,
     build_chapter_knowledge_summaries,
     build_local_knowledge_graph,
@@ -1771,6 +1774,58 @@ def test_table_visual_summary_rejects_low_confidence_output():
 
     assert element.description == description
     assert "visual_summary" not in element.evidence_metadata
+
+
+def test_visual_checkpoint_keeps_completed_pages_and_skips_partial_tail(tmp_path):
+    checkpoint = tmp_path / "lesson.visual_elements.checkpoint.jsonl"
+    first = LayoutElement(
+        id="image-a",
+        source="lesson.pdf",
+        page=1,
+        element_type="image",
+        bbox=[0, 0, 100, 100],
+        image_path="artifacts/lesson/p0001-image-a.png",
+        content_hash="hash-a",
+        description="第一页课程图片总结",
+    )
+    second = replace(
+        first,
+        id="image-b",
+        page=2,
+        image_path="artifacts/lesson/p0002-image-b.png",
+        content_hash="hash-b",
+        description="第二页课程图片总结",
+    )
+
+    assert _append_visual_element_checkpoint(
+        checkpoint, [first], source="lesson.pdf", page=1
+    ) == 1
+    assert _append_visual_element_checkpoint(
+        checkpoint, [first, second], source="lesson.pdf", page=2
+    ) == 1
+    with checkpoint.open("a", encoding="utf-8") as handle:
+        handle.write('{"truncated":')
+
+    cached = _load_visual_element_cache([checkpoint], "lesson.pdf")
+
+    assert set(cached) == {"hash-a", "hash-b"}
+    assert cached["hash-a"]["description"] == "第一页课程图片总结"
+    assert cached["hash-b"]["page"] == 2
+
+
+def test_grounding_rejected_table_checkpoint_is_reused_without_repeat_call():
+    cached = {
+        "processor": "paddleocr-vl-layout",
+        "element_type": "table",
+        "evidence_metadata": {
+            "visual_summary_fallback_reason": "总结含表外数值",
+            "visual_summary_schema": "1.1-qwen3.7-json-repair",
+            "visual_summary_model": "qwen3.7-flash",
+        },
+    }
+    client = type("VisionClient", (), {"model": "qwen3.7-flash"})()
+
+    assert _visual_cache_compatible(cached, client, "table") is True
 
 
 def test_visual_quality_gate_rejects_formula_processed_by_qwen():

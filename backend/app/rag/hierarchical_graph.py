@@ -204,6 +204,69 @@ def _token_count(text: str, tokenizer: Any | None) -> int:
     return chinese + latin + math.ceil(punctuation * 0.35)
 
 
+def _truncate_summary_to_token_limit(
+    text: str,
+    tokenizer: Any | None,
+    *,
+    limit: int = 400,
+    preferred_minimum: int = 300,
+) -> str:
+    """Deterministically bound a grounded summary after one LLM retry."""
+
+    value = _compact(text)
+    if not value or _token_count(value, tokenizer) <= limit:
+        return value
+    low, high = 0, len(value)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if _token_count(value[:middle], tokenizer) <= limit:
+            low = middle
+        else:
+            high = middle - 1
+    bounded = value[:low].rstrip()
+    sentence_end = max(
+        bounded.rfind(marker) for marker in ("。", "！", "？", "；", ";")
+    )
+    if sentence_end >= 0:
+        sentence = bounded[: sentence_end + 1].strip()
+        if _token_count(sentence, tokenizer) >= preferred_minimum:
+            bounded = sentence
+    while bounded and _token_count(bounded, tokenizer) > limit:
+        bounded = bounded[:-1].rstrip()
+    return bounded
+
+
+def _claims_within_summary(
+    claims: Iterable[dict[str, Any]], summary: str
+) -> list[dict[str, Any]]:
+    return [
+        dict(claim)
+        for claim in claims
+        if _compact(claim.get("text"))
+        and _compact(claim.get("text")) in summary
+        and claim.get("evidence_ids")
+    ]
+
+
+def _fallback_summary_from_claims(
+    claims: Iterable[dict[str, Any]], tokenizer: Any | None, *, limit: int = 400
+) -> tuple[str, list[dict[str, Any]]]:
+    """Build a bounded summary exclusively from already grounded claim text."""
+
+    pieces: list[str] = []
+    retained: list[dict[str, Any]] = []
+    for claim in claims:
+        text = _compact(claim.get("text"))
+        if not text or not claim.get("evidence_ids"):
+            continue
+        candidate = "；".join([*pieces, text])
+        if _token_count(candidate, tokenizer) > limit:
+            continue
+        pieces.append(text)
+        retained.append(dict(claim))
+    return "；".join(pieces), retained
+
+
 def _load_tokenizer(model_path: Path) -> Any | None:
     try:
         from transformers import AutoTokenizer
@@ -614,13 +677,32 @@ def summarize_sections(
             compressed_input = replace(unit, text=summary, summary_claims=claims)
             compressed = _call_json(client, _summary_prompt(compressed_input, compress=True))
             candidate = _compact(compressed.get("summary"))
-            if candidate and _token_count(candidate, tokenizer) <= 400:
+            if candidate:
                 summary = candidate
-                claims = [
-                    claim for claim in claims if _compact(claim.get("text")) in summary
-                ]
                 payload = compressed
                 count = _token_count(summary, tokenizer)
+                compressed_claims: list[dict[str, Any]] = []
+                for claim_index, raw in enumerate(compressed.get("claims", []), 1):
+                    if not isinstance(raw, dict):
+                        continue
+                    text = _compact(raw.get("text"))
+                    refs = list(dict.fromkeys(
+                        str(value)
+                        for value in raw.get("evidence_ids", [])
+                        if str(value) in evidence_ids
+                    ))
+                    if text and refs:
+                        compressed_claims.append({
+                            "id": f"claim_{claim_index}",
+                            "text": text,
+                            "evidence_ids": refs,
+                        })
+                claims = (
+                    _claims_within_summary(compressed_claims, summary)
+                    or _claims_within_summary(claims, summary)
+                    or compressed_claims
+                    or claims
+                )
         if (
             count < 300
             and client is not None
@@ -651,7 +733,21 @@ def summarize_sections(
                 payload = expanded
                 count = candidate_count
         if count > 400:
-            raise RuntimeError(f"章节摘要超过 400 tokens：{unit.section_id} ({count})")
+            bounded = _truncate_summary_to_token_limit(summary, tokenizer)
+            bounded_claims = _claims_within_summary(claims, bounded)
+            if not bounded_claims:
+                claim_summary, claim_values = _fallback_summary_from_claims(
+                    claims, tokenizer
+                )
+                if claim_summary and claim_values:
+                    bounded, bounded_claims = claim_summary, claim_values
+            summary = bounded
+            claims = bounded_claims
+            count = _token_count(summary, tokenizer)
+        if count > 400:
+            raise RuntimeError(f"章节摘要确定性截断失败：{unit.section_id} ({count})")
+        if not summary or not claims:
+            raise RuntimeError(f"章节摘要截断后缺少有效 claim：{unit.section_id}")
         short_reason = _compact(payload.get("short_summary_reason"))
         if count < 300 and not short_reason:
             short_reason = "可核验证据不足，未补充教材之外的常识"

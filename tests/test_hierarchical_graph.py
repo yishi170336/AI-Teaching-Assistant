@@ -14,6 +14,7 @@ from backend.app.rag.hierarchical_graph import (
     build_hierarchical_summary_entity_graph,
     compile_hierarchical_knowledge_document,
     deduplicate_entities,
+    summarize_sections,
 )
 from backend.app.rag.models import PageDocument
 from backend.app.rag.pipeline import repair_section_provenance, validate_section_semantics
@@ -143,6 +144,52 @@ def test_invalid_summary_json_fails_after_two_attempts(tmp_path):
             tmp_path / "missing-model",
             embedding_encoder=_normalized_encoder,
         )
+
+
+class _SpaceTokenizer:
+    def encode(self, text, add_special_tokens=False):
+        del add_special_tokens
+        return str(text).split()
+
+
+class _OversizedSummaryClient:
+    config = SimpleNamespace(model="qwen3.7-flash", enabled=True)
+
+    def complete_json(self, prompt):
+        size = 450 if "将已有摘要压缩" in prompt else 478
+        summary = " ".join(f"要点{index}" for index in range(size))
+        return {
+            "section_id": "section:test:1.1",
+            "summary": summary,
+            "claims": [{
+                "id": "claim_1",
+                "text": "要点0",
+                "evidence_ids": ["ocr:book.pdf:p1:b1"],
+            }],
+            "confidence": 0.9,
+            "short_summary_reason": "",
+        }
+
+
+def test_summary_length_is_deterministically_bounded_after_compression_retry(tmp_path):
+    units, _sections = compile_hierarchical_knowledge_document([
+        _page(1, "1.1 PN结", "PN结具有单向导电性。"),
+    ], [])
+
+    summarized = summarize_sections(
+        units,
+        _OversizedSummaryClient(),
+        tmp_path / "section_summaries.jsonl",
+        _SpaceTokenizer(),
+    )
+
+    assert len(summarized[0].summary.split()) <= 400
+    assert summarized[0].summary_claims
+    assert summarized[0].summary_claims[0]["text"] in summarized[0].summary
+    cached = json.loads(
+        (tmp_path / "section_summaries.jsonl").read_text("utf-8").splitlines()[0]
+    )
+    assert cached["result"]["token_count"] <= 400
 
 
 class _DedupClient:

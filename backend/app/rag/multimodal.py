@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import mimetypes
+import os
 import re
 import time
 from collections import Counter
@@ -140,6 +141,63 @@ class LayoutElement:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _load_visual_element_cache(
+    paths: Iterable[Path], source: str
+) -> dict[str, dict[str, Any]]:
+    cached: dict[str, dict[str, Any]] = {}
+    for cache_path in paths:
+        if not cache_path.exists():
+            continue
+        try:
+            lines = cache_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                item = json.loads(line)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                # A process can stop during the final append. Earlier complete
+                # page records remain usable and must not be discarded.
+                continue
+            if (
+                isinstance(item, dict)
+                and item.get("source") == source
+                and item.get("image_path")
+                and item.get("content_hash")
+            ):
+                cached[str(item["content_hash"])] = item
+    return cached
+
+
+def _append_visual_element_checkpoint(
+    path: Path,
+    elements: Iterable[LayoutElement],
+    *,
+    source: str,
+    page: int,
+) -> int:
+    records = [
+        element.to_dict()
+        for element in elements
+        if element.source == source
+        and element.page == page
+        and element.element_type in {"image", "circuit", "table"}
+        and element.image_path
+        and element.content_hash
+    ]
+    if not records:
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = "".join(
+        json.dumps(item, ensure_ascii=False) + "\n" for item in records
+    )
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return len(records)
 
 
 def _json_object(raw: str) -> dict[str, Any]:
@@ -1583,7 +1641,11 @@ PaddleOCR-VL 表格 Markdown：
             rejection_reason = ""
             break
     if rejection_reason:
-        element.evidence_metadata["visual_summary_fallback_reason"] = rejection_reason
+        element.evidence_metadata.update({
+            "visual_summary_fallback_reason": rejection_reason,
+            "visual_summary_schema": VISUAL_SUMMARY_SCHEMA_VERSION,
+            "visual_summary_model": client.model,
+        })
         logger.warning(
             "Qwen visual table summary rejected after retry; retaining Paddle evidence: %s",
             rejection_reason,
@@ -1961,6 +2023,18 @@ def _visual_cache_compatible(
         return False
     expected = _visual_processor(client, kind)
     processor = str(cached.get("processor", ""))
+    evidence_metadata = cached.get("evidence_metadata", {})
+    if not isinstance(evidence_metadata, dict):
+        evidence_metadata = {}
+    if (
+        kind == "table"
+        and evidence_metadata.get("visual_summary_fallback_reason")
+        and evidence_metadata.get("visual_summary_schema")
+        == VISUAL_SUMMARY_SCHEMA_VERSION
+        and evidence_metadata.get("visual_summary_model")
+        == str(getattr(client, "model", ""))
+    ):
+        return True
     if expected and expected not in processor:
         return False
     if kind == "image" and str(cached.get("element_type", "")) == "circuit":
@@ -2450,16 +2524,11 @@ def enhance_pdf(
     if settings.pdf_extract_kit_page_limit > 0:
         analysis_pages = analysis_pages[: settings.pdf_extract_kit_page_limit]
     analysis_page_set = set(analysis_pages)
-    cached_images: dict[str, dict[str, Any]] = {}
     element_cache = output_dir / "multimodal_elements.jsonl"
-    if element_cache.exists():
-        try:
-            for line in element_cache.read_text(encoding="utf-8").splitlines():
-                item = json.loads(line)
-                if item.get("source") == path.name and item.get("image_path") and item.get("content_hash"):
-                    cached_images[str(item["content_hash"])] = item
-        except Exception:
-            cached_images = {}
+    visual_checkpoint = output_dir / f"{path.stem}.visual_elements.checkpoint.jsonl"
+    cached_images = _load_visual_element_cache(
+        (element_cache, visual_checkpoint), path.name
+    )
 
     document = fitz.open(path)
     try:
@@ -3106,6 +3175,12 @@ def enhance_pdf(
                     _analyze_image(element, image_bytes, vision_client)
                 _enforce_verified_circuit(element)
                 elements.append(element)
+            _append_visual_element_checkpoint(
+                visual_checkpoint,
+                elements,
+                source=path.name,
+                page=page_no,
+            )
     finally:
         document.close()
         if vision_client is not None:
