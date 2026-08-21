@@ -45,7 +45,7 @@ class Settings:
     qwen_vision_model: str = os.getenv("QWEN_VISION_MODEL", "qwen3-vl-flash")
     qwen_visual_summary_model: str = os.getenv(
         "QWEN_VISUAL_SUMMARY_MODEL",
-        os.getenv("QWEN_CIRCUIT_VISION_MODEL", "qwen3-vl-flash"),
+        os.getenv("QWEN_CIRCUIT_VISION_MODEL", "qwen3.7-flash"),
     )
     # Backward-compatible alias for existing deployments and index metadata.
     qwen_circuit_vision_model: str = os.getenv(

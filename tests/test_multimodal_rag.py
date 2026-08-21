@@ -1651,6 +1651,49 @@ def test_table_visual_summary_cannot_introduce_numbers_absent_from_paddle():
     assert "table-summary" not in element.processor
 
 
+def test_table_visual_summary_retries_business_validation_then_accepts():
+    markdown = "| 参数 | 典型值 |\n|---|---:|\n| 电压增益 | 40 |"
+    description, cells = _table_fact_description(markdown, "table-retry")
+    element = LayoutElement(
+        id="table-retry",
+        source="lesson.pdf",
+        page=1,
+        element_type="table",
+        bbox=[0, 0, 100, 100],
+        text=markdown,
+        description=description,
+        evidence_metadata={"table_cells": cells},
+    )
+
+    class CorrectingSummary:
+        model = "qwen3.7-flash"
+        prompts: list[str] = []
+
+        def complete_json(self, prompt, *_args, **_kwargs):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 1:
+                return {
+                    "is_course_relevant": True,
+                    "summary": "表 1.3.1 的电压增益典型值为 40。",
+                    "confidence": 0.99,
+                }
+            return {
+                "is_course_relevant": True,
+                "summary": "电压增益的典型值为 40。",
+                "knowledge_points": ["电压增益典型值为 40"],
+                "confidence": 0.99,
+            }
+
+    client = CorrectingSummary()
+    _summarize_table(element, _diagram_png(), client)
+
+    assert len(client.prompts) == 2
+    assert "未通过证据校验" in client.prompts[1]
+    assert "视觉总结" in element.description
+    assert element.evidence_metadata["visual_summary_confidence"] == 0.99
+    assert "visual_summary_fallback_reason" not in element.evidence_metadata
+
+
 def test_table_visual_summary_rejects_low_confidence_output():
     markdown = "| 参数 | 典型值 |\n|---|---:|\n| 电压增益 | 40 |"
     description, cells = _table_fact_description(markdown, "table-low-confidence")

@@ -66,7 +66,7 @@ SCANNED_PAGE_PLACEHOLDER = "[本页主要包含电路图、公式或其他图形
 PAGE_OCR_SCHEMA_VERSION = PADDLEOCR_VL_SCHEMA_VERSION
 LEGACY_PAGE_OCR_SCHEMA_VERSIONS: set[str] = set()
 CIRCUIT_ANALYSIS_SCHEMA_VERSION = "2.1-grounded-circuit-family"
-VISUAL_SUMMARY_SCHEMA_VERSION = "1.0-grounded-course-images-tables"
+VISUAL_SUMMARY_SCHEMA_VERSION = "1.1-qwen3.7-json-repair"
 
 CHAPTER_MARKER_PATTERN = r"第[零〇一二三四五六七八九十百两0-9]+章"
 CHAPTER_SENTENCE_PREFIXES = (
@@ -1522,40 +1522,72 @@ PaddleOCR-VL 表格 Markdown：
 
 返回 JSON：{{"is_course_relevant":true,"summary":"只总结表格的比较维度、变化趋势或关键结论","knowledge_points":["表格直接支持的知识点"],"confidence":0.0}}。
 """.strip()
-    try:
-        raw = client.complete_json(
-            prompt,
-            image_bytes=image_bytes,
-            image_mime=mimetypes.guess_type(element.image_path or "table.png")[0]
-            or "image/png",
+    summary = ""
+    summary_confidence = 0.0
+    rejection_reason = ""
+    for attempt in range(2):
+        attempt_prompt = prompt
+        if attempt:
+            attempt_prompt += (
+                f"\n\n上一次结构化总结未通过证据校验（{rejection_reason}）。"
+                "请重新输出完整 JSON；summary 和 knowledge_points 不得写表号、图号、式号，"
+                "所有数值必须逐字存在于 PaddleOCR-VL Markdown 中。"
+            )
+        try:
+            raw = client.complete_json(
+                attempt_prompt,
+                image_bytes=image_bytes,
+                image_mime=mimetypes.guess_type(element.image_path or "table.png")[0]
+                or "image/png",
+            )
+        except QwenMultimodalAPIError as exc:
+            logger.warning(
+                "Qwen visual table summary failed; retaining Paddle evidence: %s",
+                exc,
+            )
+            element.evidence_metadata["visual_summary_fallback_reason"] = str(exc)
+            return
+        relevant_value = raw.get("is_course_relevant", raw.get("summary"))
+        relevant = (
+            relevant_value.strip().lower() in {"true", "1", "yes", "是"}
+            if isinstance(relevant_value, str)
+            else bool(relevant_value)
         )
-    except QwenMultimodalAPIError as exc:
-        logger.warning("Qwen3-VL table summary failed; retaining Paddle evidence: %s", exc)
-        return
-    relevant_value = raw.get("is_course_relevant", raw.get("summary"))
-    relevant = (
-        relevant_value.strip().lower() in {"true", "1", "yes", "是"}
-        if isinstance(relevant_value, str)
-        else bool(relevant_value)
-    )
-    summary = str(raw.get("summary", "")).strip()[:4000]
-    points = [
-        str(item).strip() for item in raw.get("knowledge_points", [])
-        if str(item).strip()
-    ][:12] if isinstance(raw.get("knowledge_points"), list) else []
-    if points:
-        point_text = "；".join(points)
-        summary = f"{summary}\n表格知识点：{point_text}" if summary else f"表格知识点：{point_text}"
-    try:
-        summary_confidence = max(0.0, min(1.0, float(raw.get("confidence", 0))))
-    except (TypeError, ValueError):
-        summary_confidence = 0.0
-    if (
-        not relevant
-        or not summary
-        or summary_confidence < 0.45
-        or not _summary_numbers_are_grounded(summary, paddle_text)
-    ):
+        if not relevant:
+            element.evidence_metadata["is_course_relevant"] = False
+            return
+        summary = str(raw.get("summary", "")).strip()[:4000]
+        points = [
+            str(item).strip() for item in raw.get("knowledge_points", [])
+            if str(item).strip()
+        ][:12] if isinstance(raw.get("knowledge_points"), list) else []
+        if points:
+            point_text = "；".join(points)
+            summary = (
+                f"{summary}\n表格知识点：{point_text}"
+                if summary else f"表格知识点：{point_text}"
+            )
+        try:
+            summary_confidence = max(
+                0.0, min(1.0, float(raw.get("confidence", 0)))
+            )
+        except (TypeError, ValueError):
+            summary_confidence = 0.0
+        if not summary:
+            rejection_reason = "summary 为空"
+        elif summary_confidence < 0.45:
+            rejection_reason = f"confidence={summary_confidence:.2f}"
+        elif not _summary_numbers_are_grounded(summary, paddle_text):
+            rejection_reason = "总结含 Paddle 表格证据之外的数值或编号"
+        else:
+            rejection_reason = ""
+            break
+    if rejection_reason:
+        element.evidence_metadata["visual_summary_fallback_reason"] = rejection_reason
+        logger.warning(
+            "Qwen visual table summary rejected after retry; retaining Paddle evidence: %s",
+            rejection_reason,
+        )
         return
     # Rebuild facts from Paddle Markdown so a refreshed summary can never carry
     # an older vision-generated description forward as if it were cell evidence.
@@ -2231,7 +2263,7 @@ def _analyze_image(
             else {}
         )
     except QwenMultimodalAPIError as exc:
-        logger.warning("Qwen3-VL image summary failed; retaining localized evidence: %s", exc)
+        logger.warning("Qwen visual image summary failed; retaining localized evidence: %s", exc)
         raw_vlm_result = {}
     vlm_result = _ground_circuit_family(
         _normalize_circuit_result(raw_vlm_result),

@@ -48,10 +48,17 @@ def test_qwen_vision_requests_non_thinking_high_resolution_json() -> None:
 
 
 def test_qwen_vision_rejects_malformed_json() -> None:
-    transport = httpx.MockTransport(
-        lambda _request: httpx.Response(
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
             200, json={"choices": [{"message": {"content": "not-json"}}]}
         )
+
+    transport = httpx.MockTransport(
+        handler
     )
     client = QwenVisionClient(api_key="test-key", transport=transport)
     try:
@@ -59,6 +66,8 @@ def test_qwen_vision_rejects_malformed_json() -> None:
             client.complete_json("输出 JSON")
     finally:
         client.close()
+
+    assert requests == 2
 
 
 def test_qwen_vision_recovers_json_embedded_in_brief_prose() -> None:
@@ -168,6 +177,64 @@ def test_dashscope_embedding_sends_circuit_retrieval_instruction() -> None:
         "instruct": "Focus on circuit topology",
     }
 
+
+def test_qwen_vision_repairs_common_json_defects_without_retry() -> None:
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{
+                    "message": {
+                        "content": "```json\n{summary: 'PN junction', course_related: true,}\n```"
+                    }
+                }]
+            },
+        )
+
+    client = QwenVisionClient(
+        api_key="test-key", transport=httpx.MockTransport(handler)
+    )
+    try:
+        result = client.complete_json("输出 JSON")
+    finally:
+        client.close()
+
+    assert requests == 1
+    assert result == {"summary": "PN junction", "course_related": True}
+
+
+def test_qwen_vision_retries_once_when_first_response_is_not_json() -> None:
+    prompts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        content = payload["messages"][1]["content"]
+        prompts.append(content if isinstance(content, str) else content[0]["text"])
+        response_content = (
+            "I cannot format this response"
+            if len(prompts) == 1
+            else '{"summary":"valid","course_related":true}'
+        )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": response_content}}]},
+        )
+
+    client = QwenVisionClient(
+        api_key="test-key", transport=httpx.MockTransport(handler)
+    )
+    try:
+        result = client.complete_json("输出 JSON")
+    finally:
+        client.close()
+
+    assert result == {"summary": "valid", "course_related": True}
+    assert len(prompts) == 2
+    assert "上一次响应无法解析" in prompts[1]
 
 def test_embedding_rejects_non_1024_response() -> None:
     transport = httpx.MockTransport(

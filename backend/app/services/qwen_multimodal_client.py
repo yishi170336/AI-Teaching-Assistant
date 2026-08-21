@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from typing import Any
 
 import httpx
+from json_repair import repair_json
 
 from backend.app.config import settings
 
@@ -62,20 +63,27 @@ def _parse_json_object(value: Any) -> dict[str, Any]:
     text = str(value or "").strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I)
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        match = re.search(r"\{.*\}", text, re.S)
-        if not match:
-            raise QwenMultimodalAPIError(
-                "Qwen3-VL 未返回合法 JSON，无法完成课程视觉分析"
-            ) from exc
+    parsed: Any = None
+    candidates = [text]
+    match = re.search(r"\{.*\}", text, re.S)
+    if match and match.group(0) != text:
+        candidates.append(match.group(0))
+    for candidate in candidates:
         try:
-            parsed = json.loads(match.group(0))
-        except json.JSONDecodeError as nested_exc:
-            raise QwenMultimodalAPIError(
-                "Qwen3-VL 未返回合法 JSON，无法完成课程视觉分析"
-            ) from nested_exc
+            parsed = json.loads(candidate)
+            break
+        except json.JSONDecodeError:
+            try:
+                repaired = repair_json(candidate, return_objects=True)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(repaired, dict):
+                parsed = repaired
+                break
+    if parsed is None:
+        raise QwenMultimodalAPIError(
+            "Qwen 视觉模型未返回合法 JSON，无法完成课程视觉分析"
+        )
     if not isinstance(parsed, dict):
         raise QwenMultimodalAPIError("Qwen3-VL JSON 顶层必须是对象")
     return parsed
@@ -150,48 +158,66 @@ class QwenVisionClient:
         if image_bytes is not None and image_data_url is not None:
             raise ValueError("image_bytes 与 image_data_url 只能提供一个")
 
-        user_content: str | list[dict[str, Any]] = prompt
         image: bytes | str | None = image_bytes if image_bytes is not None else image_data_url
-        if image is not None:
-            user_content = [
-                {"type": "text", "text": prompt},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": _data_url(image, image_mime)},
-                },
-            ]
+        encoded_image = _data_url(image, image_mime) if image is not None else ""
+        last_parse_error: QwenMultimodalAPIError | None = None
+        for attempt in range(2):
+            attempt_prompt = prompt
+            if attempt:
+                attempt_prompt += (
+                    "\n\n上一次响应无法解析。请重新生成完整 JSON 对象：所有键和字符串使用双引号，"
+                    "不得使用 Markdown 代码块、注释、尾随逗号或 JSON 之外的文字。"
+                )
+            user_content: str | list[dict[str, Any]] = attempt_prompt
+            if encoded_image:
+                user_content = [
+                    {"type": "text", "text": attempt_prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": encoded_image},
+                    },
+                ]
 
-        payload = {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "你是严谨的电路图结构化分析器。请仅输出合法 JSON 对象，不要输出 Markdown。",
-                },
-                {"role": "user", "content": user_content},
-            ],
-            "temperature": 0,
-            "stream": False,
-            "response_format": {"type": "json_object"},
-            "enable_thinking": False,
-            "vl_high_resolution_images": True,
-            "max_completion_tokens": settings.qwen_vision_max_tokens,
-        }
-        try:
-            response = self._client.post(self.endpoint, json=payload)
-        except httpx.HTTPError as exc:
-            raise QwenMultimodalAPIError(f"无法连接 Qwen3-VL 服务：{exc}") from exc
-        if response.is_error:
-            raise _response_error(response, secrets=(self._api_key,))
-        try:
-            body = response.json()
-            choices = body.get("choices") or []
-            content = choices[0].get("message", {}).get("content") if choices else None
-        except (AttributeError, TypeError, ValueError) as exc:
-            raise QwenMultimodalAPIError("Qwen3-VL 返回了无法识别的响应结构") from exc
-        if content is None:
-            raise QwenMultimodalAPIError("Qwen3-VL 响应中没有可用的 JSON 内容")
-        return _parse_json_object(content)
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是严谨的课程视觉知识结构化分析器。"
+                            "请仅输出完整、合法的 JSON 对象，不要输出 Markdown。"
+                        ),
+                    },
+                    {"role": "user", "content": user_content},
+                ],
+                "temperature": 0,
+                "stream": False,
+                "response_format": {"type": "json_object"},
+                "enable_thinking": False,
+                "vl_high_resolution_images": True,
+                "max_completion_tokens": settings.qwen_vision_max_tokens,
+            }
+            try:
+                response = self._client.post(self.endpoint, json=payload)
+            except httpx.HTTPError as exc:
+                raise QwenMultimodalAPIError(f"无法连接 Qwen 视觉服务：{exc}") from exc
+            if response.is_error:
+                raise _response_error(response, secrets=(self._api_key,))
+            try:
+                body = response.json()
+                choices = body.get("choices") or []
+                content = choices[0].get("message", {}).get("content") if choices else None
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise QwenMultimodalAPIError("Qwen 视觉模型返回了无法识别的响应结构") from exc
+            if content is None:
+                raise QwenMultimodalAPIError("Qwen 视觉模型响应中没有可用的 JSON 内容")
+            try:
+                return _parse_json_object(content)
+            except QwenMultimodalAPIError as exc:
+                last_parse_error = exc
+        raise last_parse_error or QwenMultimodalAPIError(
+            "Qwen 视觉模型未返回合法 JSON"
+        )
 
 
 class QwenMultimodalEmbeddingClient:
