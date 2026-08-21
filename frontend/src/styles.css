@@ -753,6 +753,28 @@ button { color: inherit; }
 .graph-evidence-list article > span { color: #267e74; font-size: 8px; font-weight: 800; }
 .graph-evidence-list article p { margin: 5px 0; color: #506d69; font-size: 10px; line-height: 1.55; }
 .graph-evidence-list article small { color: #91a19e; font-size: 8px; overflow-wrap: anywhere; }
+.hierarchical-graph-toolbar { display: flex; align-items: center; justify-content: space-between; max-width: 1180px; margin: -7px auto 14px; padding: 10px 12px; background: #fff; border: 1px solid #dce7e4; border-radius: 13px; }
+.hierarchical-graph-toolbar .ant-segmented { color: #55726e; background: #edf4f2; font-size: 10px; }
+.hierarchical-graph-layout { display: grid; grid-template-columns: minmax(0, 1fr) 330px; min-height: 690px; max-width: 1180px; margin: auto; overflow: hidden; background: #fff; border: 1px solid #dce6e3; border-radius: 18px; box-shadow: 0 12px 35px rgba(34,76,70,.06); }
+.section-tree-panel { min-height: 690px; max-height: 760px; padding: 14px 12px 24px; overflow: auto; background: linear-gradient(180deg, #fbfdfc, #f4f8f6); }
+.section-tree-row { display: flex; align-items: stretch; min-height: 54px; margin: 3px 0; border-radius: 10px; transition: background .16s ease, box-shadow .16s ease; }
+.section-tree-row:hover { background: rgba(225,241,237,.7); }
+.section-tree-row.selected { background: #e6f3f0; box-shadow: inset 3px 0 #188077; }
+.section-tree-toggle { width: 28px; min-width: 28px; padding: 0; color: #64817d; cursor: pointer; background: transparent; border: 0; font-size: 16px; }
+.section-tree-toggle:disabled { color: #a6b7b3; cursor: default; }
+.section-tree-title { display: flex; flex: 1; min-width: 0; flex-direction: column; align-items: flex-start; justify-content: center; padding: 8px 10px 8px 2px; text-align: left; cursor: pointer; background: transparent; border: 0; }
+.section-tree-title strong { max-width: 100%; overflow: hidden; color: #214d49; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.section-tree-title span { margin-top: 4px; color: #839691; font-size: 9px; }
+.entity-network-panel { position: relative; min-height: 690px; overflow: hidden; background: radial-gradient(circle at center, rgba(221,242,237,.75), transparent 50%), #f9fcfa; }
+.entity-network-panel svg { width: 100%; height: 690px; }
+.entity-network-panel .graph-node.core circle { fill: #e18243; stroke: #fff4e9; stroke-width: 4; }
+.entity-network-panel .graph-legend { position: absolute; }
+.graph-legend i.core-entity { width: 9px; height: 9px; background: #e18243; border: 2px solid #fff0df; }
+.hierarchical-detail { max-height: 760px; overflow: auto; }
+.hierarchical-detail h3 { margin: 16px 0 5px; color: #315d59; font-size: 11px; }
+.hierarchical-chip-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; }
+.hierarchical-chip-list button { padding: 5px 8px; color: #496d68; cursor: pointer; background: #edf5f3; border: 1px solid #d5e6e2; border-radius: 12px; font-size: 9px; }
+.hierarchical-chip-list button.core { color: #a95325; background: #fff1e7; border-color: #f1cfb9; }
 .chapter-directory { max-width: 1180px; margin: 18px auto 0; padding: 22px; overflow: hidden; background: linear-gradient(135deg, #0b4e50 0%, #0a3e47 72%, #113b51 100%); border-radius: 18px; box-shadow: 0 16px 38px rgba(16,66,63,.13); }
 .chapter-directory-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
 .chapter-directory-heading > div > span { color: #79c9bd; font-size: 9px; font-weight: 800; letter-spacing: .14em; }
@@ -1474,6 +1496,9 @@ button { color: inherit; }
   .graph-scope-heading > div { align-items: flex-start; flex-direction: column; gap: 3px; }
   .graph-range-grid { grid-template-columns: 1fr; gap: 7px; }
   .graph-layout { display: block; }
+  .hierarchical-graph-layout { display: block; }
+  .hierarchical-graph-toolbar { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .section-tree-panel, .hierarchical-detail { min-height: 0; max-height: 540px; }
   .graph-detail { border-top: 1px solid #e1e9e7; border-left: 0; }
   .chapter-directory { padding: 17px; }
   .chapter-directory-heading { align-items: flex-start; flex-direction: column; gap: 13px; }

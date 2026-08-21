@@ -654,11 +654,16 @@ def knowledge_build_model_config() -> BuildModelConfig:
 @app.post("/api/kb/rebuild")
 async def rebuild_knowledge_base(payload: KnowledgeBaseRebuildRequest) -> dict[str, Any]:
     config = knowledge_build_model_config()
+    if not config.enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="未配置 QWEN_API_KEY，schema 4.0 图谱构建不能启动；旧活动索引保持不变。",
+        )
     try:
         build_state = knowledge_bases.start_build(
             payload.knowledge_base,
             chapter_limit=payload.chapter_limit,
-            model_config=config if config.enabled else None,
+            model_config=config,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -2605,11 +2610,16 @@ async def upload(
     build_state: dict[str, Any] | None = None
     if rebuild and indexable:
         build_model = knowledge_build_model_config()
+        if not build_model.enabled:
+            raise HTTPException(
+                status_code=503,
+                detail="文件已保存，但未配置 QWEN_API_KEY，schema 4.0 图谱构建未启动。",
+            )
         try:
             build_state = knowledge_bases.start_build(
                 knowledge_base,
                 chapter_limit=None,
-                model_config=build_model if build_model.enabled else None,
+                model_config=build_model,
                 display_name=normalized_display_name,
             )
         except RuntimeError as exc:

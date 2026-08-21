@@ -188,6 +188,26 @@ export type KnowledgeGraphNode = {
   aliases?: string[]
   symbols?: string[]
   display_name_source?: string
+  title?: string
+  level?: number
+  number?: string
+  title_path?: string[]
+  summary?: string
+  summary_token_count?: number
+  summary_claims?: Array<{ id: string; text: string; evidence_ids: string[] }>
+  entities?: string[]
+  core_entity_ids?: string[]
+  parent?: string | null
+  children?: string[]
+  page_start?: number | null
+  page_end?: number | null
+  evidence_ids?: string[]
+  raw_description?: string
+  section_id?: string
+  section_ids?: string[]
+  is_core?: boolean
+  core_score?: number
+  source_pages?: number[]
 }
 
 export type KnowledgeGraphEdge = {
@@ -199,6 +219,9 @@ export type KnowledgeGraphEdge = {
   evidence_ids?: string[]
   mention_ids?: string[]
   weight?: number
+  strength?: number
+  confidence?: number
+  description?: string
 }
 
 export type KnowledgeGraphCommunity = {
@@ -254,7 +277,7 @@ export type KnowledgeGraph = {
   edges: KnowledgeGraphEdge[]
   chapters?: ChapterKnowledgeSummary[]
   communities?: KnowledgeGraphCommunity[]
-  stats: { nodes: number; edges: number; concepts: number; entities?: number; semantic_relations?: number; relationship_mentions?: number; communities?: number; documents?: number; pages?: number; circuits?: number; components?: number; chapters?: number }
+  stats: { nodes: number; edges: number; concepts: number; entities?: number; sections?: number; core_entities?: number; semantic_relations?: number; relationship_mentions?: number; communities?: number; documents?: number; pages?: number; circuits?: number; components?: number; chapters?: number }
 }
 
 export type MistakeSource = 'question_bank' | 'ai_generated' | 'user_uploaded'

@@ -381,13 +381,40 @@ def _prepare_neo4j_graph(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Prepare semantic nodes/edges as Neo4j-safe flat property maps."""
 
+    entity_name_ids: dict[str, str] = {}
+    graph_node_ids: set[str] = set()
+    for node in graph.get("nodes", []):
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id", "")).strip()
+        if node_id:
+            graph_node_ids.add(node_id)
+        if node.get("type") != "entity":
+            continue
+        for name in [node.get("name"), *node.get("aliases", [])]:
+            normalized = str(name or "").strip().casefold()
+            if normalized and node_id:
+                entity_name_ids.setdefault(normalized, node_id)
     attribute_facts: dict[str, list[dict[str, Any]]] = {}
     for fact in graph.get("attribute_facts", []):
         if not isinstance(fact, dict):
             continue
         subject = str(fact.get("subject", "")).strip()
-        if subject:
-            attribute_facts.setdefault(subject, []).append(fact)
+        target_ids = [
+            str(value).strip() for value in fact.get("entity_ids", []) if str(value).strip()
+        ]
+        direct_target = str(fact.get("entity_id", "")).strip()
+        if direct_target:
+            target_ids.insert(0, direct_target)
+        if not target_ids and subject in graph_node_ids:
+            target_ids.append(subject)
+        if not target_ids:
+            named_target = entity_name_ids.get(subject.casefold(), "")
+            if named_target:
+                target_ids.append(named_target)
+        for target_id in dict.fromkeys(target_ids):
+            if target_id in graph_node_ids:
+                attribute_facts.setdefault(target_id, []).append(fact)
 
     community_memberships: dict[str, list[str]] = {}
     community_titles: dict[str, list[str]] = {}
@@ -455,7 +482,13 @@ def _prepare_neo4j_graph(
         relation_normalized = str(
             edge.get("relation_normalized") or relation_original
         ).strip()
-        relationship_type = _neo4j_token(relation_normalized, "RELATED")
+        graph_edge_type = str(edge.get("type", "")).strip()
+        relationship_type = _neo4j_token(
+            graph_edge_type
+            if graph_edge_type in {"parent_child", "concept_relation", "entity_section"}
+            else relation_normalized,
+            "RELATED",
+        )
         edge_id = str(edge.get("id", "")).strip() or str(uuid5(
             NAMESPACE_URL,
             f"{knowledge_base}:{source}:{relationship_type}:{target}:{position}",

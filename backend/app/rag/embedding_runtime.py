@@ -17,11 +17,16 @@ QWEN3_QUERY_PROMPT = (
 )
 
 
-def _key(model_path: Path) -> str:
-    return str(model_path.resolve())
+def _key(model_path: Path, device: str = "cpu") -> str:
+    return f"{model_path.resolve()}|{device}"
 
 
-def get_embedding_model(model_path: Path) -> tuple[Any, threading.RLock]:
+def get_embedding_model(
+    model_path: Path,
+    *,
+    device: str = "cpu",
+    use_half: bool = False,
+) -> tuple[Any, threading.RLock]:
     """Load one SentenceTransformer per process and serialize first initialization.
 
     SentenceTransformer/Transformers may temporarily construct parameters on the
@@ -30,13 +35,15 @@ def get_embedding_model(model_path: Path) -> tuple[Any, threading.RLock]:
     A process-wide registry prevents that race and also avoids duplicate RAM use.
     """
 
-    key = _key(model_path)
+    key = _key(model_path, device)
     with _registry_lock:
         model = _models.get(key)
         if model is None:
             from sentence_transformers import SentenceTransformer
 
-            model = SentenceTransformer(key, device="cpu")
+            model = SentenceTransformer(str(model_path.resolve()), device=device)
+            if use_half and device.startswith("cuda") and hasattr(model, "half"):
+                model.half()
             _models[key] = model
         encode_lock = _encode_locks.setdefault(key, threading.RLock())
         return model, encode_lock
@@ -49,8 +56,14 @@ def encode_texts(
     batch_size: int = 32,
     show_progress_bar: bool = False,
     purpose: str = "document",
+    device: str = "cpu",
+    use_half: bool = False,
 ) -> np.ndarray:
-    model, encode_lock = get_embedding_model(model_path)
+    model, encode_lock = get_embedding_model(
+        model_path,
+        device=device,
+        use_half=use_half,
+    )
     items = list(texts)
     encode_kwargs: dict[str, Any] = {}
     is_qwen3_embedding = "qwen3-embedding" in model_path.name.lower()
@@ -78,3 +91,22 @@ def reset_embedding_runtime_for_tests() -> None:
     with _registry_lock:
         _models.clear()
         _encode_locks.clear()
+
+
+def release_embedding_model(model_path: Path, *, device: str) -> None:
+    """Release a device-specific encoder after a bounded ingestion phase."""
+
+    key = _key(model_path, device)
+    with _registry_lock:
+        model = _models.pop(key, None)
+        _encode_locks.pop(key, None)
+    if model is not None:
+        del model
+    if device.startswith("cuda"):
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass

@@ -81,6 +81,12 @@ class KnowledgeUnit:
     statements: list[KnowledgeStatement] = field(default_factory=list)
     quality: dict[str, Any] = field(default_factory=dict)
     text_evidence: list[dict[str, Any]] = field(default_factory=list)
+    section_id: str = ""
+    section_path: list[str] = field(default_factory=list)
+    summary: str = ""
+    summary_claims: list[dict[str, Any]] = field(default_factory=list)
+    summary_confidence: float = 0.0
+    short_summary_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1145,6 +1151,10 @@ def knowledge_units_to_chunks(
                 parent_id=unit.id,
                 multimodal={
                     "knowledge_unit_id": unit.id,
+                    "section_id": unit.section_id,
+                    "section_path": unit.section_path,
+                    "summary": unit.summary,
+                    "summary_claims": unit.summary_claims,
                     "evidence_ids": unit.evidence_ids,
                     "knowledge_elements": unit.knowledge_elements,
                     "quality": unit.quality,

@@ -2564,4 +2564,4 @@ def build_semantic_knowledge_graph(
 
 
 def is_semantic_graph(graph: dict[str, Any]) -> bool:
-    return str(graph.get("schema_version", "")).startswith("3.")
+    return str(graph.get("schema_version", "")).startswith(("3.", "4."))

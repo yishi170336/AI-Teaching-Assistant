@@ -57,6 +57,11 @@ class HybridRetriever:
         )
         self.index = faiss.deserialize_index(serialized_index)
         self._circuit_index, self._circuit_items = self._open_local_circuit_index(faiss)
+        (
+            self._entity_index,
+            self._entity_items,
+            self._entity_relations,
+        ) = self._open_entity_graph_index(faiss)
         self._tokenized = [tokenize(self._search_text(chunk)) for chunk in self.chunks]
         self._bm25 = BM25Okapi(self._tokenized)
         self._cross_encoder = None
@@ -64,6 +69,38 @@ class HybridRetriever:
         self._qwen_multimodal_lock = threading.Lock()
         self._qwen_multimodal_client = self._open_qwen_multimodal()
         self._graph_chunks = self._load_graph_expansion()
+
+    def _open_entity_graph_index(
+        self, faiss_module: Any
+    ) -> tuple[Any | None, list[dict[str, Any]], list[dict[str, Any]]]:
+        graph_path = self.index_dir / "semantic_knowledge_graph.json"
+        manifest_path = self.index_dir / "entity_embedding_manifest.json"
+        index_path = self.index_dir / "entity_vectors.faiss"
+        if not (graph_path.is_file() and manifest_path.is_file() and index_path.is_file()):
+            return None, [], []
+        try:
+            graph = json.loads(graph_path.read_text(encoding="utf-8"))
+            if not str(graph.get("schema_version", "")).startswith("4."):
+                return None, [], []
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            items = list(manifest.get("entities", []))
+            serialized = np.frombuffer(index_path.read_bytes(), dtype=np.uint8)
+            index = faiss_module.deserialize_index(serialized)
+            if (
+                index.ntotal != len(items)
+                or int(manifest.get("dimension", 0)) != int(index.d)
+            ):
+                return None, [], []
+            relations = [
+                item for item in graph.get("edges", [])
+                if isinstance(item, dict)
+                and item.get("type") == "concept_relation"
+                and float(item.get("strength", 0.0) or 0.0) >= 7.0
+                and float(item.get("confidence", 0.0) or 0.0) >= 0.70
+            ]
+            return index, items, relations
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None, [], []
 
     def _open_qdrant(self) -> Any | None:
         qdrant_meta = self.meta.get("qdrant", {})
@@ -288,7 +325,66 @@ class HybridRetriever:
             if index >= 0
         }, "faiss")
 
-    def _graph_scores(self, query: str) -> dict[int, float]:
+    def _entity_graph_scores(
+        self, query: str, query_embedding: np.ndarray
+    ) -> dict[int, float]:
+        if self._entity_index is None or not self._entity_items:
+            return {}
+        query_lower = query.casefold()
+        exact_ids: set[str] = set()
+        for item in self._entity_items:
+            names = [str(item.get("name", "")), *map(str, item.get("aliases", []))]
+            if any(name and name.casefold() in query_lower for name in names):
+                exact_ids.add(str(item.get("entity_id", "")))
+        scores, indices = self._entity_index.search(
+            query_embedding.astype(np.float32), min(12, len(self._entity_items))
+        )
+        entity_scores: dict[str, float] = {}
+        entity_sections: dict[str, list[str]] = {}
+        for item in self._entity_items:
+            entity_sections[str(item.get("entity_id", ""))] = [
+                str(value) for value in item.get("section_ids", [])
+            ]
+        for score, row in zip(scores[0], indices[0]):
+            if row < 0 or row >= len(self._entity_items):
+                continue
+            entity_id = str(self._entity_items[int(row)].get("entity_id", ""))
+            if float(score) >= 0.55 or entity_id in exact_ids:
+                entity_scores[entity_id] = max(
+                    entity_scores.get(entity_id, 0.0),
+                    1.0 if entity_id in exact_ids else float(score),
+                )
+        for entity_id in exact_ids:
+            entity_scores[entity_id] = 1.0
+        direct_scores = dict(entity_scores)
+        for relation in self._entity_relations:
+            source, target = str(relation["source"]), str(relation["target"])
+            if source in direct_scores:
+                entity_scores[target] = max(
+                    entity_scores.get(target, 0.0), direct_scores[source] * 0.85
+                )
+            if target in direct_scores:
+                entity_scores[source] = max(
+                    entity_scores.get(source, 0.0), direct_scores[target] * 0.85
+                )
+        section_scores: dict[str, float] = {}
+        for entity_id, score in entity_scores.items():
+            for section_id in entity_sections.get(entity_id, []):
+                section_scores[section_id] = max(section_scores.get(section_id, 0.0), score)
+        return {
+            index: section_scores[section_id]
+            for index, chunk in enumerate(self.chunks)
+            if isinstance(chunk.multimodal, dict)
+            and (section_id := str(chunk.multimodal.get("section_id", ""))) in section_scores
+        }
+
+    def _graph_scores(
+        self, query: str, query_embedding: np.ndarray | None = None
+    ) -> dict[int, float]:
+        if query_embedding is not None:
+            entity_scores = self._entity_graph_scores(query, query_embedding)
+            if entity_scores:
+                return entity_scores
         query_lower = query.lower()
         query_terms = {token for token in tokenize(query) if len(token) > 1}
         matched: set[str] = set()
@@ -457,7 +553,12 @@ class HybridRetriever:
 
         vector_norm = self._normalize(vector_map)
         bm25_norm = self._normalize(bm25_map)
-        graph_map = self._graph_scores(query)
+        if getattr(self, "_entity_index", None) is not None:
+            graph_map = self._entity_graph_scores(query, query_embedding)
+            if not graph_map:
+                graph_map = self._graph_scores(query)
+        else:
+            graph_map = self._graph_scores(query)
         image_map = self._qwen_multimodal_scores(query, candidate_count)
         visual_candidate_count = max(
             candidate_count, settings.circuit_image_retrieval_candidates

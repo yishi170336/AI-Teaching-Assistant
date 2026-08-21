@@ -128,6 +128,7 @@ import {
   knowledgeBaseSourceUrl,
   KnowledgeExplanation,
   KnowledgeGraph,
+  KnowledgeGraphEdge,
   KnowledgeGraphEvidence,
   KnowledgeGraphNode,
   generateLearningPlanPpt,
@@ -2182,7 +2183,215 @@ const graphNodeName = (node?: KnowledgeGraphNode) => (
   node?.display_name?.trim() || node?.name?.trim() || ''
 )
 
+function HierarchicalKnowledgeGraphView({ graph }: { graph: KnowledgeGraph }) {
+  const [view, setView] = useState<'sections' | 'entities'>('sections')
+  const [coreOnly, setCoreOnly] = useState(true)
+  const [selectedId, setSelectedId] = useState('')
+  const [selectedEdgeKey, setSelectedEdgeKey] = useState('')
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [evidence, setEvidence] = useState<KnowledgeGraphEvidence[]>([])
+  const [evidenceLoading, setEvidenceLoading] = useState(false)
+  const sections = useMemo(
+    () => graph.nodes.filter((node) => node.type === 'section'),
+    [graph],
+  )
+  const allEntities = useMemo(
+    () => graph.nodes.filter((node) => node.type === 'entity'),
+    [graph],
+  )
+  const sectionMap = useMemo(
+    () => new Map(sections.map((node) => [node.id, node])),
+    [sections],
+  )
+  const entityMap = useMemo(
+    () => new Map(allEntities.map((node) => [node.id, node])),
+    [allEntities],
+  )
+  const conceptEdges = useMemo(
+    () => graph.edges.filter((edge) => edge.type === 'concept_relation'),
+    [graph],
+  )
+  const visibleEntities = useMemo(() => {
+    const values = coreOnly ? allEntities.filter((node) => node.is_core) : allEntities
+    const degree = new Map<string, number>()
+    conceptEdges.forEach((edge) => {
+      degree.set(edge.source, (degree.get(edge.source) || 0) + 1)
+      degree.set(edge.target, (degree.get(edge.target) || 0) + 1)
+    })
+    return [...values].sort((a, b) => (
+      (b.core_score || 0) - (a.core_score || 0)
+      || (degree.get(b.id) || 0) - (degree.get(a.id) || 0)
+      || graphNodeName(a).localeCompare(graphNodeName(b), 'zh-CN')
+    )).slice(0, coreOnly ? 80 : 140)
+  }, [allEntities, conceptEdges, coreOnly])
+  const visibleEntityIds = useMemo(
+    () => new Set(visibleEntities.map((node) => node.id)),
+    [visibleEntities],
+  )
+  const visibleEdges = useMemo(
+    () => conceptEdges.filter((edge) => visibleEntityIds.has(edge.source) && visibleEntityIds.has(edge.target)),
+    [conceptEdges, visibleEntityIds],
+  )
+  const positions = useMemo(() => {
+    const result = new Map<string, { x: number; y: number }>()
+    visibleEntities.forEach((node, index) => {
+      const ring = Math.floor(index / 24)
+      const start = ring * 24
+      const size = Math.min(24, visibleEntities.length - start)
+      const angle = Math.PI * 2 * (index - start) / Math.max(1, size) - Math.PI / 2
+      const radius = visibleEntities.length === 1 ? 0 : 130 + ring * 82
+      result.set(node.id, { x: 400 + Math.cos(angle) * radius, y: 350 + Math.sin(angle) * radius })
+    })
+    return result
+  }, [visibleEntities])
+  const selected = graph.nodes.find((node) => node.id === selectedId)
+  const edgeKey = (edge: KnowledgeGraphEdge) => `${edge.source}\u0000${edge.relation || edge.type}\u0000${edge.target}`
+  const selectedEdge = visibleEdges.find((edge) => edgeKey(edge) === selectedEdgeKey)
+
+  useEffect(() => {
+    const roots = sections.filter((node) => !node.parent)
+    setExpanded(new Set(roots.map((node) => node.id)))
+    setSelectedId(roots[0]?.id || sections[0]?.id || '')
+    setSelectedEdgeKey('')
+  }, [graph.knowledge_base])
+
+  const evidenceIds = selectedEdge?.evidence_ids || selected?.evidence_ids || []
+  useEffect(() => {
+    let active = true
+    setEvidence([])
+    if (!evidenceIds.length) {
+      setEvidenceLoading(false)
+      return () => { active = false }
+    }
+    setEvidenceLoading(true)
+    fetchKnowledgeGraphEvidence(graph.knowledge_base, evidenceIds)
+      .then((items) => { if (active) setEvidence(items) })
+      .catch(() => { if (active) setEvidence([]) })
+      .finally(() => { if (active) setEvidenceLoading(false) })
+    return () => { active = false }
+  }, [graph.knowledge_base, selectedId, selectedEdgeKey])
+
+  const toggleSection = (id: string) => {
+    setExpanded((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  const sectionRows: KnowledgeGraphNode[] = []
+  const visit = (node: KnowledgeGraphNode) => {
+    sectionRows.push(node)
+    if (!expanded.has(node.id)) return
+    ;(node.children || []).forEach((id) => {
+      const child = sectionMap.get(id)
+      if (child) visit(child)
+    })
+  }
+  sections.filter((node) => !node.parent).forEach(visit)
+  const selectedSectionEntities = selected?.type === 'section'
+    ? (selected.entities || []).map((id) => entityMap.get(id)).filter(Boolean) as KnowledgeGraphNode[]
+    : []
+  const selectedEntitySections = selected?.type === 'entity'
+    ? (selected.section_ids || []).map((id) => sectionMap.get(id)).filter(Boolean) as KnowledgeGraphNode[]
+    : []
+
+  return (
+    <section className="feature-view graph-view hierarchical-graph-view">
+      <div className="feature-heading">
+        <div><span>KNOWLEDGE MAP · SCHEMA 4.0</span><h1>层次化课程知识图谱</h1><p>章节树负责教材结构与摘要，实体关系图负责概念联系；每条结论均可追溯到 Paddle OCR 块级证据。</p></div>
+        <div className="feature-stats"><strong>{graph.stats.sections || sections.length}</strong><span>章节节点</span><strong>{graph.stats.entities || allEntities.length}</strong><span>知识实体</span><strong>{graph.stats.semantic_relations || conceptEdges.length}</strong><span>实体关系</span></div>
+      </div>
+      <div className="hierarchical-graph-toolbar">
+        <Segmented
+          value={view}
+          onChange={(value) => { setView(String(value) as 'sections' | 'entities'); setSelectedEdgeKey('') }}
+          options={[{ label: '章节树', value: 'sections' }, { label: '实体关系', value: 'entities' }]}
+        />
+        {view === 'entities' && <Segmented
+          value={coreOnly ? 'core' : 'all'}
+          onChange={(value) => setCoreOnly(value === 'core')}
+          options={[{ label: '核心实体', value: 'core' }, { label: '全部实体', value: 'all' }]}
+        />}
+      </div>
+      <div className="hierarchical-graph-layout">
+        {view === 'sections' ? (
+          <div className="section-tree-panel" role="tree" aria-label="教材章节树">
+            {sectionRows.map((section) => {
+              const hasChildren = Boolean(section.children?.length)
+              return <div className={`section-tree-row ${selectedId === section.id ? 'selected' : ''}`} key={section.id} style={{ paddingLeft: `${12 + (section.level || 0) * 20}px` }}>
+                <button type="button" className="section-tree-toggle" disabled={!hasChildren} onClick={() => toggleSection(section.id)} aria-label={hasChildren ? '展开或收起子章节' : '无子章节'}>{hasChildren ? (expanded.has(section.id) ? '−' : '+') : '·'}</button>
+                <button type="button" className="section-tree-title" onClick={() => { setSelectedId(section.id); setSelectedEdgeKey('') }}>
+                  <strong>{section.title || section.name}</strong>
+                  <span>{section.page_start ? `第 ${section.page_start}${section.page_end && section.page_end !== section.page_start ? `–${section.page_end}` : ''} 页` : '结构节点'} · {section.entities?.length || 0} 个实体</span>
+                </button>
+              </div>
+            })}
+          </div>
+        ) : (
+          <div className="entity-network-panel">
+            <svg viewBox="0 0 800 700" role="img" aria-label="实体水平关系图">
+              <g className="graph-edges">
+                {visibleEdges.map((edge) => {
+                  const from = positions.get(edge.source)
+                  const to = positions.get(edge.target)
+                  if (!from || !to) return null
+                  const key = edgeKey(edge)
+                  return <g key={key} className={`graph-edge ${selectedEdgeKey === key ? 'selected' : ''}`} role="button" tabIndex={0} onClick={() => { setSelectedEdgeKey(key); setSelectedId('') }}>
+                    <line className="graph-edge-hit" x1={from.x} y1={from.y} x2={to.x} y2={to.y} />
+                    <line className="graph-edge-line" x1={from.x} y1={from.y} x2={to.x} y2={to.y} />
+                    <text className="graph-edge-label" x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 4}>{(edge.relation || '关联').slice(0, 10)}</text>
+                  </g>
+                })}
+              </g>
+              <g>
+                {visibleEntities.map((entity) => {
+                  const position = positions.get(entity.id) || { x: 400, y: 350 }
+                  return <g key={entity.id} className={`graph-node entity ${entity.is_core ? 'core' : ''} ${selectedId === entity.id ? 'selected' : ''}`} transform={`translate(${position.x} ${position.y})`} role="button" tabIndex={0} onClick={() => { setSelectedId(entity.id); setSelectedEdgeKey('') }}>
+                    <circle r={entity.is_core ? 18 : 13} />
+                    <text y={30}>{graphNodeName(entity).slice(0, 14)}</text>
+                  </g>
+                })}
+              </g>
+            </svg>
+            <div className="graph-legend"><span><i className="entity" />实体</span><span><i className="core-entity" />核心实体</span><span><i className="relation" />概念关系</span></div>
+          </div>
+        )}
+        <aside className="graph-detail hierarchical-detail">
+          {selectedEdge ? <>
+            <span>概念关系 · 强度 {selectedEdge.strength?.toFixed(1) || '—'} · 置信度 {selectedEdge.confidence ? `${Math.round(selectedEdge.confidence * 100)}%` : '—'}</span>
+            <h2>{selectedEdge.relation || '关联'}</h2>
+            <p><InlineMath content={graphNodeName(entityMap.get(selectedEdge.source)) || selectedEdge.source} /> → <InlineMath content={graphNodeName(entityMap.get(selectedEdge.target)) || selectedEdge.target} /></p>
+            {selectedEdge.description && <p>{selectedEdge.description}</p>}
+          </> : selected?.type === 'section' ? <>
+            <span>第 {selected.level || 0} 级章节</span><h2><InlineMath content={selected.title || selected.name} /></h2>
+            <p>{selected.summary || '该节点仅用于补全目录结构，没有可摘要的直接正文。'}</p>
+            {selectedSectionEntities.length > 0 && <div className="hierarchical-chip-list">{selectedSectionEntities.map((entity) => <button type="button" key={entity.id} className={entity.is_core ? 'core' : ''} onClick={() => { setView('entities'); setSelectedId(entity.id) }}>{entity.name}</button>)}</div>}
+          </> : selected?.type === 'entity' ? <>
+            <span>{selected.entity_type}{selected.is_core ? ' · 核心实体' : ''} · 核心分 {selected.core_score?.toFixed(2) || '—'}</span><h2><InlineMath content={graphNodeName(selected)} /></h2>
+            {selected.aliases?.length ? <p>别名：{selected.aliases.join('、')}</p> : null}
+            {selected.raw_description && <><h3>原始描述</h3><p>{selected.raw_description}</p></>}
+            {selected.description && <><h3>邻域增强描述</h3><p>{selected.description}</p></>}
+            {selectedEntitySections.length > 0 && <p>所属章节：{selectedEntitySections.map((section) => section.title || section.name).join('、')}</p>}
+          </> : <><Network size={28} /><h2>选择节点或关系</h2><p>查看章节摘要、实体描述、所属章节以及原始证据。</p></>}
+          <div className="graph-evidence-title">块级证据</div>
+          {evidenceLoading && <div className="graph-evidence-state"><LoaderCircle className="spin" size={15} /> 正在读取证据…</div>}
+          {!evidenceLoading && evidence.length > 0 && <div className="graph-evidence-list">{evidence.slice(0, 12).map((item) => <article key={item.id}><span>{item.modality} {item.page ? `· 第 ${item.page} 页` : ''}</span><p>{item.text || item.caption || item.description}</p><small>{item.id}</small></article>)}</div>}
+          {!evidenceLoading && !evidence.length && <div className="graph-evidence-state">当前选择没有可展示的证据块。</div>}
+        </aside>
+      </div>
+    </section>
+  )
+}
+
 function KnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loading: boolean }) {
+  if (loading) return <div className="workspace-empty"><LoaderCircle className="spin" /><strong>正在整理知识图谱…</strong></div>
+  if (!graph?.nodes.length) return <div className="workspace-empty"><Network /><strong>当前知识库还没有图谱数据</strong><p>重建知识库后会从教材正文与电路图中抽取知识实体和原始关系。</p></div>
+  if (graph.schema_version?.startsWith('4.')) return <HierarchicalKnowledgeGraphView graph={graph} />
+  return <LegacyKnowledgeGraphView graph={graph} loading={false} />
+}
+
+function LegacyKnowledgeGraphView({ graph, loading }: { graph?: KnowledgeGraph; loading: boolean }) {
   const [selectedId, setSelectedId] = useState('')
   const [selectedEdgeKey, setSelectedEdgeKey] = useState('')
   const [selectedEvidence, setSelectedEvidence] = useState<KnowledgeGraphEvidence[]>([])

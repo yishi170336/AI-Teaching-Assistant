@@ -19,12 +19,13 @@ from openpyxl import load_workbook
 from backend.app.config import settings
 from backend.app.rag.models import PageDocument, TextChunk
 from backend.app.rag.embedding_runtime import encode_texts
-from backend.app.rag.graphrag_adapter import (
-    audit_microsoft_graphrag,
-    run_microsoft_graphrag,
+from backend.app.rag.hierarchical_graph import (
+    SCHEMA_VERSION as HIERARCHICAL_GRAPH_SCHEMA_VERSION,
+    build_hierarchical_summary_entity_graph,
+    compile_hierarchical_knowledge_document,
+    project_legacy_graph,
 )
 from backend.app.rag.knowledge_document import (
-    compile_knowledge_document,
     enrich_formula_knowledge,
     enrich_knowledge_statements,
     knowledge_units_to_chunks,
@@ -50,15 +51,11 @@ from backend.app.rag.multimodal import (
     LayoutElement,
     SCANNED_PAGE_PLACEHOLDER,
     audit_visual_semantics,
-    build_chapter_knowledge_summaries,
-    build_local_knowledge_graph,
     enhance_pdf,
     multimodal_chunks,
 )
 from backend.app.rag.semantic_graph import (
     audit_semantic_graph_quality,
-    bind_chapter_knowledge_points,
-    build_semantic_knowledge_graph,
     is_semantic_graph,
 )
 from backend.app.rag.stores import build_qdrant_indexes, sync_neo4j_graph
@@ -751,6 +748,51 @@ def validate_section_semantics(
     }
 
 
+def repair_section_provenance(documents: Iterable[PageDocument]) -> int:
+    """Apply only page-visible structural corrections and proven inheritance.
+
+    This runs after Paddle layout correction and before the hard section gate. It
+    fixes structural transitions such as ``本章小结``/``习题`` and prevents a
+    carried heading from being falsely labelled as a heading found on the page.
+    """
+
+    repaired = 0
+    by_source: dict[str, list[PageDocument]] = {}
+    for document in documents:
+        by_source.setdefault(document.source, []).append(document)
+    for source_documents in by_source.values():
+        previous_section = ""
+        previous_chapter = ""
+        for document in sorted(source_documents, key=lambda item: item.page):
+            extra = document.extra if isinstance(document.extra, dict) else {}
+            visible_structural = visible_structural_section(document.text)
+            if visible_structural and document.section != visible_structural:
+                document.section = visible_structural
+                extra["ocr_section_source"] = "structural-heading"
+                extra["ocr_section_corrected"] = True
+                extra["ocr_section_correction_reason"] = "visible-structural-heading"
+                for block in extra.get("text_blocks", []):
+                    if isinstance(block, dict):
+                        block["section"] = visible_structural
+                repaired += 1
+            elif (
+                str(extra.get("ocr_section_source", "")) == "page-text"
+                and previous_section == document.section
+                and previous_chapter == document.chapter
+                and not _section_is_visible_on_page(
+                    document.section, document.text, extra.get("text_blocks")
+                )
+            ):
+                extra["ocr_section_source"] = "inherited"
+                extra["ocr_section_corrected"] = True
+                extra["ocr_section_correction_reason"] = "proven-previous-page-inheritance"
+                repaired += 1
+            document.extra = extra
+            previous_section = document.section or previous_section
+            previous_chapter = document.chapter or previous_chapter
+    return repaired
+
+
 def validate_graph_semantics(
     chunks: list[TextChunk],
     graph: dict[str, Any],
@@ -763,9 +805,13 @@ def validate_graph_semantics(
             for node in graph.get("nodes", [])
             if node.get("type") == "entity" and str(node.get("name", "")).strip()
         }
+        schema4 = str(graph.get("schema_version", "")).startswith("4.")
         relationships = [
             edge for edge in graph.get("edges", [])
-            if edge.get("source") and edge.get("target") and edge.get("relation")
+            if edge.get("source")
+            and edge.get("target")
+            and edge.get("relation")
+            and (not schema4 or edge.get("type") == "concept_relation")
         ]
         if len(textbook_chunks) >= 12 and not relationships:
             raise RuntimeError(
@@ -968,6 +1014,7 @@ def build_knowledge_base(
     source_count = max(1, len(source_files))
     paddle_ocr_client: PaddleOCRVLClient | None = None
     paddle_ocr_runtime: dict[str, Any] = {}
+    paddle_ocr_memory_audit: dict[str, Any] = {}
     try:
         for source_index, path in enumerate(source_files):
             report(
@@ -1024,17 +1071,32 @@ def build_knowledge_base(
             )
     finally:
         if paddle_ocr_client is not None:
+            paddle_ocr_memory_audit = dict(
+                getattr(paddle_ocr_client, "memory_audit", {})
+            )
             paddle_ocr_client.close()
+    if (
+        str(paddle_ocr_memory_audit.get("device", "")).startswith("gpu")
+        and float(paddle_ocr_memory_audit.get("peak_reserved_mib", 0.0) or 0.0) > 3072
+    ):
+        raise RuntimeError(
+            "PaddleOCR-VL GPU 显存质量门禁失败：进程峰值保留显存 "
+            f"{paddle_ocr_memory_audit['peak_reserved_mib']} MiB 超过 3072 MiB；"
+            "旧活动索引不会被替换。"
+        )
+    repaired_section_provenance = repair_section_provenance(documents)
     report(47, "section_validation", "正在校验章节标题、目录映射与继承顺序")
     section_quality = validate_section_semantics(documents)
+    section_quality["repaired_section_provenance"] = repaired_section_provenance
     (output_dir / "section_quality_audit.json").write_text(
         json.dumps(section_quality, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    if section_quality["status"] == "failed":
+    if section_quality["status"] != "passed":
         raise RuntimeError(
             "章节语义质检失败：检测到 "
-            f"{section_quality['critical_issues']} 个高风险标题问题，"
+            f"{section_quality['critical_issues']} 个高风险标题问题、"
+            f"{len(section_quality.get('issues', [])) - int(section_quality['critical_issues'])} 个警告，"
             "请检查 section_quality_audit.json；旧索引不会被替换。"
         )
     structured_questions = {
@@ -1057,13 +1119,25 @@ def build_knowledge_base(
             f"{visual_quality['critical_issues']} 个图片/表格语义或公式职责边界冲突"
         )
 
-    report(49, "knowledge_document", "正在融合正文、公式、课程图片和表格知识")
-    knowledge_units = compile_knowledge_document(documents, elements)
+    report(49, "section_tree", "正在按目录、标题编号和版面证据构建完整章节树")
+    knowledge_units, section_nodes = compile_hierarchical_knowledge_document(
+        documents, elements
+    )
     if not knowledge_units:
         raise RuntimeError(f"在 {resources_dir} 中没有编译出可用的教材知识单元")
-    document_client = (
-        CompatibleMultimodalClient(model_config)
+    graph_model_config = (
+        replace(
+            model_config,
+            provider="qwen",
+            model="qwen3.7-flash",
+            enable_thinking=False,
+        )
         if model_config and model_config.enabled
+        else None
+    )
+    document_client = (
+        CompatibleMultimodalClient(graph_model_config)
+        if graph_model_config and graph_model_config.enabled
         else None
     )
     knowledge_units = enrich_formula_knowledge(
@@ -1076,14 +1150,33 @@ def build_knowledge_base(
         document_client,
         cache_path=output_dir / "knowledge_statements.jsonl",
     )
+    report(55, "section_summaries", "正在生成章节摘要与块级 claim 证据")
+    report(60, "knowledge_graph", "正在依次抽取实体、关系并执行邻域增强与智能去重")
+    semantic_graph, semantic_audit, knowledge_units = (
+        build_hierarchical_summary_entity_graph(
+            knowledge_units,
+            section_nodes,
+            output_dir,
+            document_client,
+            embedding_model_path,
+            embedding_encoder=encode_texts,
+        )
+    )
+    if semantic_audit.get("status") != "passed":
+        (output_dir / "semantic_quality_audit.json").write_text(
+            json.dumps(semantic_audit, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        raise RuntimeError(
+            "层次化知识图谱质量门禁失败；请查看 semantic_quality_audit.json，"
+            "旧活动索引不会被替换。"
+        )
     write_knowledge_document(knowledge_units, output_dir)
 
-    report(52, "chunking", "正在按教材语义单元切分文本并整理多模态证据")
+    report(64, "chunking", "正在按章节内容单元生成正文与多模态检索块")
     chunks = knowledge_units_to_chunks(knowledge_units) + multimodal_chunks(elements)
     if not chunks:
         raise RuntimeError(f"在 {resources_dir} 中没有提取到可索引内容")
     extraction_quality = validate_extracted_content(chunks)
-
     chunk_path = output_dir / "chunks.jsonl"
     chunk_path.write_text(
         "\n".join(json.dumps(chunk.to_dict(), ensure_ascii=False) for chunk in chunks),
@@ -1096,54 +1189,18 @@ def build_knowledge_base(
     (output_dir / "cleaning_audit.json").write_text(
         json.dumps(cleaning_audits, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-
-    report(55, "semantic_text_units", "正在生成教材语义单元与 GraphRAG 输入")
-    graph_model_config = model_config
-    if (
-        model_config
-        and model_config.provider == "qwen"
-        and settings.qwen_graph_model
-    ):
-        graph_model_config = replace(
-            model_config,
-            model="qwen3.7-flash",
-            enable_thinking=False,
-        )
-    report(60, "knowledge_graph", "正在使用 Microsoft GraphRAG 构建实体关系与社区")
-    if graph_model_config and graph_model_config.enabled:
-        semantic_graph, semantic_audit = run_microsoft_graphrag(
-            knowledge_units,
-            output_dir,
-            graph_model_config,
-            embedding_model_path,
-        )
-    else:
-        # Unit tests and explicitly offline deployments retain a deterministic
-        # fallback; production Qwen builds always take the Microsoft path.
-        semantic_graph = build_semantic_knowledge_graph(
-            documents,
-            elements,
-            client=None,
-            extraction_cache_path=output_dir / "semantic_extractions.jsonl",
-        )
-        semantic_audit = audit_semantic_graph_quality(semantic_graph)
-    chapter_summaries = build_chapter_knowledge_summaries(chunks)
-    semantic_chapters, chapter_alignment = bind_chapter_knowledge_points(
-        chapter_summaries, semantic_graph.get("nodes", [])
-    )
-    semantic_graph["chapters"] = semantic_chapters
-    semantic_graph.setdefault("stats", {})["chapter_alignment"] = chapter_alignment
-    if str(semantic_graph.get("schema_version", "")).startswith("3.4-microsoft"):
-        semantic_audit = audit_microsoft_graphrag(semantic_graph)
-    else:
-        semantic_audit = audit_semantic_graph_quality(semantic_graph)
-    semantic_audit["chapter_alignment"] = chapter_alignment
+    chapter_summaries = semantic_graph.get("chapters", [])
+    semantic_chapters = chapter_summaries
+    chapter_alignment = {
+        "method": "section-tree-direct",
+        "chapters": len(chapter_summaries),
+        "unmatched": 0,
+    }
     (output_dir / "semantic_quality_audit.json").write_text(
         json.dumps(semantic_audit, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     semantic_quality = validate_graph_semantics(chunks, semantic_graph, semantic_audit)
-    legacy_graph = build_local_knowledge_graph(chunks)
-    legacy_graph["chapters"] = chapter_summaries
+    legacy_graph = project_legacy_graph(semantic_graph)
     (output_dir / "knowledge_graph.json").write_text(
         json.dumps(legacy_graph, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -1153,7 +1210,7 @@ def build_knowledge_base(
     (output_dir / "chapter_knowledge_points.json").write_text(
         json.dumps(
             {
-                "schema_version": "2.0-semantic-entities",
+                "schema_version": HIERARCHICAL_GRAPH_SCHEMA_VERSION,
                 "chapters": semantic_chapters,
                 "alignment": chapter_alignment,
             },
@@ -1220,7 +1277,7 @@ def build_knowledge_base(
     report(85, "indexing", "正在写入向量索引")
     qdrant_status = build_qdrant_indexes(output_dir, chunks, embeddings)
     neo4j_status = (
-        sync_neo4j_graph(knowledge_base_id or output_dir.name, legacy_graph)
+        sync_neo4j_graph(knowledge_base_id or output_dir.name, semantic_graph)
         if sync_graph_store
         else {"enabled": False, "reason": "deferred until atomic index activation"}
     )
@@ -1228,7 +1285,7 @@ def build_knowledge_base(
     formula_processing = _formula_pipeline_stats(output_dir, elements)
     metadata = {
         "state": "populated",
-        "schema_version": "2.3-circuit-image-retrieval",
+        "schema_version": HIERARCHICAL_GRAPH_SCHEMA_VERSION,
         "resource_dir": str(resources_dir),
         "embedding_model": str(embedding_model_path),
         "dimension": int(embeddings.shape[1]),
@@ -1243,6 +1300,7 @@ def build_knowledge_base(
             "model": "not-used",
             "reason": "knowledge base contains no PDF documents",
         },
+        "ocr_gpu_memory": paddle_ocr_memory_audit,
         "questions": 0,
         "excluded_sources": excluded_sources,
         "chunks": len(chunks),
@@ -1260,7 +1318,7 @@ def build_knowledge_base(
         },
         "semantic_knowledge_graph": {
             "display_only": False,
-            "provider": semantic_graph.get("stats", {}).get("extraction_method", "fallback"),
+            "provider": "hierarchical-summary-entity",
             "nodes": len(semantic_graph["nodes"]),
             "edges": len(semantic_graph["edges"]),
             "chapters": len(semantic_chapters),
@@ -1335,8 +1393,8 @@ def build_knowledge_base(
             "status": "ready",
             "knowledge_document": "book_knowledge_document.json",
             "knowledge_units": len(knowledge_units),
-            "graphrag_provider": semantic_graph.get("stats", {}).get("extraction_method", "fallback"),
-            "graphrag_model": semantic_graph.get("stats", {}).get("extraction_model", "rule"),
+            "graph_builder": "hierarchical-summary-entity",
+            "graph_model": "qwen3.7-flash" if document_client else "offline-test-only",
             "embedding_model": Path(embedding_model_path).name,
             "vector_store": qdrant_status.get("mode", "faiss") if qdrant_status.get("enabled") else "faiss",
             "vector_points": len(chunks),
@@ -1350,8 +1408,8 @@ def build_knowledge_base(
             ),
             "graph_nodes": len(legacy_graph["nodes"]),
             "graph_edges": len(legacy_graph["edges"]),
-            "semantic_preview_nodes": len(semantic_graph["nodes"]),
-            "semantic_preview_edges": len(semantic_graph["edges"]),
+            "semantic_nodes": len(semantic_graph["nodes"]),
+            "semantic_edges": len(semantic_graph["edges"]),
             "chapter_summaries": len(chapter_summaries),
             "graph_store": "neo4j" if neo4j_status.get("enabled") else "local-json",
         },

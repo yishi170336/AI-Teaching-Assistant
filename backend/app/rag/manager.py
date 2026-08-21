@@ -332,9 +332,15 @@ class KnowledgeBaseManager:
             }
         graph = json.loads(path.read_text(encoding="utf-8"))
         enrich_semantic_display_names(graph)
+        schema_version = str(graph.get("schema_version", ""))
+        schema4 = schema_version.startswith("4.")
         nodes = [
             node for node in graph.get("nodes", [])
-            if isinstance(node, dict) and node.get("type") == "entity"
+            if isinstance(node, dict)
+            and (
+                node.get("type") in {"section", "entity"}
+                if schema4 else node.get("type") == "entity"
+            )
         ]
         allowed_ids = {str(node.get("id")) for node in nodes}
         edges = [
@@ -363,9 +369,16 @@ class KnowledgeBaseManager:
             "stats": {
                 "nodes": len(nodes),
                 "edges": len(edges),
-                "concepts": len(nodes),
-                "entities": len(nodes),
-                "semantic_relations": len(edges),
+                "concepts": sum(node.get("type") == "entity" for node in nodes),
+                "entities": sum(node.get("type") == "entity" for node in nodes),
+                "sections": sum(node.get("type") == "section" for node in nodes),
+                "core_entities": sum(
+                    node.get("type") == "entity" and bool(node.get("is_core"))
+                    for node in nodes
+                ),
+                "semantic_relations": sum(
+                    edge.get("type") == "concept_relation" for edge in edges
+                ) if schema4 else len(edges),
                 "relationship_mentions": len(graph.get("relationship_mentions", [])),
                 "communities": len(communities),
                 "chapters": len(chapters),

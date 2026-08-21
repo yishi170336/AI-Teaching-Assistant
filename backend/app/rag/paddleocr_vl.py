@@ -512,10 +512,22 @@ class PaddleOCRVLClient:
             pipeline_version=pipeline_version,
         )
         self.model = PADDLEOCR_VL_MODEL_ID
+        if device.startswith("gpu") and torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
 
     @property
     def cache_identity(self) -> dict[str, str]:
         return self.runtime.to_dict()
+
+    @property
+    def memory_audit(self) -> dict[str, float | str]:
+        if not self.runtime.device.startswith("gpu") or not self._torch.cuda.is_available():
+            return {"device": self.runtime.device, "peak_allocated_mib": 0.0, "peak_reserved_mib": 0.0}
+        return {
+            "device": self.runtime.device,
+            "peak_allocated_mib": round(self._torch.cuda.max_memory_allocated() / 1024**2, 2),
+            "peak_reserved_mib": round(self._torch.cuda.max_memory_reserved() / 1024**2, 2),
+        }
 
     def predict_page(
         self,
