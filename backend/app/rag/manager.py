@@ -16,6 +16,10 @@ from uuid import uuid4
 from backend.app.config import settings
 from backend.app.rag.pipeline import KnowledgeBaseBuildCancelled
 from backend.app.rag.retriever import HybridRetriever
+from backend.app.rag.retrieval_regression import (
+    audit_retrieval_regression,
+    load_regression_cases,
+)
 from backend.app.rag.multimodal import BuildModelConfig
 from backend.app.rag.multimodal import (
     build_chapter_knowledge_summaries,
@@ -727,6 +731,48 @@ class KnowledgeBaseManager:
             candidate = await asyncio.to_thread(
                 HybridRetriever, staging_dir, settings.embedding_model_path
             )
+            baseline = previous
+            temporary_baseline = False
+            try:
+                if baseline is None and final_dir.exists():
+                    baseline = await asyncio.to_thread(
+                        HybridRetriever, final_dir, self._index_embedding_model(final_dir)
+                    )
+                    temporary_baseline = True
+                regression_cases = load_regression_cases(
+                    settings.root_dir / "config" / "knowledge_graph_regression_questions.json"
+                )
+                retrieval_regression = await asyncio.to_thread(
+                    audit_retrieval_regression,
+                    candidate,
+                    baseline,
+                    cases=regression_cases,
+                )
+            except Exception:
+                candidate.close()
+                raise
+            finally:
+                if temporary_baseline and baseline is not None:
+                    baseline.close()
+            (staging_dir / "retrieval_regression_audit.json").write_text(
+                json.dumps(retrieval_regression, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            meta.setdefault("validation", {})["retrieval_regression"] = {
+                key: value
+                for key, value in retrieval_regression.items()
+                if key != "results"
+            }
+            (staging_dir / "index_meta.json").write_text(
+                json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            if retrieval_regression.get("status") != "passed":
+                candidate.close()
+                raise RuntimeError(
+                    "候选索引固定题集 A/B 检索回归失败："
+                    f"{retrieval_regression.get('regressions', 0)} 类问题低于当前活动索引；"
+                    "旧活动索引保持不变。"
+                )
             candidate.close()
             ensure_not_cancelled()
             self._update_progress(knowledge_base, 94, "activating", "正在原子切换新索引")

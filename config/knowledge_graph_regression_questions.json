@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0-fixed-course-retrieval-ab",
+  "cases": [
+    {
+      "id": "section-retrieval",
+      "category": "章节检索",
+      "query": "PN结形成时空间电荷区、扩散运动和漂移运动之间有什么关系？",
+      "expected_terms": ["PN结", "空间电荷区", "扩散", "漂移"]
+    },
+    {
+      "id": "formula-question",
+      "category": "公式问答",
+      "query": "二极管伏安特性方程表示什么，各参数有什么含义？",
+      "expected_terms": ["二极管", "伏安特性", "正向"]
+    },
+    {
+      "id": "table-question",
+      "category": "表格问答",
+      "query": "N型半导体与P型半导体的多数载流子和少数载流子如何对比？",
+      "expected_terms": ["N型半导体", "P型半导体", "多数载流子", "少数载流子"]
+    },
+    {
+      "id": "course-image-question",
+      "category": "课程图片",
+      "query": "共射放大电路图中基极、集电极和发射极周围元件分别起什么作用？",
+      "expected_terms": ["共射", "基极", "集电极", "发射极"]
+    },
+    {
+      "id": "alias-question",
+      "category": "别名检索",
+      "query": "p-n结在正向偏置时为什么能够导通？",
+      "expected_terms": ["PN结", "正向偏置", "导通"]
+    },
+    {
+      "id": "cross-section-relation",
+      "category": "跨章节关系",
+      "query": "静态工作点如何影响晶体管放大电路的非线性失真？",
+      "expected_terms": ["静态工作点", "晶体管", "放大", "失真"]
+    }
+  ]
+}
