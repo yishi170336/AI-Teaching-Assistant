@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import fitz
 import pytest
@@ -40,6 +41,7 @@ from backend.app.rag.multimodal import (
     _ocr_scanned_pages,
     _page_cleaning_decisions,
     _page_ocr_cache_identity_is_compatible,
+    _write_page_ocr_cache,
     _reuse_near_complete_page_ocr_cache,
     _safe_partial_noise_fragment,
     _summarize_table,
@@ -159,6 +161,27 @@ def test_page_ocr_cache_reuses_pinned_local_pages_when_switching_to_api():
         {**local_entry, "model_revision": "outdated-local-revision"},
         api_identity,
     )
+
+
+def test_page_ocr_cache_retries_transient_windows_replace_lock(tmp_path, monkeypatch):
+    cache_path = tmp_path / "lesson.page_ocr.jsonl"
+    original_replace = Path.replace
+    attempts = 0
+
+    def transient_replace(path, target):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("transient reader lock")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", transient_replace)
+    monkeypatch.setattr("backend.app.rag.multimodal.time.sleep", lambda _seconds: None)
+
+    _write_page_ocr_cache(cache_path, {1: {"page": 1, "text": "cached"}})
+
+    assert attempts == 3
+    assert json.loads(cache_path.read_text(encoding="utf-8"))["page"] == 1
 
 
 def test_legacy_qwen_page_ocr_cache_is_invalidated_and_replaced(tmp_path):

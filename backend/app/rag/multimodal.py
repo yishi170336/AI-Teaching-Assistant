@@ -8,6 +8,7 @@ import logging
 import math
 import mimetypes
 import re
+import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -708,7 +709,17 @@ def _write_page_ocr_cache(path: Path, entries: dict[int, dict[str, Any]]) -> Non
         ),
         encoding="utf-8",
     )
-    temporary.replace(path)
+    for attempt in range(6):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            # Windows readers and antivirus scanners can briefly hold the old
+            # JSONL file open. Keep the fully written temporary file and retry
+            # the atomic swap instead of losing the just-completed OCR page.
+            if attempt == 5:
+                raise
+            time.sleep(0.1 * (attempt + 1))
 
 
 def _page_ocr_cache_identity_is_compatible(
