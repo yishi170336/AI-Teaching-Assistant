@@ -120,6 +120,12 @@ class KnowledgeBaseManager:
     def index_dir(self, knowledge_base: str) -> Path:
         return settings.vector_stores_dir / self.validate_id(knowledge_base)
 
+    def candidate_dir(self, knowledge_base: str) -> Path:
+        """Return the stable resumable candidate directory for a schema-4 build."""
+
+        knowledge_base = self.validate_id(knowledge_base)
+        return self.index_dir(knowledge_base).parent / f".{knowledge_base}-schema4-candidate"
+
     @staticmethod
     def _index_embedding_model(index_dir: Path) -> Path:
         """Use the checkpoint that created an existing index during migration.
@@ -555,7 +561,7 @@ class KnowledgeBaseManager:
             **current,
             "state": "cancelling",
             "stage": "cancelling",
-            "message": "正在停止构建并清理未完成缓存",
+            "message": "正在停止构建；已完成的 OCR 和分阶段缓存将保留",
             "cancellable": False,
             "updated_at": self._now(),
         }
@@ -592,6 +598,10 @@ class KnowledgeBaseManager:
             if temporary.is_dir():
                 await asyncio.to_thread(delete_qdrant_indexes, temporary)
                 await asyncio.to_thread(shutil.rmtree, temporary, True)
+        candidate_dir = self.candidate_dir(knowledge_base)
+        if candidate_dir.exists():
+            await asyncio.to_thread(delete_qdrant_indexes, candidate_dir)
+            await asyncio.to_thread(shutil.rmtree, candidate_dir, True)
         self._states.pop(knowledge_base, None)
         self._tasks.pop(knowledge_base, None)
         self._processes.pop(knowledge_base, None)
@@ -689,12 +699,22 @@ class KnowledgeBaseManager:
                 previous.close()
             resource_dir = self.resource_dir(knowledge_base)
             resource_dir.mkdir(parents=True, exist_ok=True)
-            staging_dir = final_dir.parent / f".{knowledge_base}.building-{uuid4().hex}"
-            self._update_progress(knowledge_base, 2, "staging", "正在准备隔离构建目录")
-            if final_dir.exists():
-                await asyncio.to_thread(shutil.copytree, final_dir, staging_dir)
+            staging_dir = self.candidate_dir(knowledge_base)
+            if staging_dir.exists():
+                self._update_progress(
+                    knowledge_base,
+                    2,
+                    "resuming",
+                    "正在从已保存的 PaddleOCR 和图谱阶段缓存续建",
+                )
             else:
-                staging_dir.mkdir(parents=True, exist_ok=False)
+                self._update_progress(
+                    knowledge_base, 2, "staging", "正在准备可续跑的隔离候选目录"
+                )
+                if final_dir.exists():
+                    await asyncio.to_thread(shutil.copytree, final_dir, staging_dir)
+                else:
+                    staging_dir.mkdir(parents=True, exist_ok=False)
             ensure_not_cancelled()
             staged_qdrant = staging_dir / "qdrant"
             if staged_qdrant.exists():
@@ -823,7 +843,7 @@ class KnowledgeBaseManager:
                 "state": "cancelled",
                 "progress": 0,
                 "stage": "cancelled",
-                "message": "构建进程已终止，正在后台清理缓存",
+                "message": "构建进程已终止，已保留 OCR 和图谱阶段缓存",
                 "cancellable": False,
                 "updated_at": cancelled_at,
                 "completed_at": cancelled_at,
@@ -848,7 +868,7 @@ class KnowledgeBaseManager:
                 "state": "error",
                 "documents": 0,
                 "chunks": 0,
-                "message": str(exc),
+                "message": f"{exc}；已保留候选缓存，下次重建将自动续跑",
                 "available": knowledge_base in self._retrievers,
                 "progress": 0,
                 "stage": "error",
@@ -867,15 +887,10 @@ class KnowledgeBaseManager:
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.wait()
-            if staging_dir is not None and staging_dir.exists():
-                try:
-                    await asyncio.to_thread(delete_qdrant_indexes, staging_dir)
-                finally:
-                    await asyncio.to_thread(shutil.rmtree, staging_dir, True)
             if was_cancelled and knowledge_base in self._states:
                 self._states[knowledge_base] = {
                     **self._states[knowledge_base],
-                    "message": "构建已取消，未完成缓存已清理",
+                    "message": "构建已取消，已完成的 OCR 和图谱阶段缓存已保留，可直接续跑",
                     "updated_at": self._now(),
                 }
 

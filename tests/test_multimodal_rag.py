@@ -1091,7 +1091,7 @@ def test_index_activation_replaces_complete_directory(tmp_path):
     assert not staging.exists()
 
 
-def test_background_build_reports_progress_and_cleans_cache_on_cancel(tmp_path, monkeypatch):
+def test_background_build_reports_progress_and_preserves_cache_on_cancel(tmp_path, monkeypatch):
     resources = tmp_path / "resources"
     indexes = tmp_path / "indexes"
     resources.mkdir()
@@ -1126,11 +1126,32 @@ def test_background_build_reports_progress_and_cleans_cache_on_cancel(tmp_path, 
 
         status = manager.statuses()[0]
         assert status["state"] == "cancelled"
-        assert "缓存已清理" in status["message"]
-        assert not list(indexes.glob(".cancel-me.building-*"))
-        assert any(name.startswith(".cancel-me.building-") for name in cleaned_qdrant)
+        assert "缓存已保留" in status["message"]
+        candidate = indexes / ".cancel-me-schema4-candidate"
+        assert candidate.is_dir()
+        assert cleaned_qdrant == []
 
     asyncio.run(scenario())
+
+
+def test_load_existing_preserves_resumable_candidate(tmp_path, monkeypatch):
+    resources_root = tmp_path / "resources"
+    indexes_root = tmp_path / "indexes"
+    resources_root.mkdir()
+    indexes_root.mkdir()
+    candidate = indexes_root / ".course-schema4-candidate"
+    candidate.mkdir()
+    checkpoint = candidate / "lesson.page_ocr.jsonl"
+    checkpoint.write_text('{"page": 1}\n', encoding="utf-8")
+    monkeypatch.setattr(manager_module, "settings", replace(
+        manager_module.settings,
+        resources_dir=resources_root,
+        vector_stores_dir=indexes_root,
+    ))
+
+    KnowledgeBaseManager().load_existing()
+
+    assert checkpoint.read_text(encoding="utf-8") == '{"page": 1}\n'
 
 
 def test_knowledge_base_display_name_supports_chinese_and_infers_source_title():
