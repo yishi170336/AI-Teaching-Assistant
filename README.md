@@ -7,7 +7,7 @@
 - 学生端对话答题及图片/文档附件识别使用页面当前配置的模型；私有思考字段不会返回前端。
 - LangGraph 编排的大模型路由 Agent、答疑 Agent、检索 Agent、出题 Agent、学习规划 Agent 和 SymPy 验算 Agent；学习规划会结合知识库资料生成可执行路线。
 - 图片出题先提取“电路拓扑、已知量、特殊条件、待求量”蓝图；连续“再出一道”会沿用最近生成题，同类题不调用知识库检索并必须通过同构校验。
-- 教材清洗、章节/段落语义切分、章/节/原始页码元数据、384 维向量化和 populated FAISS/Qdrant 索引；Excel/JSON 题库与课程知识库严格隔离。
+- 教材页面完整保留、章节/段落语义切分、章/节/原始页码元数据、1024 维向量化和 populated FAISS/Qdrant 索引；Excel/JSON 题库与课程知识库严格隔离。
 - 向量语义检索 + BM25 关键词检索 + 规则重排。
 - FastAPI、CORS、统一异常处理、日志、POST SSE 真正 token 流式输出、上传与后台重建知识库。
 - Redis 最近 N 轮会话记忆；Redis 不可用时自动切换本地持久化记忆，服务重启后仍可执行出题去重。
@@ -191,14 +191,14 @@ Excel/JSON 题库不会进入 RAG 知识库，也不会参与检索或图谱构�
 新版建库同时产出以下可审计数据：
 
 - `<教材名>.page_ocr.jsonl`：PaddleOCR-VL 的逐页 OCR、版面块、bbox/polygon、置信度、阅读顺序修正、运行时版本与原始结果缓存；旧 Qwen OCR schema 不会复用。
-- `cleaning_audit.json`：`qwen3.7-flash`/规则对每页的保留或丢弃决定及原因，原 PDF 永不物理修改。
+- `cleaning_audit.json`：页面清洗已禁用的直通审计；每页固定 `keep=true`，不删除习题、噪声页或任何原文片段。
 - `multimodal_elements.jsonl`：文本、公式、表格、图片、电路图的页码、块级证据 ID、bbox/polygon、置信度、阅读顺序、原图路径和内容哈希。
 - `artifacts/`：从 PDF 提取的原始图片。
 - `book_knowledge_document.json` / `.md`：将完整 OCR 正文与经验证的电路图、公式、表格和普通图片语义合并为 GraphRAG 知识文档；图号、式号和局部符号只作证据，不作实体。
 - `graphrag/`：Microsoft GraphRAG 2.7.2 生成的 TextUnit、实体、关系、Leiden 社区、社区报告、Parquet 与 LanceDB 向量库。
 - `semantic_knowledge_graph.json`：带原文 TextUnit 证据的语义图谱；配置 Neo4j 后优先同步该图谱。`knowledge_graph.json` 仅保留为旧检索链路的兼容产物。
 - `chapter_knowledge_points.json`：按教材章节归档的知识点、证据数量与来源页；学生端可从知识图谱下方进入章节窗口查看。
-- `pipeline_audit.json`：清洗、解析、模态处理、融合、检索和应用六层状态与数量审计。
+- `pipeline_audit.json`：页面输入、解析、模态处理、融合、检索和应用六层状态与数量审计。
 - `qdrant/`：Linux/macOS 未配置 `QDRANT_URL` 时可使用 Qdrant 嵌入式持久化；同时保留 `vectors.faiss` 兼容回退。
 
 完整处理顺序为：PDF 页使用本地或 API PaddleOCR-VL 1.6 解析（逐页缓存优先）→ 几何阅读顺序校正与低置信度关键区域高清重试 → Paddle 版面块与 PDF-Extract-Kit 定位去重 → Qwen 只对课程相关图片与表格做有证据总结 → 章节树、章节摘要、实体与关系抽取、邻域增强和智能去重 → 本地 `Qwen3-Embedding-0.6B` 向量化 → Qdrant/FAISS + BM25 + Neo4j/本地图融合检索。新图不使用 Microsoft GraphRAG/Leiden；校验失败的候选索引不会被激活。

@@ -60,7 +60,7 @@ PARTIAL_NOISE_MARKERS = (
     "扫码", "公众号", "购买正版", "资源下载", "广告", "网址", "http://", "https://",
 )
 
-PAGE_CLEANING_POLICY_VERSION = "2.1-exercise-range-fallback"
+PAGE_CLEANING_POLICY_VERSION = "disabled-pass-through-v1"
 
 SCANNED_PAGE_PLACEHOLDER = "[本页主要包含电路图、公式或其他图形内容]"
 PAGE_OCR_SCHEMA_VERSION = PADDLEOCR_VL_SCHEMA_VERSION
@@ -2378,11 +2378,6 @@ def enhance_pdf(
         if settings.qwen_api_key
         else None
     )
-    cleaning_client = (
-        CompatibleMultimodalClient(model_config)
-        if model_config and model_config.enabled
-        else None
-    )
     owns_ocr_client = False
     if (
         ocr_client is None
@@ -2412,82 +2407,36 @@ def enhance_pdf(
         for item in page_documents
     }
     audit_path = output_dir / f"{path.stem}.cleaning_audit.json"
-    decisions: dict[int, dict[str, Any]] = {}
-    if audit_path.exists():
-        try:
-            cached_audit = json.loads(audit_path.read_text(encoding="utf-8"))
-            expected_method = (
-                f"llm:{cleaning_client.config.provider}/{cleaning_client.config.model}"
-                if cleaning_client
-                else "rule"
-            )
-            decisions = {
-                int(item["page"]): item
-                for item in cached_audit
-                if isinstance(item, dict)
-                and item.get("method") == expected_method
-                and item.get("cleaning_policy_version") == PAGE_CLEANING_POLICY_VERSION
-                and item.get("document_hash") == document_hash
-                and item.get("page_text_hash") == page_text_hashes.get(int(item["page"]))
-            }
-        except Exception:
-            decisions = {}
-    if not all(item.page in decisions for item in page_documents):
-        decisions = _page_cleaning_decisions(page_documents, cleaning_client)
-    # Re-apply safety policy to cached audits as the policy may become stricter
-    # between builds even when the source document and model are unchanged.
-    for page_document in page_documents:
-        decision = decisions.setdefault(
-            page_document.page,
-            {
-                "page": page_document.page,
-                "source_page": page_document.source_page or page_document.page,
-                "keep": True,
-                "page_type": "course_content",
-                "reason": "默认保留课程内容",
-                "method": "rule",
-                "cleaning_policy_version": PAGE_CLEANING_POLICY_VERSION,
-                "remove_fragments": [],
-            },
-        )
-        requested = decision.get(
-            "requested_remove_fragments", decision.get("remove_fragments", [])
-        )
-        decision["requested_remove_fragments"] = requested
-        decision["remove_fragments"] = [
-            fragment for fragment in requested
-            if _safe_partial_noise_fragment(str(fragment))
-        ]
-        if (
-            not decision.get("keep", True)
-            and decision.get("page_type") != "exercise"
-            and (
-                extract_course_concepts(page_document.text)
-                or re.search(r"[=+−±√∫ΣΩπ^_]", page_document.text)
-            )
-        ):
-            decision["keep"] = True
-            decision["reason"] = "检测到课程概念或公式，安全策略强制保留"
-        decision["cleaning_policy_version"] = PAGE_CLEANING_POLICY_VERSION
-    for decision in decisions.values():
-        decision["document_hash"] = document_hash
-        try:
-            decision["page_text_hash"] = page_text_hashes.get(int(decision["page"]), "")
-        except (TypeError, ValueError):
-            decision["page_text_hash"] = ""
-    kept_docs: list[PageDocument] = []
-    for item in page_documents:
-        decision = decisions.get(item.page, {})
-        if not decision.get("keep", True):
-            continue
-        cleaned_text = item.text
-        removed_characters = 0
-        for fragment in decision.get("remove_fragments", []):
-            if fragment in cleaned_text:
-                cleaned_text = cleaned_text.replace(fragment, "")
-                removed_characters += len(fragment)
-        decision["removed_characters"] = removed_characters
-        kept_docs.append(replace(item, text=cleaned_text.strip()))
+    # Page cleaning is intentionally disabled. Preserve every OCR page and every
+    # character so exercises, appendices and publication matter remain available
+    # to the later section/evidence pipeline. The pass-through audit is written
+    # immediately, before visual calls, so an interrupted build is still auditable.
+    decisions: dict[int, dict[str, Any]] = {
+        item.page: {
+            "page": item.page,
+            "source_page": item.source_page or item.page,
+            "keep": True,
+            "page_type": "unfiltered",
+            "reason": "页面清洗已禁用，原页完整保留",
+            "method": "disabled",
+            "cleaning_policy_version": PAGE_CLEANING_POLICY_VERSION,
+            "requested_remove_fragments": [],
+            "remove_fragments": [],
+            "removed_characters": 0,
+            "document_hash": document_hash,
+            "page_text_hash": page_text_hashes[item.page],
+        }
+        for item in page_documents
+    }
+    audit_path.write_text(
+        json.dumps(
+            [decisions[number] for number in sorted(decisions)],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    kept_docs = list(page_documents)
     page_meta = {item.page: item for item in kept_docs}
     allowed_pages = set(page_meta)
     external = _external_pdf_extract_elements(path)

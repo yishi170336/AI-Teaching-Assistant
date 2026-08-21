@@ -14,7 +14,7 @@ from backend.app.rag.pipeline import build_knowledge_base
 from backend.app.rag.multimodal import BuildModelConfig
 
 
-def _cleaning_model_config() -> BuildModelConfig | None:
+def _knowledge_model_config() -> BuildModelConfig | None:
     if settings.deepseek_api_key:
         return BuildModelConfig(
             provider="deepseek",
@@ -33,7 +33,7 @@ def _cleaning_model_config() -> BuildModelConfig | None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="清洗课程资料并构建混合检索向量库")
+    parser = argparse.ArgumentParser(description="完整保留课程资料并构建混合检索知识库")
     parser.add_argument("--knowledge-base", default="default", help="知识库标识")
     parser.add_argument(
         "--resources-dir",
@@ -50,7 +50,7 @@ def main() -> None:
     parser.add_argument(
         "--without-multimodal-llm",
         action="store_true",
-        help="不调用 DeepSeek 做语义清洗和电路图理解，仅运行可审计的本地降级流程",
+        help="不调用文本结构化模型，仅运行可审计的本地测试降级流程",
     )
     parser.add_argument(
         "--defer-graph-store-sync",
@@ -74,7 +74,7 @@ def main() -> None:
         model_config=(
             None
             if args.without_multimodal_llm
-            else _cleaning_model_config()
+            else _knowledge_model_config()
         ),
         knowledge_base_id=args.knowledge_base,
         sync_graph_store=not args.defer_graph_store_sync,

@@ -23,6 +23,7 @@ from backend.app.rag.paddleocr_vl import (
 )
 from backend.app.rag.pipeline import KnowledgeBaseBuildCancelled
 from backend.app.rag.multimodal import (
+    BuildModelConfig,
     LayoutElement,
     CIRCUIT_ANALYSIS_SCHEMA_VERSION,
     PAGE_OCR_SCHEMA_VERSION,
@@ -952,6 +953,54 @@ def test_rule_page_cleaning_excludes_exercise_range_until_next_chapter():
     ]
     assert decisions[2]["page_type"] == "exercise"
     assert decisions[3]["page_type"] == "exercise"
+
+
+def test_enhance_pdf_disables_page_cleaning_and_keeps_every_page(
+    tmp_path,
+    monkeypatch,
+):
+    pdf_path = tmp_path / "unfiltered.pdf"
+    pdf = fitz.open()
+    pdf.new_page(width=500, height=700)
+    pdf.new_page(width=500, height=700)
+    pdf.save(pdf_path)
+    pdf.close()
+    documents = [
+        PageDocument("版权信息与二维码", pdf_path.name, 1, "封面", "版权页"),
+        PageDocument("习题\n1. 分析电路。", pdf_path.name, 2, "习题", "习题"),
+    ]
+    monkeypatch.setattr(PDFExtractKitAdapter, "available", property(lambda _self: False))
+    monkeypatch.setattr(
+        "backend.app.rag.multimodal.settings",
+        replace(
+            __import__("backend.app.rag.multimodal", fromlist=["settings"]).settings,
+            qwen_api_key="",
+        ),
+    )
+
+    kept, _elements, audit = enhance_pdf(
+        pdf_path,
+        documents,
+        tmp_path / "index",
+        model_config=BuildModelConfig(
+            provider="qwen",
+            model="qwen3.7-flash",
+            api_key="must-not-be-used",
+            base_url="https://example.invalid",
+        ),
+    )
+
+    assert [item.page for item in kept] == [1, 2]
+    assert all(item["keep"] is True for item in audit)
+    assert all(item["method"] == "disabled" for item in audit)
+    assert all(item["page_type"] == "unfiltered" for item in audit)
+    assert all(item["removed_characters"] == 0 for item in audit)
+    persisted = json.loads(
+        (tmp_path / "index" / "unfiltered.cleaning_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert persisted == audit
 
 
 def test_waveform_figure_is_not_promoted_to_circuit_when_vision_fails(monkeypatch):

@@ -469,7 +469,7 @@ def question_chunks(questions: Iterable[dict[str, Any]]) -> list[TextChunk]:
 
 def _write_clean_markdown(path: Path, documents: list[PageDocument], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    lines = [f"# {path.stem}", "", f"> 清洗来源：{path.name}", ""]
+    lines = [f"# {path.stem}", "", f"> 原始来源：{path.name}（页面清洗已禁用）", ""]
     last_chapter = last_section = ""
     for document in documents:
         if document.chapter and document.chapter != last_chapter:
@@ -1055,14 +1055,6 @@ def build_knowledge_base(
                     chapter_limit=chapter_limit,
                     ocr_client=paddle_ocr_client,
                 )
-                repeated_noise = _edge_noise([item.text for item in extracted])
-                extracted = [
-                    replace(
-                        item,
-                        text=clean_page_text(item.text, repeated_noise) or item.text,
-                    )
-                    for item in extracted
-                ]
                 documents.extend(extracted)
                 elements.extend(pdf_elements)
                 cleaning_audits.extend(
@@ -1079,8 +1071,8 @@ def build_knowledge_base(
                 _write_clean_markdown(path, extracted, cleaned_dir)
             report(
                 10 + int((source_index + 1) / source_count * 35),
-                "document_cleaning",
-                f"已完成 {path.name} 的解析与清洗",
+                "document_parsing",
+                f"已完成 {path.name} 的完整页面解析（未执行页面清洗）",
             )
     finally:
         if paddle_ocr_client is not None:
@@ -1373,12 +1365,10 @@ def build_knowledge_base(
     }
     metadata["pipeline_layers"] = {
         "document_cleaning": {
-            "status": "ready",
-            "pages_reviewed": len(cleaning_audits),
-            "pages_discarded": metadata["discarded_pages"],
-            "partial_characters_removed": sum(
-                int(item.get("removed_characters", 0)) for item in cleaning_audits
-            ),
+            "status": "disabled",
+            "pages_preserved": len(cleaning_audits),
+            "pages_discarded": 0,
+            "partial_characters_removed": 0,
             "question_banks_excluded": len(excluded_sources),
         },
         "document_parsing": {
