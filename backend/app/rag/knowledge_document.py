@@ -12,8 +12,8 @@ from backend.app.rag.multimodal import LayoutElement
 from backend.app.rag.ontology import extract_course_concepts
 
 
-KNOWLEDGE_DOCUMENT_SCHEMA_VERSION = "2.0-textbook-atomic-statements"
-KNOWLEDGE_STATEMENT_SCHEMA_VERSION = "1.2-multimodal-coverage-facts"
+KNOWLEDGE_DOCUMENT_SCHEMA_VERSION = "3.0-paddle-layout-block-evidence"
+KNOWLEDGE_STATEMENT_SCHEMA_VERSION = "2.0-block-grounded-facts"
 GRAPH_BLOCK_TYPES = {"paragraph", "list_item"}
 IGNORED_GRAPH_BLOCK_TYPES = {
     "chapter_heading",
@@ -47,6 +47,7 @@ class KnowledgeStatement:
     source_page: int = 0
     modality: str = "text"
     confidence: float = 0.0
+    evidence_metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -79,6 +80,7 @@ class KnowledgeUnit:
     knowledge_elements: list[dict[str, Any]] = field(default_factory=list)
     statements: list[KnowledgeStatement] = field(default_factory=list)
     quality: dict[str, Any] = field(default_factory=dict)
+    text_evidence: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -251,6 +253,62 @@ def _page_body(document: PageDocument) -> str:
     return "\n\n".join(kept)
 
 
+def _document_text_evidence(document: PageDocument) -> list[dict[str, Any]]:
+    extra = document.extra if isinstance(document.extra, dict) else {}
+    blocks = extra.get("text_blocks", [])
+    evidence: list[dict[str, Any]] = []
+    if isinstance(blocks, list):
+        for index, block in enumerate(blocks, 1):
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type", "paragraph"))
+            text = _compact(str(block.get("text", "")))
+            if block_type not in GRAPH_BLOCK_TYPES or not text:
+                continue
+            evidence.append({
+                "id": str(
+                    block.get(
+                        "id",
+                        f"ocr:{document.source}:p{int(document.source_page or document.page)}:b{index}",
+                    )
+                ),
+                "page": int(document.source_page or document.page),
+                "modality": "text",
+                "block_type": block_type,
+                "text": text,
+                "bbox": list(block.get("bbox", [])),
+                "polygon": list(block.get("polygon", [])),
+                "confidence": float(block.get("confidence", 0.0) or 0.0),
+                "processor": str(block.get("source_engine", extra.get("ocr_processor", ""))),
+                "model_revision": str(block.get("model_revision", "")),
+                "reading_order": int(block.get("reading_order", index) or index),
+                "corrections": list(block.get("corrections", [])),
+                "chapter": str(block.get("chapter", document.chapter)),
+                "section": str(block.get("section", document.section)),
+            })
+    if evidence:
+        return evidence
+    text = _page_body(document)
+    if not text:
+        return []
+    return [{
+        "id": f"ocr:{document.source}:p{int(document.source_page or document.page)}",
+        "page": int(document.source_page or document.page),
+        "modality": "text",
+        "block_type": "paragraph",
+        "text": text,
+        "bbox": list(document.bbox or []),
+        "polygon": [],
+        "confidence": 1.0 if not extra.get("ocr_processor") else 0.0,
+        "processor": str(extra.get("ocr_processor", "native-document")),
+        "model_revision": "",
+        "reading_order": 1,
+        "corrections": [],
+        "chapter": document.chapter,
+        "section": document.section,
+    }]
+
+
 def _component_summary(components: Iterable[dict[str, Any]]) -> str:
     values: list[str] = []
     for component in components:
@@ -317,6 +375,11 @@ def _element_record(element: LayoutElement) -> tuple[dict[str, Any], str]:
         "confidence": confidence,
         "uncertain": bool(element.uncertain),
         "included_in_graph": bool(semantic),
+        "processor": element.processor,
+        "polygon": element.polygon,
+        "ocr_block_id": element.ocr_block_id,
+        "evidence_metadata": element.evidence_metadata,
+        "table_cells": list(element.evidence_metadata.get("table_cells", [])),
     }
     return record, semantic
 
@@ -327,7 +390,7 @@ def compile_knowledge_document(
     *,
     target_chars: int = 2600,
 ) -> list[KnowledgeUnit]:
-    """Compile OCR prose and verified visual semantics into coherent units."""
+    """Compile layout-scoped OCR evidence and verified visual semantics."""
 
     element_map: dict[tuple[str, int], list[LayoutElement]] = {}
     for element in elements:
@@ -342,9 +405,46 @@ def compile_knowledge_document(
         if document.doc_type in {"question", "exercise"}:
             continue
         source_page = int(document.source_page or document.page)
-        knowledge_elements: list[dict[str, Any]] = []
-        supplements: list[str] = []
-        warnings: list[str] = []
+        text_evidence = _document_text_evidence(document)
+        segments: list[dict[str, Any]] = []
+        for evidence in sorted(
+            text_evidence, key=lambda item: int(item.get("reading_order", 0))
+        ):
+            chapter = str(evidence.get("chapter", document.chapter)) or document.chapter
+            section = str(evidence.get("section", document.section)) or document.section
+            if (
+                not segments
+                or segments[-1]["chapter"] != chapter
+                or segments[-1]["section"] != section
+            ):
+                segments.append({
+                    "chapter": chapter,
+                    "section": section,
+                    "text_evidence": [],
+                    "knowledge_elements": [],
+                    "supplements": [],
+                    "warnings": [],
+                })
+            segments[-1]["text_evidence"].append(evidence)
+        if not segments:
+            segments.append({
+                "chapter": document.chapter,
+                "section": document.section,
+                "text_evidence": [],
+                "knowledge_elements": [],
+                "supplements": [],
+                "warnings": [],
+            })
+
+        extra = document.extra if isinstance(document.extra, dict) else {}
+        block_context = {
+            str(block.get("id", "")): (
+                str(block.get("chapter", document.chapter)),
+                str(block.get("section", document.section)),
+            )
+            for block in extra.get("text_blocks", [])
+            if isinstance(block, dict) and block.get("id")
+        }
         for element in sorted(
             element_map.get((document.source, source_page), []),
             key=lambda item: (item.reading_order, item.bbox[1] if len(item.bbox) == 4 else 0),
@@ -352,30 +452,54 @@ def compile_knowledge_document(
             if element.element_type == "text":
                 continue
             record, semantic = _element_record(element)
-            knowledge_elements.append(record)
+            context = block_context.get(
+                str(element.ocr_block_id or element.id),
+                (element.chapter or document.chapter, element.section or document.section),
+            )
+            target = next(
+                (
+                    segment
+                    for segment in reversed(segments)
+                    if segment["chapter"] == context[0]
+                    and segment["section"] == context[1]
+                ),
+                segments[-1],
+            )
+            target["knowledge_elements"].append(record)
             if semantic:
-                supplements.append(semantic)
+                target["supplements"].append(semantic)
             elif element.uncertain:
-                warnings.append(f"{element.id}: uncertain {element.element_type}")
+                target["warnings"].append(
+                    f"{element.id}: uncertain {element.element_type}"
+                )
 
-        body = _page_body(document)
-        graph_text = "\n\n".join(part for part in [body, *supplements] if part).strip()
-        if not graph_text:
-            continue
-        page_records.append({
-            "source": document.source,
-            "chapter": document.chapter,
-            "section": document.section,
-            "page": source_page,
-            "graph_text": graph_text,
-            "source_text": document.text.strip(),
-            "evidence_ids": [
-                f"ocr:{document.source}:p{source_page}",
-                *[str(item["id"]) for item in knowledge_elements],
-            ],
-            "knowledge_elements": knowledge_elements,
-            "warnings": warnings,
-        })
+        for segment in segments:
+            segment_evidence = list(segment["text_evidence"])
+            body = "\n\n".join(
+                str(item.get("text", "")) for item in segment_evidence
+                if str(item.get("text", "")).strip()
+            )
+            graph_text = "\n\n".join(
+                part for part in [body, *segment["supplements"]] if part
+            ).strip()
+            if not graph_text:
+                continue
+            knowledge_elements = list(segment["knowledge_elements"])
+            page_records.append({
+                "source": document.source,
+                "chapter": segment["chapter"],
+                "section": segment["section"],
+                "page": source_page,
+                "graph_text": graph_text,
+                "source_text": body or document.text.strip(),
+                "evidence_ids": list(dict.fromkeys([
+                    *[str(item["id"]) for item in segment_evidence],
+                    *[str(item["id"]) for item in knowledge_elements],
+                ])),
+                "text_evidence": segment_evidence,
+                "knowledge_elements": knowledge_elements,
+                "warnings": list(segment["warnings"]),
+            })
 
     units: list[KnowledgeUnit] = []
     current: list[dict[str, Any]] = []
@@ -385,7 +509,21 @@ def compile_knowledge_document(
         if not current:
             return
         first, last = current[0], current[-1]
-        text = "\n\n".join(str(item["graph_text"]) for item in current).strip()
+        text = ""
+        previous: dict[str, Any] | None = None
+        for item in current:
+            part = str(item["graph_text"]).strip()
+            join_continuation = bool(
+                text
+                and previous
+                and int(item["page"]) == int(previous["page"]) + 1
+                and not previous.get("knowledge_elements")
+                and not item.get("knowledge_elements")
+                and not re.search(r"[。！？；;：:]\s*$", text)
+                and not re.match(r"^(?:[-—•·●○]|\d+[.、])", part)
+            )
+            text = f"{text}{part}" if join_continuation else f"{text}\n\n{part}".strip()
+            previous = item
         source_text = "\n\n".join(
             f"[第 {item['page']} 页]\n{item['source_text']}" for item in current
         ).strip()
@@ -400,6 +538,11 @@ def compile_knowledge_document(
             for element in item["knowledge_elements"]
         ]
         warnings = [warning for item in current for warning in item["warnings"]]
+        text_evidence = [
+            evidence
+            for item in current
+            for evidence in item.get("text_evidence", [])
+        ]
         chapter = str(first["chapter"])
         section = str(first["section"])
         units.append(KnowledgeUnit(
@@ -419,7 +562,9 @@ def compile_knowledge_document(
             quality={
                 "status": "review" if warnings else "verified",
                 "warnings": warnings,
+                "block_evidence_count": len(text_evidence),
             },
+            text_evidence=text_evidence,
         ))
         current = []
 
@@ -428,7 +573,7 @@ def compile_knowledge_document(
             current[-1]["source"] == item["source"]
             and current[-1]["chapter"] == item["chapter"]
             and current[-1]["section"] == item["section"]
-            and int(current[-1]["page"]) + 1 == int(item["page"])
+            and int(item["page"]) - int(current[-1]["page"]) in {0, 1}
         )
         projected = sum(len(str(value["graph_text"])) for value in current) + len(
             str(item["graph_text"])
@@ -657,19 +802,21 @@ def enrich_knowledge_statements(
     输入："""
 
     for unit in values:
-        page_sources = [
-            {
-                "id": f"ocr:{unit.source}:p{int(match.group(1))}",
-                "page": int(match.group(1)),
-                "modality": "text",
-                "text": match.group(2),
-            }
-            for match in re.finditer(
-                r"\[第\s*(\d+)\s*页\]\s*\n(.*?)(?=\n\n\[第\s*\d+\s*页\]|\Z)",
-                unit.source_text,
-                flags=re.S,
-            )
-        ]
+        page_sources = [dict(source) for source in unit.text_evidence]
+        if not page_sources:
+            page_sources = [
+                {
+                    "id": f"ocr:{unit.source}:p{int(match.group(1))}",
+                    "page": int(match.group(1)),
+                    "modality": "text",
+                    "text": match.group(2),
+                }
+                for match in re.finditer(
+                    r"\[第\s*(\d+)\s*页\]\s*\n(.*?)(?=\n\n\[第\s*\d+\s*页\]|\Z)",
+                    unit.source_text,
+                    flags=re.S,
+                )
+            ]
         if not page_sources:
             page_sources = [{
                 "id": unit.evidence_ids[0] if unit.evidence_ids else unit.id,
@@ -689,6 +836,12 @@ def enrich_knowledge_statements(
                 ))),
                 "caption": str(element.get("caption", "")),
                 "confidence": float(element.get("knowledge_confidence", element.get("confidence", 0)) or 0),
+                "bbox": list(element.get("bbox", [])),
+                "polygon": list(element.get("polygon", [])),
+                "processor": str(element.get("processor", "")),
+                "ocr_block_id": element.get("ocr_block_id"),
+                "table_cells": list(element.get("table_cells", [])),
+                "evidence_metadata": dict(element.get("evidence_metadata", {})),
             }
             for element in unit.knowledge_elements
             if element.get("included_in_graph")
@@ -763,16 +916,19 @@ evidence_source_id 必须逐字复制对应 id；evidence_text 必须是该 sour
                 _write_jsonl_cache(cache_path, cache)
 
         evidence_sources = [
-            (
-                str(source.get("text", "")),
-                str(source.get("id", "")),
-                int(source.get("page", unit.page_start) or unit.page_start),
-                str(source.get("modality", "text")),
-            )
+            {
+                **source,
+                "text": str(source.get("text", "")),
+                "id": str(source.get("id", "")),
+                "page": int(source.get("page", unit.page_start) or unit.page_start),
+                "modality": str(source.get("modality", "text")),
+            }
             for source in [*page_sources, *elements]
             if str(source.get("id", "")) and str(source.get("text", "")).strip()
         ]
-        evidence_by_id = {source_id: item for item in evidence_sources for source_id in [item[1]]}
+        evidence_by_id = {
+            str(source["id"]): source for source in evidence_sources
+        }
         statements: list[KnowledgeStatement] = []
         seen: set[tuple[str, str, str, str]] = set()
         for item in raw_statements if isinstance(raw_statements, list) else []:
@@ -803,12 +959,12 @@ evidence_source_id 必须逐字复制对应 id；evidence_text 必须是该 sour
             )
             matched_source = (
                 requested_source
-                if requested_source and evidence_text in _compact(requested_source[0])
+                if requested_source and evidence_text in _compact(requested_source["text"])
                 else next(
                 (
                     source
                     for source in evidence_sources
-                    for source_text in [source[0]]
+                    for source_text in [str(source.get("text", ""))]
                     if evidence_text and evidence_text in _compact(source_text)
                 ),
                 None,
@@ -826,7 +982,14 @@ evidence_source_id 必须逐字复制对应 id；evidence_text 必须是该 sour
             if key in seen:
                 continue
             seen.add(key)
-            _, source_id, source_page, source_modality = matched_source
+            source_id = str(matched_source["id"])
+            source_page = int(matched_source["page"])
+            source_modality = str(matched_source["modality"])
+            evidence_metadata = {
+                key: value
+                for key, value in matched_source.items()
+                if key not in {"id", "page", "modality", "text", "meaning", "caption"}
+            }
             qualifiers = _statement_qualifiers(item.get("qualifiers", []))
             statements.append(KnowledgeStatement(
                 id="knowledge-statement:" + hashlib.sha1(
@@ -854,6 +1017,7 @@ evidence_source_id 必须逐字复制对应 id；evidence_text 必须是该 sour
                 source_page=source_page,
                 modality=source_modality,
                 confidence=confidence,
+                evidence_metadata=evidence_metadata,
             ))
         covered_element_ids = {
             statement.evidence_id for statement in statements
@@ -906,6 +1070,14 @@ evidence_source_id 必须逐字复制对应 id；evidence_text 必须是该 sour
                 source_page=int(source.get("page", unit.page_start) or unit.page_start),
                 modality=modality,
                 confidence=max(0.65, min(1.0, fallback_confidence)),
+                evidence_metadata={
+                    "bbox": list(source.get("bbox", [])),
+                    "polygon": list(source.get("polygon", [])),
+                    "processor": str(source.get("processor", "")),
+                    "ocr_block_id": source.get("ocr_block_id"),
+                    "table_cells": list(source.get("table_cells", [])),
+                    **dict(source.get("evidence_metadata", {})),
+                },
             ))
             covered_element_ids.add(source_id)
         unit.statements = statements

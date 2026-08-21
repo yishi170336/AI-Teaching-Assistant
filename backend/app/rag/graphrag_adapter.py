@@ -1195,6 +1195,9 @@ def convert_graphrag_outputs(
             "statement_ids": [
                 item for item in document_ids if item in statement_map
             ],
+            "evidence_metadata": (
+                statement.evidence_metadata if statement else {}
+            ),
         }
         text_unit = {
             "id": str(row["id"]),
@@ -1465,6 +1468,26 @@ def convert_graphrag_outputs(
         }
         for _, row in reports_df.iterrows()
     ]
+    block_evidence_by_id: dict[str, dict[str, Any]] = {}
+    for unit in unit_values:
+        for source in unit.text_evidence:
+            if source.get("id"):
+                block_evidence_by_id[str(source["id"])] = dict(source)
+        for element in unit.knowledge_elements:
+            if element.get("id"):
+                block_evidence_by_id[str(element["id"])] = {
+                    "id": str(element["id"]),
+                    "page": int(element.get("page", unit.page_start) or unit.page_start),
+                    "modality": str(element.get("type", "multimodal")),
+                    "text": str(element.get("raw_text", "")),
+                    "bbox": list(element.get("bbox", [])),
+                    "polygon": list(element.get("polygon", [])),
+                    "confidence": float(element.get("confidence", 0.0) or 0.0),
+                    "processor": str(element.get("processor", "")),
+                    "ocr_block_id": element.get("ocr_block_id"),
+                    "table_cells": list(element.get("table_cells", [])),
+                    "evidence_metadata": dict(element.get("evidence_metadata", {})),
+                }
     evidence = [
         {
             **text_unit,
@@ -1473,6 +1496,11 @@ def convert_graphrag_outputs(
                 if str(text_unit.get("knowledge_unit_id", "")) in unit_map
                 else []
             ),
+            "block_evidence": [
+                block_evidence_by_id[block_id]
+                for block_id in _as_list(text_unit.get("block_ids"))
+                if block_id in block_evidence_by_id
+            ],
         }
         for text_unit in text_units
     ]

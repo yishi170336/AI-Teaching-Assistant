@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import sys
 from pathlib import Path
 
@@ -18,12 +19,22 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="验证文本/图片/图谱混合检索")
     parser.add_argument("--knowledge-base", default="default")
+    parser.add_argument("--index-dir", type=Path, help="直接指定候选索引目录")
     parser.add_argument("--query", action="append", dest="queries")
     parser.add_argument("--image", type=Path, help="可选的图片查询")
     args = parser.parse_args()
-    retriever = HybridRetriever(
-        settings.vector_stores_dir / args.knowledge_base, settings.embedding_model_path
+    index_dir = (args.index_dir or settings.vector_stores_dir / args.knowledge_base).resolve()
+    meta = json.loads((index_dir / "index_meta.json").read_text(encoding="utf-8"))
+    embedding_value = str(meta.get("embedding_model", "")).strip()
+    configured_embedding = Path(embedding_value) if embedding_value else None
+    if configured_embedding is not None and not configured_embedding.is_absolute():
+        configured_embedding = settings.root_dir / configured_embedding
+    embedding_model = (
+        configured_embedding
+        if configured_embedding is not None and configured_embedding.is_dir()
+        else settings.embedding_model_path
     )
+    retriever = HybridRetriever(index_dir, embedding_model)
     try:
         queries = args.queries or (
             "PN结为什么具有单向导电性",

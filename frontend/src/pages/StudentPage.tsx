@@ -5872,7 +5872,7 @@ function StudentPageContent() {
           onClick={() => void rebuildCurrentKnowledgeBase()}
           disabled={!currentKbStatus || currentKbStatus.state === 'building' || currentKbStatus.state === 'cancelling'}
         >
-          使用 qwen3-vl-flash 重新构建已有资料
+          使用 PaddleOCR-VL 重新构建已有资料
         </Button>
         <div className="modal-note">
           <Check size={15} /> 新知识库构建期间可继续使用其他已就绪知识库

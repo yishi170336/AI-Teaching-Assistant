@@ -43,6 +43,7 @@ from backend.app.rag.ontology import (
     is_course_concept,
     normalize_concept_name,
 )
+from backend.app.rag.paddleocr_vl import PaddleOCRVLClient
 from backend.app.rag.multimodal import (
     BuildModelConfig,
     CompatibleMultimodalClient,
@@ -496,7 +497,8 @@ def validate_extracted_content(chunks: list[TextChunk]) -> dict[str, int]:
         raise RuntimeError(
             "扫描版 PDF 的正文 OCR 未成功："
             f"{len(placeholders)}/{len(text_chunks)} 个正文片段仍是图形占位符。"
-            "请配置可用的 Qwen3-VL API 后重建，旧索引不会被替换。"
+            "请检查 PaddleOCR-VL 本地模型、GPU/CPU 运行时和页面缓存后重建，"
+            "旧索引不会被替换。"
         )
     return {
         "text_chunks": len(text_chunks),
@@ -771,10 +773,31 @@ def validate_graph_semantics(
                 "请检查 TextUnit 切分、图谱抽取模型或关系证据，旧索引不会被替换。"
             )
         audit = quality_audit or audit_semantic_graph_quality(graph)
-        if audit.get("status") != "passed":
+        warning_issues = int(audit.get("warning_issues", 0) or 0)
+        metrics = audit.get("metrics", {}) if isinstance(audit.get("metrics"), dict) else {}
+        text_unit_count = int(metrics.get("text_units", 0) or 0)
+        fact_coverage = float(metrics.get("text_unit_fact_coverage", 1.0) or 0.0)
+        multimodal_coverage = float(
+            metrics.get("multimodal_element_fact_coverage", 1.0) or 0.0
+        )
+        enforce_baseline = text_unit_count >= settings.semantic_quality_min_text_units
+        coverage_regression = bool(
+            enforce_baseline
+            and (
+                fact_coverage < settings.semantic_min_fact_evidence_coverage
+                or multimodal_coverage < settings.semantic_min_multimodal_fact_coverage
+            )
+        )
+        if (
+            audit.get("status") != "passed"
+            or (enforce_baseline and warning_issues)
+            or coverage_regression
+        ):
             raise RuntimeError(
                 "知识图谱质量门禁失败："
-                f"发现 {int(audit.get('critical_issues', 0))} 个关键问题。"
+                f"发现 {int(audit.get('critical_issues', 0))} 个关键问题、"
+                f"{warning_issues} 个警告；事实证据覆盖率 {fact_coverage:.2%}，"
+                f"多模态事实覆盖率 {multimodal_coverage:.2%}。"
                 "请查看 semantic_quality_audit.json；旧索引不会被替换。"
             )
         return {
@@ -782,7 +805,9 @@ def validate_graph_semantics(
             "entity_nodes": len(entities),
             "semantic_relationships": len(relationships),
             "semantic_quality_status": audit.get("status", "unknown"),
-            "semantic_quality_warnings": int(audit.get("warning_issues", 0)),
+            "semantic_quality_warnings": warning_issues,
+            "fact_evidence_coverage": fact_coverage,
+            "multimodal_fact_coverage": multimodal_coverage,
         }
     concepts = {
         str(node.get("name", "")).strip()
@@ -943,49 +968,65 @@ def build_knowledge_base(
         if path.suffix.lower() in QUESTION_BANK_EXTENSIONS
     ]
     source_count = max(1, len(source_files))
-    for source_index, path in enumerate(source_files):
-        report(
-            10 + int(source_index / source_count * 35),
-            "document_parsing",
-            f"正在解析 {path.name}（{source_index + 1}/{len(source_files)}）",
-        )
-        suffix = path.suffix.lower()
-        if suffix == ".pdf":
-            extracted = extract_pdf(path, chapter_limit)
-            extracted, pdf_elements, audit = enhance_pdf(
-                path,
-                extracted,
-                output_dir,
-                model_config=model_config,
-                chapter_limit=chapter_limit,
+    paddle_ocr_client: PaddleOCRVLClient | None = None
+    paddle_ocr_runtime: dict[str, Any] = {}
+    try:
+        for source_index, path in enumerate(source_files):
+            report(
+                10 + int(source_index / source_count * 35),
+                "document_parsing",
+                f"正在解析 {path.name}（{source_index + 1}/{len(source_files)}）",
             )
-            repeated_noise = _edge_noise([item.text for item in extracted])
-            extracted = [
-                replace(
-                    item,
-                    text=clean_page_text(item.text, repeated_noise) or item.text,
+            suffix = path.suffix.lower()
+            if suffix == ".pdf":
+                if paddle_ocr_client is None:
+                    paddle_ocr_client = PaddleOCRVLClient(
+                        device=settings.paddleocr_device,
+                        engine=settings.paddleocr_engine,
+                        dtype=settings.paddleocr_dtype,
+                        pipeline_version=settings.paddleocr_pipeline_version,
+                        model_source=settings.paddleocr_model_source,
+                    )
+                    paddle_ocr_runtime = dict(paddle_ocr_client.cache_identity)
+                extracted = extract_pdf(path, chapter_limit)
+                extracted, pdf_elements, audit = enhance_pdf(
+                    path,
+                    extracted,
+                    output_dir,
+                    model_config=model_config,
+                    chapter_limit=chapter_limit,
+                    ocr_client=paddle_ocr_client,
                 )
-                for item in extracted
-            ]
-            documents.extend(extracted)
-            elements.extend(pdf_elements)
-            cleaning_audits.extend(
-                {**item, "source": path.name} for item in audit
+                repeated_noise = _edge_noise([item.text for item in extracted])
+                extracted = [
+                    replace(
+                        item,
+                        text=clean_page_text(item.text, repeated_noise) or item.text,
+                    )
+                    for item in extracted
+                ]
+                documents.extend(extracted)
+                elements.extend(pdf_elements)
+                cleaning_audits.extend(
+                    {**item, "source": path.name} for item in audit
+                )
+                _write_clean_markdown(path, extracted, cleaned_dir)
+            elif suffix in {".md", ".txt"}:
+                extracted = extract_markdown_or_text(path)
+                documents.extend(extracted)
+                _write_clean_markdown(path, extracted, cleaned_dir)
+            elif suffix == ".docx":
+                extracted = extract_docx(path)
+                documents.extend(extracted)
+                _write_clean_markdown(path, extracted, cleaned_dir)
+            report(
+                10 + int((source_index + 1) / source_count * 35),
+                "document_cleaning",
+                f"已完成 {path.name} 的解析与清洗",
             )
-            _write_clean_markdown(path, extracted, cleaned_dir)
-        elif suffix in {".md", ".txt"}:
-            extracted = extract_markdown_or_text(path)
-            documents.extend(extracted)
-            _write_clean_markdown(path, extracted, cleaned_dir)
-        elif suffix == ".docx":
-            extracted = extract_docx(path)
-            documents.extend(extracted)
-            _write_clean_markdown(path, extracted, cleaned_dir)
-        report(
-            10 + int((source_index + 1) / source_count * 35),
-            "document_cleaning",
-            f"已完成 {path.name} 的解析与清洗",
-        )
+    finally:
+        if paddle_ocr_client is not None:
+            paddle_ocr_client.close()
     report(47, "section_validation", "正在校验章节标题、目录映射与继承顺序")
     section_quality = validate_section_semantics(documents)
     (output_dir / "section_quality_audit.json").write_text(
@@ -1200,6 +1241,10 @@ def build_knowledge_base(
             isinstance(item.extra, dict) and bool(item.extra.get("ocr_processor"))
             for item in documents
         ),
+        "ocr_model": paddle_ocr_runtime or {
+            "model": "not-used",
+            "reason": "knowledge base contains no PDF documents",
+        },
         "questions": 0,
         "excluded_sources": excluded_sources,
         "chunks": len(chunks),
@@ -1228,6 +1273,11 @@ def build_knowledge_base(
             "communities": semantic_graph.get("stats", {}).get("communities", 0),
         },
         "qdrant": qdrant_status,
+        "circuit_vision_model": (
+            f"qwen/{settings.qwen_circuit_vision_model}"
+            if settings.qwen_api_key
+            else "not-configured (safe fallback)"
+        ),
         "vision_model": (
             f"qwen/{settings.qwen_circuit_vision_model}"
             if settings.qwen_api_key

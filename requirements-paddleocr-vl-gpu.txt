@@ -1,4 +1,4 @@
-# Install this file in an isolated venv created from the llm interpreter with
-# --system-site-packages.  transformers>=5.8 conflicts with requirements.txt.
+# Reproducible PaddleOCR-VL runtime used by the llm build worker.
+paddlepaddle==3.2.1
 paddleocr[doc-parser] @ git+https://github.com/PaddlePaddle/PaddleOCR.git@2661c7c0ef5c613e8f93c6e93b2e052399f0f854
-transformers>=5.8,<6
+transformers==5.15.1

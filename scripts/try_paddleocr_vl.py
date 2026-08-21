@@ -1,8 +1,7 @@
-"""Run an isolated PaddleOCR-VL document parsing experiment.
+"""Run a reproducible PaddleOCR-VL GPU document-parsing benchmark.
 
-The production OCR pipeline still uses Qwen.  This script exists so a local
-PaddleOCR-VL checkout or installation can be evaluated without importing it
-into the FastAPI process.
+The knowledge-base build worker uses the same pinned PaddleOCR-VL runtime;
+this utility keeps raw Markdown/JSON and timing data for acceptance checks.
 """
 
 from __future__ import annotations
@@ -113,7 +112,7 @@ def main() -> int:
         if (major, minor) < (5, 8):
             raise SystemExit(
                 "The PaddleOCR GitHub transformers engine requires transformers>=5.8. "
-                "Use the isolated GPU environment described in README.md."
+                "Install the pinned llm dependencies before running this benchmark."
             )
         if args.device.startswith("gpu") and not torch.cuda.is_available():
             raise SystemExit("CUDA is not available to PyTorch in this environment.")

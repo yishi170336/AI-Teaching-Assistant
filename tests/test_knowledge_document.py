@@ -102,6 +102,34 @@ def test_compiler_fuses_consecutive_ocr_pages_and_verified_visual_knowledge(tmp_
     assert "镜像电流源" in (tmp_path / "book_knowledge_document.md").read_text(encoding="utf-8")
 
 
+def test_compiler_splits_one_page_by_paddle_heading_and_keeps_block_evidence():
+    document = PageDocument(
+        text="1.1 PN结\nPN结具有单向导电性。\n1.2 二极管\n二极管可用于整流。",
+        source="教材.pdf",
+        page=8,
+        source_page=8,
+        chapter="第一章 半导体器件",
+        section="1.2 二极管",
+        extra={
+            "ocr_processor": "paddleocr-vl:test",
+            "text_blocks": [
+                {"id": "b1", "type": "section_heading", "text": "1.1 PN结", "reading_order": 1, "chapter": "第一章 半导体器件", "section": "1.1 PN结"},
+                {"id": "b2", "type": "paragraph", "text": "PN结具有单向导电性。", "bbox": [100, 120, 900, 220], "confidence": 0.96, "reading_order": 2, "source_engine": "paddleocr-vl", "model_revision": "test", "chapter": "第一章 半导体器件", "section": "1.1 PN结"},
+                {"id": "b3", "type": "section_heading", "text": "1.2 二极管", "reading_order": 3, "chapter": "第一章 半导体器件", "section": "1.2 二极管"},
+                {"id": "b4", "type": "paragraph", "text": "二极管可用于整流。", "bbox": [100, 420, 900, 520], "confidence": 0.95, "reading_order": 4, "source_engine": "paddleocr-vl", "model_revision": "test", "chapter": "第一章 半导体器件", "section": "1.2 二极管"},
+            ],
+        },
+    )
+
+    units = compile_knowledge_document([document], [])
+
+    assert [unit.section for unit in units] == ["1.1 PN结", "1.2 二极管"]
+    assert units[0].evidence_ids == ["b2"]
+    assert units[1].evidence_ids == ["b4"]
+    assert units[0].text_evidence[0]["bbox"] == [100, 120, 900, 220]
+    assert units[0].text_evidence[0]["confidence"] == 0.96
+
+
 def test_formula_enrichment_adds_only_grounded_natural_language_knowledge(tmp_path):
     unit = KnowledgeUnit(
         id="knowledge-unit:formula",

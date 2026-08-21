@@ -13,6 +13,7 @@ from backend.app.rag import manager as manager_module
 from backend.app.rag.models import PageDocument, TextChunk
 from backend.app.rag.manager import KnowledgeBaseManager
 from backend.app.rag.pdf_extract_kit import DetectedRegion, PDFExtractKitAdapter
+from backend.app.rag.paddleocr_vl import PaddleOCRVLInferenceError
 from backend.app.rag.pipeline import KnowledgeBaseBuildCancelled
 from backend.app.rag.multimodal import (
     LayoutElement,
@@ -97,30 +98,30 @@ def test_scanned_page_ocr_recovers_text_hierarchy_concepts_and_cache(tmp_path):
         pdf_path.stem,
     )]
 
-    class FakeVisionClient:
-        model = "qwen3-vl-flash"
+    class FakePaddleClient:
+        model = "PaddleOCR-VL@test"
         calls = 0
 
-        def complete_json(self, *_args, **_kwargs):
+        def predict_page(self, *_args, **_kwargs):
             self.calls += 1
             return {
-                "text": [
-                    "第一章 常用半导体器件",
-                    "1.1 半导体基础知识",
-                    "1.1.3 PN结",
-                    "PN结形成空间电荷区，并产生内建电场。",
+                "blocks": [
+                    {"id": "b1", "type": "chapter_heading", "text": "第一章 常用半导体器件", "bbox": [80, 40, 900, 100], "reading_order": 1, "confidence": 0.96},
+                    {"id": "b2", "type": "section_heading", "text": "1.1 半导体基础知识", "bbox": [80, 120, 900, 180], "reading_order": 2, "confidence": 0.95},
+                    {"id": "b3", "type": "section_heading", "text": "1.1.3 PN结", "bbox": [80, 200, 900, 260], "reading_order": 3, "confidence": 0.95},
+                    {"id": "b4", "type": "paragraph", "text": "PN结形成空间电荷区，并产生内建电场。", "bbox": [80, 280, 900, 360], "reading_order": 4, "confidence": 0.94},
                 ],
-                "chapter": "第一章 常用半导体器件",
-                "section": "1.1 半导体基础知识",
-                "concepts": ["PN结", "空间电荷区", "内建电场", "教材"],
+                "raw": {"width": 1000, "height": 1000},
             }
 
-    client = FakeVisionClient()
+    client = FakePaddleClient()
     first = _ocr_scanned_pages(pdf_path, docs, tmp_path, client, "doc-hash")
     assert client.calls == 1
     assert first[0].chapter == "第一章 常用半导体器件"
     assert first[0].section == "1.1.3 PN结"
-    assert first[0].extra["ocr_concepts"] == ["PN结", "空间电荷区", "内建电场"]
+    assert {"PN结", "空间电荷区", "内建电场"}.issubset(
+        first[0].extra["ocr_concepts"]
+    )
     assert "PN结形成空间电荷区" in first[0].text
 
     cached = _ocr_scanned_pages(pdf_path, docs, tmp_path, None, "doc-hash")
@@ -128,7 +129,7 @@ def test_scanned_page_ocr_recovers_text_hierarchy_concepts_and_cache(tmp_path):
     assert cached[0].section == "1.1.3 PN结"
 
 
-def test_legacy_page_ocr_cache_is_migrated_and_reused_without_native_text(tmp_path):
+def test_legacy_qwen_page_ocr_cache_is_invalidated_and_replaced(tmp_path):
     pdf_path = tmp_path / "legacy.pdf"
     pdf = fitz.open()
     pdf.new_page(width=500, height=700)
@@ -157,16 +158,30 @@ def test_legacy_page_ocr_cache_is_migrated_and_reused_without_native_text(tmp_pa
         pdf_path.stem,
     )]
 
+    class FakePaddleClient:
+        model = "PaddleOCR-VL@test"
+
+        def predict_page(self, *_args, **_kwargs):
+            return {
+                "blocks": [
+                    {"id": "paddle-b1", "type": "chapter_heading", "text": "第一章 半导体器件", "bbox": [80, 50, 900, 110], "reading_order": 1, "confidence": 0.96},
+                    {"id": "paddle-b2", "type": "section_heading", "text": "1.1 PN结", "bbox": [80, 130, 900, 190], "reading_order": 2, "confidence": 0.95},
+                    {"id": "paddle-b3", "type": "paragraph", "text": "PN结由P区和N区交界形成。", "bbox": [80, 220, 900, 300], "reading_order": 3, "confidence": 0.94},
+                ],
+                "raw": {},
+            }
+
     recovered = _ocr_scanned_pages(
-        pdf_path, docs, tmp_path, None, "legacy-hash"
+        pdf_path, docs, tmp_path, FakePaddleClient(), "legacy-hash"
     )
 
-    assert recovered[0].text.endswith("PN结具有单向导电性。")
-    assert recovered[0].extra["ocr_processor"] == "qwen-vl:qwen3-vl-flash"
+    assert recovered[0].text.endswith("PN结由P区和N区交界形成。")
+    assert "单向导电性" not in recovered[0].text
+    assert recovered[0].extra["ocr_processor"].startswith("paddleocr-vl:")
     assert recovered[0].extra["text_blocks"]
     migrated = json.loads(cache_path.read_text(encoding="utf-8"))
     assert migrated["schema_version"] == PAGE_OCR_SCHEMA_VERSION
-    assert migrated["migrated_from_schema"] == "1.0-qwen-page-ocr"
+    assert "migrated_from_schema" not in migrated
 
 
 def test_scanned_page_ocr_verifies_new_heading_with_high_resolution_crop(tmp_path):
@@ -184,31 +199,29 @@ def test_scanned_page_ocr_verifies_new_heading_with_high_resolution_crop(tmp_pat
         "2.4.1 静态工作点稳定的必要性",
     )]
 
-    class FakeVisionClient:
-        model = "qwen3-vl-flash"
+    class FakePaddleClient:
+        model = "PaddleOCR-VL@test"
         calls = 0
 
-        def complete_json(self, *_args, **_kwargs):
+        def predict_page(self, *_args, **_kwargs):
             self.calls += 1
             if self.calls == 1:
                 return {
-                    "text": [
-                        "第二章 基本放大电路",
-                        "2.4.2 型的静态工作点稳定电路",
-                        "典型的 Q 点稳定电路利用直流负反馈稳定静态工作点。",
+                    "blocks": [
+                        {"id": "h1", "type": "chapter_heading", "text": "第二章 基本放大电路", "bbox": [100, 80, 850, 150], "reading_order": 1, "confidence": 0.95},
+                        {"id": "h2", "type": "section_heading", "text": "2.4.2 型的静态工作点稳定电路", "bbox": [100, 380, 850, 450], "reading_order": 2, "confidence": 0.5},
+                        {"id": "h3", "type": "paragraph", "text": "典型的 Q 点稳定电路利用直流负反馈稳定静态工作点。", "bbox": [100, 470, 850, 560], "reading_order": 3, "confidence": 0.94},
                     ],
-                    "chapter": "第二章 基本放大电路",
-                    "section": "2.4.2 型的静态工作点稳定电路",
-                    "section_bbox": [100, 380, 850, 450],
-                    "concepts": ["静态工作点", "直流负反馈"],
+                    "raw": {},
                 }
             return {
-                "visible": True,
-                "section": "2.4.2 典型的静态工作点稳定电路",
-                "confidence": 0.98,
+                "blocks": [
+                    {"id": "retry-h2", "type": "section_heading", "text": "2.4.2 典型的静态工作点稳定电路", "bbox": [10, 10, 990, 990], "reading_order": 1, "confidence": 0.98},
+                ],
+                "raw": {},
             }
 
-    client = FakeVisionClient()
+    client = FakePaddleClient()
     recovered = _ocr_scanned_pages(
         pdf_path,
         docs,
@@ -229,6 +242,50 @@ def test_scanned_page_ocr_verifies_new_heading_with_high_resolution_crop(tmp_pat
         "heading-doc-hash",
     )
     assert cached[0].section == recovered[0].section
+
+
+def test_failed_paddle_key_block_retry_aborts_candidate_build(tmp_path):
+    pdf_path = tmp_path / "failed-retry.pdf"
+    pdf = fitz.open()
+    pdf.new_page(width=500, height=700)
+    pdf.save(pdf_path)
+    pdf.close()
+    docs = [PageDocument(
+        SCANNED_PAGE_PLACEHOLDER,
+        pdf_path.name,
+        1,
+        pdf_path.stem,
+        pdf_path.stem,
+    )]
+
+    class FakePaddleClient:
+        model = "PaddleOCR-VL@test"
+        calls = 0
+
+        def predict_page(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "blocks": [{
+                        "id": "heading",
+                        "type": "section_heading",
+                        "text": "2.1 放大电路",
+                        "bbox": [100, 100, 900, 180],
+                        "reading_order": 1,
+                        "confidence": 0.4,
+                    }],
+                    "raw": {},
+                }
+            raise PaddleOCRVLInferenceError("retry unavailable")
+
+    with pytest.raises(PaddleOCRVLInferenceError, match="高清重试失败"):
+        _ocr_scanned_pages(
+            pdf_path,
+            docs,
+            tmp_path,
+            FakePaddleClient(),
+            "failed-retry-hash",
+        )
 
 
 def test_ocr_heading_context_rejects_contents_prose_and_answer_labels():
@@ -1193,7 +1250,7 @@ def test_page_ocr_corrects_vl_beta_overbar_when_symbol_skeleton_matches():
 
 
 @pytest.mark.parametrize("safe_crop", [True, False])
-def test_detected_formulas_survive_vl_rejection_with_page_ocr_fallback(
+def test_detected_formulas_use_paddle_page_evidence_without_qwen_formula_ocr(
     tmp_path, monkeypatch, safe_crop
 ):
     page_image = Image.new("RGB", (1000, 1400), "white")
@@ -1226,14 +1283,19 @@ def test_detected_formulas_survive_vl_rejection_with_page_ocr_fallback(
 
     class RejectingVisionClient:
         model = "qwen3-vl-flash"
+        calls = 0
 
-        def complete_json(self, *_args, **_kwargs):
-            return {"is_formula": False, "latex": "", "plain_text": ""}
+        def complete_json(self, prompt, *_args, **_kwargs):
+            self.calls += 1
+            assert "公式识别器" not in prompt
+            assert "表格" not in prompt
+            return {"is_circuit": False, "description": "教材页图像"}
 
         def close(self):
             return None
 
-    monkeypatch.setattr("backend.app.rag.multimodal.QwenVisionClient", lambda **_kwargs: RejectingVisionClient())
+    circuit_client = RejectingVisionClient()
+    monkeypatch.setattr("backend.app.rag.multimodal.QwenVisionClient", lambda **_kwargs: circuit_client)
     monkeypatch.setattr(
         "backend.app.rag.multimodal.settings",
         replace(
@@ -1263,10 +1325,88 @@ def test_detected_formulas_survive_vl_rejection_with_page_ocr_fallback(
     assert [element.caption for element in formulas] == [
         "(2.2.1a)", "(2.2.1b)", "(2.2.1c)"
     ]
-    assert all(element.uncertain for element in formulas)
+    assert all("paddleocr-vl-page-evidence" in element.processor for element in formulas)
+    assert all(not element.uncertain for element in formulas)
     assert formula_audit["detected"] == 3
-    assert formula_audit["fallback"] == 3
-    assert all(item["fallback_source"] == "page-ocr" for item in formula_audit["formulas"])
+    assert formula_audit["recognized"] == 3
+    assert formula_audit["fallback"] == 0
+    assert all(item["fallback_source"] == "paddle-page-ocr" for item in formula_audit["formulas"])
+
+
+def test_detected_table_reuses_paddle_markdown_without_qwen_table_ocr(
+    tmp_path, monkeypatch
+):
+    pdf_path = tmp_path / "table.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=500, height=700)
+    page.insert_text((60, 100), "gain 40 dB")
+    pdf.save(pdf_path)
+    pdf.close()
+    monkeypatch.setattr(PDFExtractKitAdapter, "available", property(lambda _self: True))
+    monkeypatch.setattr(
+        PDFExtractKitAdapter,
+        "detect",
+        lambda _self, _image: [
+            DetectedRegion("table", [100, 140, 900, 420], 0.93, "pdf-extract-kit:layout")
+        ],
+    )
+
+    class CircuitOnlyClient:
+        model = "qwen3-vl-flash"
+        calls = 0
+
+        def complete_json(self, *_args, **_kwargs):
+            self.calls += 1
+            raise AssertionError("table OCR must not call Qwen")
+
+        def close(self):
+            return None
+
+    circuit_client = CircuitOnlyClient()
+    monkeypatch.setattr(
+        "backend.app.rag.multimodal.QwenVisionClient",
+        lambda **_kwargs: circuit_client,
+    )
+    monkeypatch.setattr(
+        "backend.app.rag.multimodal.settings",
+        replace(
+            __import__("backend.app.rag.multimodal", fromlist=["settings"]).settings,
+            qwen_api_key="test-key",
+        ),
+    )
+    markdown = "| 参数 | 典型值 | 单位 |\n|---|---:|---|\n| 电压增益 | 40 | dB |"
+    documents = [PageDocument(
+        "电压增益参数表",
+        pdf_path.name,
+        1,
+        "第二章",
+        "2.1 放大电路",
+        extra={
+            "ocr_processor": "paddleocr-vl:test",
+            "text_blocks": [
+                {
+                    "id": "table-block",
+                    "type": "table",
+                    "text": markdown,
+                    "bbox": [100, 100, 900, 300],
+                    "reading_order": 1,
+                    "confidence": 0.95,
+                    "source_engine": "paddleocr-vl",
+                }
+            ],
+        },
+    )]
+
+    _kept, elements, _audit = enhance_pdf(
+        pdf_path, documents, tmp_path / "index"
+    )
+    tables = [element for element in elements if element.element_type == "table"]
+
+    assert len(tables) == 1
+    assert tables[0].text == markdown
+    assert tables[0].evidence_metadata["table_cells"]
+    assert "pdf-extract-kit:layout-localized" in tables[0].processor
+    assert circuit_client.calls == 0
 
 
 def test_formula_symbols_map_to_course_concepts():

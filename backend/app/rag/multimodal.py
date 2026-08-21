@@ -38,6 +38,15 @@ from backend.app.rag.ontology import (
     meaningful_section,
     normalize_concept_name,
 )
+from backend.app.rag.paddleocr_vl import (
+    PADDLEOCR_VL_GIT_REVISION,
+    PADDLEOCR_VL_MODEL_ID,
+    PADDLEOCR_VL_SCHEMA_VERSION,
+    PaddleOCRVLClient,
+    PaddleOCRVLInferenceError,
+    markdown_table_cells,
+    stable_block_content_hash,
+)
 from backend.app.services.qwen_multimodal_client import QwenMultimodalAPIError, QwenVisionClient
 
 
@@ -51,18 +60,9 @@ PARTIAL_NOISE_MARKERS = (
 PAGE_CLEANING_POLICY_VERSION = "2.1-exercise-range-fallback"
 
 SCANNED_PAGE_PLACEHOLDER = "[本页主要包含电路图、公式或其他图形内容]"
-PAGE_OCR_SCHEMA_VERSION = "2.0-qwen-page-ocr-layout-blocks"
-LEGACY_PAGE_OCR_SCHEMA_VERSIONS = {"1.0-qwen-page-ocr"}
+PAGE_OCR_SCHEMA_VERSION = PADDLEOCR_VL_SCHEMA_VERSION
+LEGACY_PAGE_OCR_SCHEMA_VERSIONS: set[str] = set()
 CIRCUIT_ANALYSIS_SCHEMA_VERSION = "2.1-grounded-circuit-family"
-PAGE_OCR_PROMPT = """你是模拟电子技术教材的高保真 OCR 与结构识别器。请完整转写本页，严格保持阅读顺序、标题层级、图题、表题、公式、变量、上下标和单位；不得概括、改写或补写看不清的内容。省略页码和重复的页眉。
-blocks 必须按真实阅读顺序列出本页版面块。每个块包含 type、text、bbox、reading_order；type 只能是 chapter_heading、section_heading、paragraph、list_item、formula、figure_caption、table、exercise、page_header、page_footer、noise；bbox 为按页面宽高归一化到 0-1000 的 [x1,y1,x2,y2]。正文自然段不要按视觉换行拆碎，双栏必须先完整读取左栏再读取右栏。chapter 填本页可见的章标题，否则为空；section 填本页最后出现、层级最深的编号教学小节（例如“1.1.3 PN结”），或完整可见的结构标题（仅限“本章小结”“习题”“复习题”“思考题”“自测题”“参考答案”等），否则为空；section_bbox 填该 section 标题 bbox，标题不可见时返回空数组；concepts 只列正文中明确出现的 2-18 个具体模拟电子技术知识点，不得列书名、章名、泛化词或举例材料。
-不要把页眉、图号、表号、公式编号、例题编号、题号、数值或单位（例如“1.0 mA”）误认为 section。
-仅返回 JSON：{"blocks":[{"type":"paragraph","text":"...","bbox":[0,0,0,0],"reading_order":1}],"chapter":"","section":"","section_bbox":[],"concepts":["..."]}。"""
-
-SECTION_HEADING_OCR_PROMPT = """你是教材章节标题校对器。图片只包含一个候选章节标题及少量上下文。
-逐字抄录图片中真实可见、以多级数字编号开头的教学章节标题；不得根据常识补写，不得把图号、表号、公式编号、例题编号或页眉当作章节标题。
-若标题完整可见，返回 section、confidence；否则 visible=false 且 section 为空。
-仅返回 JSON：{"visible":true,"section":"2.4.2 典型的静态工作点稳定电路","confidence":0.0}。"""
 
 CHAPTER_MARKER_PATTERN = r"第[零〇一二三四五六七八九十百两0-9]+章"
 CHAPTER_SENTENCE_PREFIXES = (
@@ -130,6 +130,9 @@ class LayoutElement:
     processor: str = "ocr-layout"
     uncertain: bool = False
     source_page: int | None = None
+    polygon: list[list[float]] = field(default_factory=list)
+    ocr_block_id: str | None = None
+    evidence_metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -355,7 +358,7 @@ def _ocr_text(value: Any) -> str:
 
 OCR_BLOCK_TYPES = {
     "chapter_heading", "section_heading", "paragraph", "list_item", "formula",
-    "figure_caption", "table", "exercise", "page_header", "page_footer", "noise",
+    "figure_caption", "table", "image", "exercise", "page_header", "page_footer", "noise",
 }
 
 
@@ -379,17 +382,33 @@ def _ocr_blocks(value: Any) -> list[dict[str, Any]]:
             block_type = "paragraph"
             bbox = []
             reading_order = index
-        if not text:
+        if not text and block_type != "image":
             continue
         if block_type not in OCR_BLOCK_TYPES:
             block_type = "paragraph"
-        blocks.append({
-            "id": f"ocr-block-{index}",
+        block = {
+            "id": str(raw.get("id", f"ocr-block-{index}")) if isinstance(raw, dict) else f"ocr-block-{index}",
             "type": block_type,
             "text": text,
             "bbox": bbox,
             "reading_order": reading_order,
-        })
+        }
+        if isinstance(raw, dict):
+            for field_name in (
+                "polygon",
+                "confidence",
+                "model_reading_order",
+                "raw_label",
+                "source_engine",
+                "model_revision",
+                "corrections",
+                "uncertain",
+                "content_hash",
+            ):
+                if field_name in raw:
+                    block[field_name] = raw[field_name]
+        block.setdefault("content_hash", stable_block_content_hash(block))
+        blocks.append(block)
     return sorted(blocks, key=lambda item: int(item["reading_order"]))
 
 
@@ -728,70 +747,108 @@ def _normalized_heading_bbox(value: Any) -> list[float]:
     return bbox
 
 
-def _verify_section_heading_crop(
+def _retry_low_confidence_key_blocks(
     page: fitz.Page,
-    value: dict[str, Any],
-    text: str,
-    previous_section: str,
-    client: QwenVisionClient,
-) -> tuple[str, float, bool]:
-    """Run a high-resolution second OCR pass on a newly detected heading."""
+    blocks: list[dict[str, Any]],
+    client: PaddleOCRVLClient | Any,
+    *,
+    source: str,
+    page_number: int,
+) -> list[dict[str, Any]]:
+    """Retry only uncertain titles, formulas and tables with a sharper crop."""
 
-    visible_sections = _visible_section_headings(text)
-    raw_section = _normalize_section_heading(value.get("section", ""))
-    candidate = visible_sections[-1] if visible_sections else raw_section
-    candidate_number = _section_number(candidate)
-    if (
-        not candidate_number
-        or candidate == previous_section
-        or not _normalized_heading_bbox(value.get("section_bbox"))
-    ):
-        return "", 0.0, False
-
-    left, top, right, bottom = _normalized_heading_bbox(value["section_bbox"])
+    key_types = {"chapter_heading", "section_heading", "formula", "table"}
     page_width = max(1.0, float(page.rect.width))
     page_height = max(1.0, float(page.rect.height))
-    horizontal_margin = max(12.0, (right - left) / 1000 * page_width * 0.08)
-    vertical_margin = max(8.0, (bottom - top) / 1000 * page_height * 0.8)
-    clip = fitz.Rect(
-        max(0.0, left / 1000 * page_width - horizontal_margin),
-        max(0.0, top / 1000 * page_height - vertical_margin),
-        min(page_width, right / 1000 * page_width + horizontal_margin),
-        min(page_height, bottom / 1000 * page_height + vertical_margin),
-    )
-    clip_width = max(1.0, float(clip.width))
-    clip_height = max(1.0, float(clip.height))
-    scale = min(
-        4.0,
-        max(2.2, 1800 / clip_width),
-        max(2.2, math.sqrt(2_500_000 / (clip_width * clip_height))),
-    )
-    pixmap = page.get_pixmap(
-        matrix=fitz.Matrix(scale, scale),
-        clip=clip,
-        alpha=False,
-    )
-    try:
-        verified = client.complete_json(
-            SECTION_HEADING_OCR_PROMPT,
-            image_bytes=pixmap.tobytes("png"),
-            image_mime="image/png",
+    retried: list[dict[str, Any]] = []
+    for block in blocks:
+        updated = {**block, "corrections": list(block.get("corrections", []))}
+        block_type = str(block.get("type", ""))
+        try:
+            confidence = float(block.get("confidence", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        bbox = _normalized_heading_bbox(block.get("bbox"))
+        if (
+            block_type not in key_types
+            or confidence >= settings.paddleocr_key_block_confidence
+            or not bbox
+        ):
+            retried.append(updated)
+            continue
+
+        left, top, right, bottom = bbox
+        horizontal_margin = max(8.0, (right - left) / 1000 * page_width * 0.06)
+        vertical_margin = max(6.0, (bottom - top) / 1000 * page_height * 0.45)
+        clip = fitz.Rect(
+            max(0.0, left / 1000 * page_width - horizontal_margin),
+            max(0.0, top / 1000 * page_height - vertical_margin),
+            min(page_width, right / 1000 * page_width + horizontal_margin),
+            min(page_height, bottom / 1000 * page_height + vertical_margin),
         )
-    except QwenMultimodalAPIError as exc:
-        logger.warning("Qwen heading crop OCR failed on page %s: %s", page.number + 1, exc)
-        return "", 0.0, False
-    if verified.get("visible") is False:
-        return "", 0.0, True
-    section = _normalize_section_heading(verified.get("section", ""))
-    if not section or _section_number(section) != candidate_number:
-        return "", 0.0, True
-    try:
-        confidence = max(0.0, min(1.0, float(verified.get("confidence", 0.0))))
-    except (TypeError, ValueError):
-        confidence = 0.0
-    if confidence < 0.65:
-        return "", confidence, True
-    return section, confidence, True
+        pixmap = page.get_pixmap(
+            matrix=fitz.Matrix(settings.paddleocr_retry_scale, settings.paddleocr_retry_scale),
+            clip=clip,
+            alpha=False,
+        )
+        try:
+            result = client.predict_page(
+                pixmap.tobytes("png"),
+                source=f"{source}#retry-{block.get('id', '')}",
+                page=page_number,
+            )
+            candidates = _ocr_blocks(result.get("blocks", []))
+        except PaddleOCRVLInferenceError as exc:
+            raise PaddleOCRVLInferenceError(
+                f"{source} 第 {page_number} 页的低置信度 {block_type} "
+                f"高清重试失败：{exc}"
+            ) from exc
+
+        compatible_types = (
+            {"chapter_heading", "section_heading"}
+            if block_type in {"chapter_heading", "section_heading"}
+            else {block_type}
+        )
+        compatible = [
+            item
+            for item in candidates
+            if item.get("type") in compatible_types and str(item.get("text", "")).strip()
+        ]
+        if not compatible:
+            compatible = [
+                item
+                for item in candidates
+                if item.get("type") not in {"image", "page_header", "page_footer", "noise"}
+                and str(item.get("text", "")).strip()
+            ]
+        candidate = max(
+            compatible,
+            key=lambda item: (
+                float(item.get("confidence", 0.0) or 0.0),
+                len(str(item.get("text", ""))),
+            ),
+            default=None,
+        )
+        if candidate is None:
+            raise PaddleOCRVLInferenceError(
+                f"{source} 第 {page_number} 页的低置信度 {block_type} "
+                "高清重试未返回可用内容"
+            )
+
+        replacement_text = str(candidate.get("text", "")).strip()
+        replacement_confidence = float(candidate.get("confidence", 0.0) or 0.0)
+        if replacement_text:
+            updated["text"] = replacement_text
+        updated["confidence"] = max(confidence, replacement_confidence)
+        updated["uncertain"] = updated["confidence"] < settings.paddleocr_key_block_confidence
+        updated["corrections"].append({
+            "type": "paddle-high-resolution-retry",
+            "previous_confidence": confidence,
+            "retry_confidence": replacement_confidence,
+        })
+        updated["content_hash"] = stable_block_content_hash(updated)
+        retried.append(updated)
+    return retried
 
 
 def _normalize_toc_section_heading(value: str) -> str:
@@ -900,6 +957,66 @@ def _apply_toc_section_catalog(
     return corrected
 
 
+def _annotate_ocr_block_contexts(
+    documents: list[PageDocument],
+) -> list[PageDocument]:
+    """Attach grounded chapter/section context to every Paddle layout block."""
+
+    annotated: list[PageDocument] = []
+    current_chapter = ""
+    current_section = ""
+    current_source = ""
+    for document in sorted(documents, key=lambda item: (item.source, item.page)):
+        if document.source != current_source:
+            current_source = document.source
+            current_chapter = ""
+            current_section = ""
+        extra = dict(document.extra or {})
+        blocks = _ocr_blocks(extra.get("text_blocks", []))
+        if not blocks:
+            annotated.append(document)
+            current_chapter = document.chapter or current_chapter
+            current_section = document.section or current_section
+            continue
+        lines = [str(block.get("text", "")) for block in blocks if block.get("text")]
+        compact_lead = re.sub(r"\s+", "", "".join(lines[:8]))
+        contents_entries = sum(
+            bool(_normalize_toc_section_heading(line)) for line in lines
+        )
+        is_contents = "目录" in compact_lead or contents_entries >= 5
+        if not current_chapter:
+            current_chapter = document.chapter
+        if not current_section:
+            current_section = document.section
+        contextualized: list[dict[str, Any]] = []
+        for block in blocks:
+            value = {**block}
+            text = str(value.get("text", "")).strip()
+            if not is_contents and value.get("type") == "chapter_heading":
+                candidate = _normalize_chapter_heading(text)
+                if candidate:
+                    current_chapter = candidate
+                    current_section = ""
+            elif not is_contents and value.get("type") == "section_heading":
+                candidate = (
+                    _normalize_section_heading(text)
+                    or normalize_structural_section(text)
+                )
+                if candidate and (
+                    normalize_structural_section(candidate)
+                    or section_matches_chapter(candidate, current_chapter or document.chapter)
+                ):
+                    current_section = candidate
+            value["chapter"] = current_chapter or document.chapter
+            value["section"] = current_section or document.section
+            contextualized.append(value)
+        extra["text_blocks"] = contextualized
+        annotated.append(replace(document, extra=extra))
+        current_chapter = document.chapter or current_chapter
+        current_section = document.section or current_section
+    return annotated
+
+
 def _is_full_page_scan(
     bbox: list[float],
     page_width: float,
@@ -922,11 +1039,11 @@ def _ocr_scanned_pages(
     path: Path,
     pages: list[PageDocument],
     output_dir: Path,
-    client: QwenVisionClient | None,
+    client: PaddleOCRVLClient | Any | None,
     document_hash: str,
     chapter_limit: int | None = None,
 ) -> list[PageDocument]:
-    """Recover every PDF page from OCR, using durable current/legacy caches."""
+    """Recover every PDF page with PaddleOCR-VL and durable block evidence."""
 
     def page_chapter(document: PageDocument) -> str:
         lines = [line.strip() for line in document.text.splitlines() if line.strip()]
@@ -975,34 +1092,32 @@ def _ocr_scanned_pages(
         return limited_chapters(pages)
     cache_path = output_dir / f"{path.stem}.page_ocr.jsonl"
     cache_entries: dict[int, dict[str, Any]] = {}
-    migrated_legacy_cache = False
+    expected_identity = (
+        dict(getattr(client, "cache_identity", {}) or {}) if client is not None else {}
+    )
     if cache_path.exists():
         try:
             for line in cache_path.read_text(encoding="utf-8").splitlines():
                 item = json.loads(line)
                 schema_version = str(item.get("schema_version", "")) if isinstance(item, dict) else ""
-                if (
+                if not (
                     isinstance(item, dict)
-                    and schema_version in {PAGE_OCR_SCHEMA_VERSION, *LEGACY_PAGE_OCR_SCHEMA_VERSIONS}
+                    and schema_version == PAGE_OCR_SCHEMA_VERSION
                     and item.get("document_hash") == document_hash
-                    and (client is None or item.get("model") == client.model)
-                    and str(item.get("text", "")).strip()
+                    and float(item.get("render_scale", 0) or 0)
+                    == settings.paddleocr_render_scale
+                    and isinstance(item.get("blocks"), list)
+                    and item.get("blocks")
                 ):
-                    if schema_version in LEGACY_PAGE_OCR_SCHEMA_VERSIONS:
-                        item = {
-                            **item,
-                            "schema_version": PAGE_OCR_SCHEMA_VERSION,
-                            "migrated_from_schema": schema_version,
-                            "blocks": _legacy_ocr_blocks(str(item.get("text", ""))),
-                            "section_source": str(item.get("section_source", "legacy-cache")),
-                            "section_confidence": float(item.get("section_confidence", 0.6)),
-                        }
-                        migrated_legacy_cache = True
-                    cache_entries[int(item["page"])] = item
+                    continue
+                if expected_identity and any(
+                    str(item.get(field_name, "")) != str(expected_identity.get(field_name, ""))
+                    for field_name in ("model_revision", "engine", "dtype", "pipeline_version")
+                ):
+                    continue
+                cache_entries[int(item["page"])] = item
         except (OSError, ValueError, json.JSONDecodeError):
             cache_entries = {}
-    if migrated_legacy_cache:
-        _write_page_ocr_cache(cache_path, cache_entries)
 
     recovered: list[PageDocument] = []
     seen_chapter_markers: list[str] = []
@@ -1046,7 +1161,15 @@ def _ocr_scanned_pages(
                     extra={
                         **(page_document.extra or {}),
                         "ocr_concepts": concepts,
-                        "ocr_processor": f"qwen-vl:{cached.get('model', '')}",
+                        "ocr_processor": f"paddleocr-vl:{cached.get('model', PADDLEOCR_VL_MODEL_ID)}",
+                        "ocr_schema_version": PAGE_OCR_SCHEMA_VERSION,
+                        "ocr_runtime": {
+                            field_name: cached.get(field_name)
+                            for field_name in (
+                                "model", "model_revision", "engine", "device", "dtype",
+                                "pipeline_version", "render_scale",
+                            )
+                        },
                         "ocr_section_raw": str(cached.get("section_raw", "")),
                         "ocr_section_source": section_source,
                         "ocr_section_confidence": section_confidence,
@@ -1058,96 +1181,145 @@ def _ocr_scanned_pages(
                     },
                 )
             elif recovered_document is None and client is None:
-                recovered_document = page_document
+                raise RuntimeError(
+                    f"{path.name} 第 {page_document.page} 页没有可用的 PaddleOCR-VL 缓存，"
+                    "且当前构建未提供 PaddleOCR-VL 客户端"
+                )
 
             if recovered_document is None:
                 page = document[page_document.page - 1]
                 width, height = max(1.0, float(page.rect.width)), max(1.0, float(page.rect.height))
-                scale = min(1.7, 2200 / max(width, height), math.sqrt(4_500_000 / (width * height)))
+                scale = min(
+                    settings.paddleocr_render_scale,
+                    2800 / max(width, height),
+                    math.sqrt(7_000_000 / (width * height)),
+                )
                 pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
                 image_bytes = pixmap.tobytes("png")
                 try:
-                    value = client.complete_json(
-                        PAGE_OCR_PROMPT,
-                        image_bytes=image_bytes,
-                        image_mime="image/png",
+                    result = client.predict_page(
+                        image_bytes,
+                        source=path.name,
+                        page=page_document.page,
                     )
-                except QwenMultimodalAPIError as exc:
-                    logger.warning("Qwen page OCR failed for %s page %s: %s", path.name, page_document.page, exc)
-                    recovered_document = page_document
-                    value = {}
-                blocks = _ocr_blocks(value.get("blocks"))
-                text = _ocr_text(blocks or value.get("text"))
-                if recovered_document is None and len(re.sub(r"\s+", "", text)) < 30:
-                    logger.warning("Qwen page OCR returned too little text for %s page %s", path.name, page_document.page)
-                    recovered_document = page_document
-                if recovered_document is None:
-                    (
-                        verified_section,
-                        verified_confidence,
-                        heading_verification_attempted,
-                    ) = _verify_section_heading_crop(
-                        page,
-                        value,
-                        text,
-                        previous_section,
-                        client,
+                except PaddleOCRVLInferenceError:
+                    # The build manager stages output separately, so a hard failure
+                    # preserves the currently active index instead of degrading it.
+                    raise
+                blocks = _ocr_blocks(result.get("blocks"))
+                blocks = _retry_low_confidence_key_blocks(
+                    page,
+                    blocks,
+                    client,
+                    source=path.name,
+                    page_number=page_document.page,
+                )
+                visible_blocks = [
+                    block
+                    for block in blocks
+                    if block.get("type") not in {"image", "page_header", "page_footer", "noise"}
+                    and str(block.get("text", "")).strip()
+                ]
+                text = _ocr_text(visible_blocks)
+                if not text:
+                    text = "[PaddleOCR-VL未识别到正文，保留本页视觉版面证据]"
+                chapter_blocks = [
+                    block for block in blocks if block.get("type") == "chapter_heading"
+                ]
+                section_blocks = [
+                    block for block in blocks if block.get("type") == "section_heading"
+                ]
+                raw_chapter = str(chapter_blocks[0].get("text", "")) if chapter_blocks else ""
+                section_block = section_blocks[-1] if section_blocks else {}
+                raw_section = str(section_block.get("text", ""))
+                heading_verification_attempted = any(
+                    any(
+                        correction.get("type") == "paddle-high-resolution-retry"
+                        for correction in block.get("corrections", [])
+                        if isinstance(correction, dict)
                     )
-                    chapter, section, section_source = _ocr_heading_context_details(
-                        value,
-                        text,
-                        previous_chapter,
-                        previous_section,
-                        verified_section=verified_section,
-                        heading_verification_attempted=heading_verification_attempted,
+                    for block in section_blocks
+                )
+                verified_section = (
+                    _normalize_section_heading(raw_section)
+                    if heading_verification_attempted
+                    else ""
+                )
+                value = {
+                    "chapter": raw_chapter,
+                    "section": raw_section,
+                    "section_bbox": section_block.get("bbox", []),
+                }
+                chapter, section, section_source = _ocr_heading_context_details(
+                    value,
+                    text,
+                    previous_chapter,
+                    previous_section,
+                    verified_section=verified_section,
+                    heading_verification_attempted=heading_verification_attempted,
+                )
+                concepts = _ocr_concepts(extract_course_concepts(text), text)
+                try:
+                    detected_section_confidence = float(
+                        section_block.get("confidence", 0.0) or 0.0
                     )
-                    concepts = _ocr_concepts(value.get("concepts"), text)
-                    section_confidence = (
-                        verified_confidence
-                        if section_source == "heading-crop"
-                        else 0.85
-                        if section_source == "page-text"
-                        else 0.7
-                        if section
-                        else 0.0
-                    )
-                    previous_chapter, previous_section = chapter, section
-                    cache_entries[page_document.page] = {
-                "schema_version": PAGE_OCR_SCHEMA_VERSION,
-                "document_hash": document_hash,
-                "model": client.model,
-                "page": page_document.page,
-                "source_page": page_document.source_page or page_document.page,
-                "text": text,
-                "blocks": blocks,
-                "chapter": chapter,
-                "section": section,
-                "section_raw": _normalize_section_heading(value.get("section", "")),
-                "section_verified": verified_section,
-                "heading_verification_attempted": heading_verification_attempted,
-                "section_source": section_source,
-                "section_confidence": section_confidence,
-                "section_bbox": _normalized_heading_bbox(value.get("section_bbox")),
-                "concepts": concepts,
-                    }
-                    _write_page_ocr_cache(cache_path, cache_entries)
-                    recovered_document = replace(
-                        page_document,
-                        text=text,
-                        chapter=chapter or page_document.chapter,
-                        section=section or chapter or page_document.section,
-                        extra={
-                            **(page_document.extra or {}),
-                            "ocr_concepts": concepts,
-                            "ocr_processor": f"qwen-vl:{client.model}",
-                            "ocr_section_raw": _normalize_section_heading(value.get("section", "")),
-                            "ocr_section_source": section_source,
-                            "ocr_section_confidence": section_confidence,
-                            "ocr_section_bbox": _normalized_heading_bbox(value.get("section_bbox")),
-                            "ocr_heading_verification_attempted": heading_verification_attempted,
-                            "text_blocks": blocks,
-                        },
-                    )
+                except (TypeError, ValueError):
+                    detected_section_confidence = 0.0
+                section_confidence = (
+                    detected_section_confidence
+                    if section_source in {"heading-crop", "page-text"}
+                    else 0.7 if section else 0.0
+                )
+                previous_chapter, previous_section = chapter, section
+                identity = {
+                    "model": getattr(client, "model", PADDLEOCR_VL_MODEL_ID),
+                    "model_revision": PADDLEOCR_VL_GIT_REVISION,
+                    "engine": settings.paddleocr_engine,
+                    "device": settings.paddleocr_device,
+                    "dtype": settings.paddleocr_dtype,
+                    "pipeline_version": settings.paddleocr_pipeline_version,
+                    **expected_identity,
+                }
+                cache_entries[page_document.page] = {
+                    "schema_version": PAGE_OCR_SCHEMA_VERSION,
+                    "document_hash": document_hash,
+                    **identity,
+                    "render_scale": settings.paddleocr_render_scale,
+                    "page": page_document.page,
+                    "source_page": page_document.source_page or page_document.page,
+                    "text": text,
+                    "blocks": blocks,
+                    "raw_result": result.get("raw", {}),
+                    "chapter": chapter,
+                    "section": section,
+                    "section_raw": _normalize_section_heading(raw_section),
+                    "section_verified": verified_section,
+                    "heading_verification_attempted": heading_verification_attempted,
+                    "section_source": section_source,
+                    "section_confidence": section_confidence,
+                    "section_bbox": _normalized_heading_bbox(section_block.get("bbox")),
+                    "concepts": concepts,
+                }
+                _write_page_ocr_cache(cache_path, cache_entries)
+                recovered_document = replace(
+                    page_document,
+                    text=text,
+                    chapter=chapter or page_document.chapter,
+                    section=section or chapter or page_document.section,
+                    extra={
+                        **(page_document.extra or {}),
+                        "ocr_concepts": concepts,
+                        "ocr_processor": f"paddleocr-vl:{identity['model']}",
+                        "ocr_schema_version": PAGE_OCR_SCHEMA_VERSION,
+                        "ocr_runtime": {**identity, "render_scale": settings.paddleocr_render_scale},
+                        "ocr_section_raw": _normalize_section_heading(raw_section),
+                        "ocr_section_source": section_source,
+                        "ocr_section_confidence": section_confidence,
+                        "ocr_section_bbox": _normalized_heading_bbox(section_block.get("bbox")),
+                        "ocr_heading_verification_attempted": heading_verification_attempted,
+                        "text_blocks": blocks,
+                    },
+                )
 
             assert recovered_document is not None
             chapter = page_chapter(recovered_document)
@@ -1163,7 +1335,7 @@ def _ocr_scanned_pages(
         document.close()
     if chapter_limit and first_chapter_index is not None:
         recovered = recovered[first_chapter_index:]
-    return _apply_toc_section_catalog(recovered)
+    return _annotate_ocr_block_contexts(_apply_toc_section_catalog(recovered))
 
 
 def _looks_like_formula(text: str) -> bool:
@@ -1192,6 +1364,62 @@ def _overlapping_text(
     return "\n".join(matches).strip()
 
 
+def _bbox_iou_points(first: list[float], second: list[float]) -> float:
+    if len(first) != 4 or len(second) != 4:
+        return 0.0
+    left = max(first[0], second[0])
+    top = max(first[1], second[1])
+    right = min(first[2], second[2])
+    bottom = min(first[3], second[3])
+    intersection = max(0.0, right - left) * max(0.0, bottom - top)
+    if intersection <= 0:
+        return 0.0
+    first_area = max(0.0, first[2] - first[0]) * max(0.0, first[3] - first[1])
+    second_area = max(0.0, second[2] - second[0]) * max(0.0, second[3] - second[1])
+    return intersection / max(1.0, first_area + second_area - intersection)
+
+
+def _matching_layout_element(
+    elements: Iterable[LayoutElement],
+    *,
+    source: str,
+    page: int,
+    element_type: str,
+    bbox: list[float],
+) -> LayoutElement | None:
+    candidates = [
+        element
+        for element in elements
+        if element.source == source
+        and element.page == page
+        and element.element_type == element_type
+        and _bbox_iou_points(element.bbox, bbox) >= 0.25
+    ]
+    return max(
+        candidates,
+        key=lambda element: _bbox_iou_points(element.bbox, bbox),
+        default=None,
+    )
+
+
+def _table_fact_description(markdown: str, block_id: str) -> tuple[str, list[dict[str, Any]]]:
+    cells = markdown_table_cells(markdown, block_id=block_id)
+    if not cells:
+        return "", []
+    facts: list[str] = []
+    for cell in cells:
+        row_header = str(cell.get("row_header", "")).strip()
+        column_header = str(cell.get("column_header", "")).strip()
+        value = str(cell.get("value", "")).strip()
+        if not value or (value == row_header and int(cell.get("column", 0)) == 0):
+            continue
+        label = " / ".join(part for part in (row_header, column_header) if part)
+        fact = f"{label}：{value}" if label else value
+        if fact not in facts:
+            facts.append(fact)
+    return "；".join(facts[:80]), cells
+
+
 def _localized_nearby_text(
     target_bbox: list[float],
     text_blocks: list[tuple[list[float], str]],
@@ -1212,6 +1440,35 @@ def _localized_nearby_text(
         if same_column and vertical_gap <= vertical_margin:
             candidates.append((vertical_gap, text))
     return "\n".join(text for _, text in sorted(candidates, key=lambda item: item[0])[:3])[:1800]
+
+
+def _nearby_text_block_ids(
+    target_bbox: list[float],
+    text_blocks: list[tuple[list[float], str]],
+    block_records: list[dict[str, Any]],
+    *,
+    vertical_margin: float = 72.0,
+) -> list[str]:
+    if len(target_bbox) != 4:
+        return []
+    left, top, right, bottom = target_bbox
+    candidates: list[tuple[float, str]] = []
+    for index, (bbox, _text) in enumerate(text_blocks):
+        if index >= len(block_records) or len(bbox) != 4:
+            continue
+        block_left, block_top, block_right, block_bottom = bbox
+        horizontal_overlap = min(right, block_right) - max(left, block_left)
+        same_column = horizontal_overlap > 0 or not (
+            block_right < left - 48 or block_left > right + 48
+        )
+        vertical_gap = max(0.0, top - block_bottom, block_top - bottom)
+        block_id = str(block_records[index].get("id", ""))
+        if same_column and vertical_gap <= vertical_margin and block_id:
+            candidates.append((vertical_gap, block_id))
+    return [
+        block_id
+        for _, block_id in sorted(candidates, key=lambda item: item[0])[:8]
+    ]
 
 
 _FORMULA_NUMBER_PATTERN = re.compile(
@@ -1320,42 +1577,6 @@ def _reconcile_formula_with_page_ocr(
     return reconciled, "matching-symbol-skeleton"
 
 
-def _recognize_formula(
-    client: QwenVisionClient | None,
-    image_bytes: bytes,
-    fallback_text: str,
-    nearby_text: str,
-) -> dict[str, Any]:
-    """Recognize one display formula; inline math stays embedded in prose."""
-
-    if client is None:
-        normalized = _normalize_formula_result({}, fallback_text)
-        normalized.update({
-            "model_accepted": False,
-            "raw_result": {},
-            "recognition_error": "vision-client-unavailable",
-        })
-        return normalized
-    prompt = f"""你是电子电路教材公式识别器。图片只包含一个独立公式。
-输出严格 JSON：{{"is_formula":true,"latex":"不含外层美元符号的 LaTeX","plain_text":"便于全文检索的线性文本","variables":[{{"symbol":"I_BQ","meaning":"静态基极电流"}}],"knowledge":"仅依据公式和邻近正文说明公式成立条件、变量关系及可直接推出的结论，不明确则为空","confidence":0.0}}。
-要求：准确恢复上下标、希腊字母、分数、绝对值、单位与公式编号；不得把邻近正文补进公式，不清楚的字符使用 ?，不得猜造数值。
-邻近正文仅用于消歧：{nearby_text[:800]}"""
-    error = ""
-    try:
-        result = client.complete_json(prompt, image_bytes=image_bytes, image_mime="image/png")
-    except QwenMultimodalAPIError as exc:
-        logger.warning("Qwen3-VL formula recognition failed; using page OCR fallback: %s", exc)
-        result = {}
-        error = str(exc)
-    normalized = _normalize_formula_result(result, fallback_text)
-    normalized.update({
-        "model_accepted": bool(result) and bool(normalized["is_formula"]),
-        "raw_result": result,
-        "recognition_error": error,
-    })
-    return normalized
-
-
 def _nearest_formula_caption_region(
     formula_region: DetectedRegion,
     caption_regions: list[DetectedRegion],
@@ -1443,32 +1664,6 @@ def _crop_png(image_bgr: Any, bbox: list[float]) -> bytes:
     if not ok:
         return b""
     return encoded.tobytes()
-
-
-def _formula_retry_crop(image_bgr: Any, bbox: list[float]) -> bytes:
-    """Add context padding and upscale a formula crop for one recognition retry."""
-
-    import cv2
-
-    width = max(1.0, bbox[2] - bbox[0])
-    height = max(1.0, bbox[3] - bbox[1])
-    padded = [
-        bbox[0] - max(12.0, width * 0.08),
-        bbox[1] - max(8.0, height * 0.35),
-        bbox[2] + max(12.0, width * 0.08),
-        bbox[3] + max(8.0, height * 0.35),
-    ]
-    raw = _crop_png(image_bgr, padded)
-    if not raw:
-        return b""
-    import numpy as np
-
-    decoded = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
-    if decoded is None:
-        return b""
-    enlarged = cv2.resize(decoded, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-    ok, encoded = cv2.imencode(".png", enlarged)
-    return encoded.tobytes() if ok else b""
 
 
 def _normalize_circuit_result(value: dict[str, Any]) -> dict[str, Any]:
@@ -1852,24 +2047,6 @@ def _analyze_image(
     _enforce_verified_circuit(element)
 
 
-def _qwen_table(
-    client: QwenVisionClient | None,
-    image_bytes: bytes,
-    nearby_text: str,
-) -> dict[str, Any]:
-    if client is None:
-        return {}
-    prompt = f"""识别图片中的电路课程表格，只返回 JSON：
-{{"markdown":"完整Markdown表格","columns":["列名"],"rows":[["单元格"]],"description":"表格含义","confidence":0.0}}
-保留单位、公式和空单元格，不得编造被遮挡内容。
-附近教材文字：{nearby_text[:1200]}"""
-    try:
-        return client.complete_json(prompt, image_bytes=image_bytes, image_mime="image/png")
-    except QwenMultimodalAPIError as exc:
-        logger.warning("Qwen3-VL table recognition failed: %s", exc)
-        return {}
-
-
 def _external_pdf_extract_elements(path: Path) -> list[dict[str, Any]]:
     """Read normalized PDF-Extract-Kit/MinerU JSON when a worker exported it.
 
@@ -1899,6 +2076,7 @@ def enhance_pdf(
     *,
     model_config: BuildModelConfig | None = None,
     chapter_limit: int | None = None,
+    ocr_client: PaddleOCRVLClient | Any | None = None,
 ) -> tuple[list[PageDocument], list[LayoutElement], list[dict[str, Any]]]:
     """Add layout, visual and circuit semantics while preserving original pages."""
 
@@ -1918,10 +2096,30 @@ def enhance_pdf(
         if model_config and model_config.enabled
         else None
     )
+    owns_ocr_client = False
+    if (
+        ocr_client is None
+        and any(item.text.strip() == SCANNED_PAGE_PLACEHOLDER for item in page_documents)
+    ):
+        ocr_client = PaddleOCRVLClient(
+            device=settings.paddleocr_device,
+            engine=settings.paddleocr_engine,
+            dtype=settings.paddleocr_dtype,
+            pipeline_version=settings.paddleocr_pipeline_version,
+            model_source=settings.paddleocr_model_source,
+        )
+        owns_ocr_client = True
     document_hash = _file_sha256(path)
-    page_documents = _ocr_scanned_pages(
-        path, page_documents, output_dir, vision_client, document_hash, chapter_limit
-    )
+    try:
+        page_documents = _ocr_scanned_pages(
+            path, page_documents, output_dir, ocr_client, document_hash, chapter_limit
+        )
+    except Exception:
+        if vision_client is not None:
+            vision_client.close()
+        if owns_ocr_client and ocr_client is not None:
+            ocr_client.close()
+        raise
     page_text_hashes = {
         item.page: hashlib.sha256(item.text.encode("utf-8")).hexdigest()
         for item in page_documents
@@ -2034,6 +2232,8 @@ def enhance_pdf(
             meta = page_meta[page_no]
             text_blocks: list[tuple[list[float], str]] = []
             text_block_types: list[str] = []
+            text_block_records: list[dict[str, Any]] = []
+            paddle_image_blocks: list[tuple[list[float], dict[str, Any]]] = []
             ocr_blocks = (
                 meta.extra.get("text_blocks", [])
                 if isinstance(meta.extra, dict)
@@ -2045,9 +2245,8 @@ def enhance_pdf(
                 block_type = str(block.get("type", "paragraph")).strip().lower()
                 if block_type in {"page_header", "page_footer", "noise"}:
                     continue
-                text = str(block.get("text", "")).strip()
                 normalized_bbox = block.get("bbox", [])
-                if not text or not isinstance(normalized_bbox, list) or len(normalized_bbox) != 4:
+                if not isinstance(normalized_bbox, list) or len(normalized_bbox) != 4:
                     continue
                 try:
                     bbox = [
@@ -2058,28 +2257,69 @@ def enhance_pdf(
                     ]
                 except (TypeError, ValueError):
                     continue
+                if block_type == "image":
+                    paddle_image_blocks.append((bbox, block))
+                    continue
+                text = str(block.get("text", "")).strip()
+                if not text:
+                    continue
                 text_blocks.append((bbox, text))
                 text_block_types.append(block_type)
+                text_block_records.append(block)
 
             order = 0
             page_image_count = 0
             for block_index, (bbox, text) in enumerate(text_blocks):
                 block_type = text_block_types[block_index]
+                block = text_block_records[block_index]
                 element_type = (
                     "table"
                     if block_type == "table" or _looks_like_table(text)
                     else "formula"
-                    if block_type == "formula" and not pdf_extract_kit.available
+                    if block_type == "formula"
                     else "text"
                 )
-                element_id, digest = _element_id(path.name, page_no, order, text)
+                generated_id, digest = _element_id(path.name, page_no, order, text)
+                element_id = str(block.get("id", generated_id))
                 meta = page_meta[page_no]
-                elements.append(LayoutElement(
+                description = ""
+                table_cells: list[dict[str, Any]] = []
+                if element_type == "table":
+                    description, table_cells = _table_fact_description(text, element_id)
+                element = LayoutElement(
                     id=element_id, source=path.name, page=page_no, element_type=element_type,
                     bbox=bbox, text=text, reading_order=order, chapter=meta.chapter,
-                    section=meta.section, content_hash=digest,
+                    section=meta.section, content_hash=digest, description=description,
+                    nearby_text=_localized_nearby_text(bbox, text_blocks),
+                    confidence=float(block.get("confidence", 0.0) or 0.0),
+                    processor="paddleocr-vl-layout",
+                    uncertain=bool(block.get("uncertain", False)),
                     source_page=meta.source_page or page_no,
-                ))
+                    polygon=[
+                        [float(value) for value in point[:2]]
+                        for point in block.get("polygon", [])
+                        if isinstance(point, list) and len(point) >= 2
+                    ],
+                    ocr_block_id=element_id,
+                    evidence_metadata={
+                        "schema_version": PAGE_OCR_SCHEMA_VERSION,
+                        "normalized_bbox": list(block.get("bbox", [])),
+                        "raw_label": str(block.get("raw_label", "")),
+                        "source_engine": str(block.get("source_engine", "paddleocr-vl")),
+                        "model_revision": str(
+                            block.get("model_revision", PADDLEOCR_VL_GIT_REVISION)
+                        ),
+                        "model_reading_order": block.get("model_reading_order"),
+                        "corrections": list(block.get("corrections", [])),
+                        "table_cells": table_cells,
+                        "context_block_ids": _nearby_text_block_ids(
+                            bbox, text_blocks, text_block_records
+                        ),
+                    },
+                )
+                if element_type in {"formula", "table"}:
+                    element.uncertain = element.uncertain or not bool(text.strip())
+                elements.append(element)
                 order += 1
 
             pdfkit_figure_count = 0
@@ -2172,8 +2412,14 @@ def enhance_pdf(
                         confidence=region.confidence,
                         processor=region.detector,
                         source_page=meta.source_page or page_no,
+                        evidence_metadata={
+                            "context_block_ids": _nearby_text_block_ids(
+                                bbox_points, text_blocks, text_block_records
+                            ),
+                        },
                     )
                     cached = cached_images.get(digest)
+                    append_element = True
                     if category == "figure":
                         expected_vlm = _circuit_processor(vision_client)
                         cache_compatible = bool(cached) and (
@@ -2195,34 +2441,49 @@ def enhance_pdf(
                         pdfkit_figure_count += 1
                         page_image_count += 1
                     elif category == "table":
-                        expected_vlm = f"qwen-vl:{vision_client.model}" if vision_client else ""
-                        if cached and expected_vlm and str(cached.get("processor", "")).endswith(expected_vlm):
-                            for field_name in ("text", "description", "confidence", "processor", "uncertain"):
-                                if field_name in cached:
-                                    setattr(element, field_name, cached[field_name])
-                        else:
-                            result = _qwen_table(vision_client, crop_bytes, nearby)
-                            element.text = str(result.get("markdown", "")).strip()
-                            element.description = str(result.get("description", "")).strip()
-                            element.processor += (
-                                f"+{expected_vlm}" if result and expected_vlm else "+unrecognized"
-                            )
-                            try:
-                                element.confidence = max(
-                                    element.confidence, float(result.get("confidence", 0))
-                                )
-                            except (TypeError, ValueError):
-                                pass
-                            element.uncertain = not bool(element.text)
-                    else:
-                        fallback_text = ocr_formula.get("plain_text", "")
-                        expected_processor = (
-                            f"formula-vl:{vision_client.model}"
-                            if vision_client
-                            else "page-ocr-formula"
+                        matched = _matching_layout_element(
+                            elements,
+                            source=path.name,
+                            page=page_no,
+                            element_type="table",
+                            bbox=bbox_points,
                         )
-                        cache_compatible = bool(cached) and (
-                            str(cached.get("processor", "")).endswith(expected_processor)
+                        if matched is not None:
+                            append_element = False
+                            element = matched
+                            element.confidence = max(element.confidence, region.confidence)
+                            if region.detector not in element.processor:
+                                element.processor += f"+{region.detector}-localized"
+                            if crop_bytes and not element.image_path:
+                                element.image_path = str(
+                                    image_path.relative_to(output_dir)
+                                ).replace("\\", "/")
+                            element.evidence_metadata["pdf_extract_kit_bbox"] = bbox_points
+                        else:
+                            element.text = _overlapping_text(bbox_points, text_blocks)
+                            description, cells = _table_fact_description(
+                                element.text, element.id
+                            )
+                            element.description = description
+                            element.processor += "+paddleocr-vl-page-evidence"
+                            element.uncertain = not bool(element.text)
+                            element.evidence_metadata = {
+                                "schema_version": PAGE_OCR_SCHEMA_VERSION,
+                                "source_engine": "paddleocr-vl",
+                                "model_revision": PADDLEOCR_VL_GIT_REVISION,
+                                "table_cells": cells,
+                                "pdf_extract_kit_bbox": bbox_points,
+                                "context_block_ids": _nearby_text_block_ids(
+                                    bbox_points, text_blocks, text_block_records
+                                ),
+                            }
+                    else:
+                        matched = _matching_layout_element(
+                            elements,
+                            source=path.name,
+                            page=page_no,
+                            element_type="formula",
+                            bbox=bbox_points,
                         )
                         formula_audit: dict[str, Any] = {
                             "source": path.name,
@@ -2241,101 +2502,52 @@ def enhance_pdf(
                             "attempts": [],
                             "fallback_source": "",
                         }
-                        if cache_compatible:
-                            for field_name in (
-                                "text", "description", "confidence", "processor", "uncertain", "caption"
-                            ):
-                                if field_name in cached:
-                                    setattr(element, field_name, cached[field_name])
-                            formula_audit["status"] = "cached"
-                        else:
-                            primary = (
-                                _recognize_formula(
-                                    vision_client, crop_bytes, fallback_text, nearby
-                                )
-                                if crop_usable
-                                else {
-                                    "model_accepted": False,
-                                    "raw_result": {},
-                                    "recognition_error": "primary-crop-unavailable",
-                                }
-                            )
+                        if matched is not None:
+                            append_element = False
+                            element = matched
+                            element.confidence = max(element.confidence, region.confidence)
+                            if region.detector not in element.processor:
+                                element.processor += f"+{region.detector}-localized"
+                            if crop_bytes and not element.image_path:
+                                element.image_path = str(
+                                    image_path.relative_to(output_dir)
+                                ).replace("\\", "/")
+                            if not element.caption:
+                                element.caption = ocr_formula.get("caption", "")
+                            element.evidence_metadata["pdf_extract_kit_bbox"] = bbox_points
+                            formula_audit["status"] = "recognized"
                             formula_audit["attempts"].append({
-                                "stage": "qwen-primary",
-                                "accepted": primary.get("model_accepted", False),
-                                "result": primary.get("raw_result", {}),
-                                "error": primary.get("recognition_error", ""),
+                                "stage": "paddle-page-ocr",
+                                "accepted": bool(element.text),
+                                "ocr_block_id": element.ocr_block_id,
                             })
-                            result = primary if primary.get("model_accepted") else None
-                            retry_path: Path | None = None
-                            for retry_number in range(settings.formula_vl_retry_count):
-                                if result is not None or vision_client is None:
-                                    break
-                                retry_bytes = _formula_retry_crop(
-                                    image_bgr, region.bbox_pixels
-                                )
-                                if not retry_bytes or not _image_is_safe(retry_bytes):
-                                    formula_audit["attempts"].append({
-                                        "stage": f"qwen-retry-{retry_number + 1}",
-                                        "accepted": False,
-                                        "error": "retry-crop-unavailable",
-                                    })
-                                    break
-                                retry_path = image_path.with_name(
-                                    image_path.stem + "-retry.png"
-                                )
-                                retry_path.write_bytes(retry_bytes)
-                                retried = _recognize_formula(
-                                    vision_client, retry_bytes, fallback_text, nearby
-                                )
-                                formula_audit["attempts"].append({
-                                    "stage": f"qwen-retry-{retry_number + 1}",
-                                    "accepted": retried.get("model_accepted", False),
-                                    "image_path": str(
-                                        retry_path.relative_to(output_dir)
-                                    ).replace("\\", "/"),
-                                    "result": retried.get("raw_result", {}),
-                                    "error": retried.get("recognition_error", ""),
-                                })
-                                if retried.get("model_accepted"):
-                                    result = retried
-                            if result is not None:
-                                result, reconciliation = _reconcile_formula_with_page_ocr(
-                                    result, ocr_formula
-                                )
-                                if reconciliation:
-                                    formula_audit["reconciliation"] = {
-                                        "source": "page-ocr",
-                                        "reason": reconciliation,
-                                        "latex": result.get("latex", ""),
-                                    }
-                                formula_audit["status"] = "recognized"
-                            else:
-                                fallback_latex = (
-                                    ocr_formula.get("latex", "")
-                                    or _formula_latex_from_ocr_text(fallback_text)
-                                )
-                                if fallback_latex or fallback_text:
-                                    result = _normalize_formula_result(
-                                        {
-                                            "is_formula": True,
-                                            "latex": fallback_latex,
-                                            "plain_text": fallback_text,
-                                            "confidence": 0.55,
-                                        },
-                                        fallback_text,
-                                    )
-                                    formula_audit["status"] = "fallback"
-                                    formula_audit["fallback_source"] = "page-ocr"
-                                else:
-                                    result = {
+                        else:
+                            fallback_text = ocr_formula.get("plain_text", "")
+                            fallback_latex = (
+                                ocr_formula.get("latex", "")
+                                or _formula_latex_from_ocr_text(fallback_text)
+                            )
+                            if fallback_latex or fallback_text:
+                                result = _normalize_formula_result(
+                                    {
                                         "is_formula": True,
-                                        "latex": "",
-                                        "plain_text": "",
-                                        "variables": [],
-                                        "confidence": 0.0,
-                                    }
-                                    formula_audit["status"] = "uncertain"
+                                        "latex": fallback_latex,
+                                        "plain_text": fallback_text,
+                                        "confidence": max(0.55, region.confidence),
+                                    },
+                                    fallback_text,
+                                )
+                                formula_audit["status"] = "recognized"
+                                formula_audit["fallback_source"] = "paddle-page-ocr"
+                            else:
+                                result = {
+                                    "is_formula": True,
+                                    "latex": "",
+                                    "plain_text": "",
+                                    "variables": [],
+                                    "confidence": 0.0,
+                                }
+                                formula_audit["status"] = "uncertain"
                             latex = str(result.get("latex", "")).strip()
                             plain_text = str(result.get("plain_text", "")).strip()
                             element.text = (
@@ -2353,21 +2565,28 @@ def enhance_pdf(
                                 element.description = "变量：" + json.dumps(
                                     variables, ensure_ascii=False
                                 )
-                            if formula_audit["status"] == "fallback":
-                                element.processor += "+page-ocr-formula-fallback"
-                            elif formula_audit["status"] == "uncertain":
+                            if formula_audit["status"] == "uncertain":
                                 element.processor += "+formula-unresolved"
                             else:
-                                element.processor += f"+{expected_processor}"
+                                element.processor += "+paddleocr-vl-page-evidence"
                             element.confidence = max(
                                 element.confidence, float(result.get("confidence", 0))
                             )
                             recognition_confidence = float(result.get("confidence", 0))
                             element.uncertain = (
-                                formula_audit["status"] in {"fallback", "uncertain"}
+                                formula_audit["status"] == "uncertain"
                                 or not bool(latex)
                                 or recognition_confidence < 0.6
                             )
+                            element.evidence_metadata = {
+                                "schema_version": PAGE_OCR_SCHEMA_VERSION,
+                                "source_engine": "paddleocr-vl",
+                                "model_revision": PADDLEOCR_VL_GIT_REVISION,
+                                "pdf_extract_kit_bbox": bbox_points,
+                                "context_block_ids": _nearby_text_block_ids(
+                                    bbox_points, text_blocks, text_block_records
+                                ),
+                            }
                         formula_audit["final"] = {
                             "status": formula_audit.get("status", "uncertain"),
                             "caption": element.caption,
@@ -2377,10 +2596,76 @@ def enhance_pdf(
                             "uncertain": element.uncertain,
                         }
                         formula_audit_records.append(formula_audit)
-                    elements.append(element)
+                    if append_element:
+                        elements.append(element)
                     order += 1
 
-            if not pdfkit_figure_count:
+            for bbox, block in paddle_image_blocks:
+                duplicate_visual = any(
+                    element.source == path.name
+                    and element.page == page_no
+                    and element.element_type in {"image", "circuit", "figure"}
+                    and _bbox_iou_points(element.bbox, bbox) >= 0.25
+                    for element in elements
+                )
+                if duplicate_visual:
+                    continue
+                image_counter += 1
+                if (
+                    settings.multimodal_image_limit
+                    and image_counter > settings.multimodal_image_limit
+                ):
+                    break
+                clip = fitz.Rect(*bbox) & page.rect
+                if clip.is_empty or clip.width < 2 or clip.height < 2:
+                    continue
+                image_bytes = page.get_pixmap(
+                    matrix=fitz.Matrix(2.0, 2.0), clip=clip, alpha=False
+                ).tobytes("png")
+                if not _image_is_safe(image_bytes):
+                    continue
+                element_id, digest = _element_id(
+                    path.name, page_no, order, image_bytes
+                )
+                image_path = artifacts_dir / (
+                    f"p{page_no:04d}-{element_id[:10]}-paddle-image.png"
+                )
+                image_path.write_bytes(image_bytes)
+                element = LayoutElement(
+                    id=element_id,
+                    source=path.name,
+                    page=page_no,
+                    element_type="image",
+                    bbox=bbox,
+                    image_path=str(image_path.relative_to(output_dir)).replace("\\", "/"),
+                    reading_order=order,
+                    chapter=meta.chapter,
+                    section=meta.section,
+                    nearby_text=_localized_nearby_text(bbox, text_blocks) or meta.text[-3000:],
+                    content_hash=digest,
+                    confidence=float(block.get("confidence", 0.0) or 0.0),
+                    processor="paddleocr-vl-layout",
+                    source_page=meta.source_page or page_no,
+                    polygon=list(block.get("polygon", [])),
+                    ocr_block_id=str(block.get("id", "")) or None,
+                    evidence_metadata={
+                        "schema_version": PAGE_OCR_SCHEMA_VERSION,
+                        "normalized_bbox": list(block.get("bbox", [])),
+                        "source_engine": "paddleocr-vl",
+                        "model_revision": PADDLEOCR_VL_GIT_REVISION,
+                        "corrections": list(block.get("corrections", [])),
+                        "context_block_ids": _nearby_text_block_ids(
+                            bbox, text_blocks, text_block_records
+                        ),
+                    },
+                )
+                _analyze_image(element, image_bytes, vision_client)
+                _enforce_verified_circuit(element)
+                elements.append(element)
+                page_image_count += 1
+                order += 1
+
+            if page_image_count == 0:
                 seen_xrefs: set[int] = set()
                 for image_info in page.get_images(full=True):
                     xref = int(image_info[0])
@@ -2531,6 +2816,8 @@ def enhance_pdf(
         document.close()
         if vision_client is not None:
             vision_client.close()
+        if owns_ocr_client and ocr_client is not None:
+            ocr_client.close()
 
     # External parser output enriches, but never erases, the auditable fallback extraction.
     for index, item in enumerate(external):
@@ -2557,12 +2844,35 @@ def enhance_pdf(
         else:
             kind = "text"
         meta = page_meta[page_no]
+        bbox_values = [float(v) for v in bbox[:4]]
+        matched = (
+            _matching_layout_element(
+                elements,
+                source=path.name,
+                page=page_no,
+                element_type=kind,
+                bbox=bbox_values,
+            )
+            if kind in {"formula", "table"}
+            else None
+        )
+        if matched is not None:
+            if "pdf-extract-kit-external" not in matched.processor:
+                matched.processor += "+pdf-extract-kit-external"
+            matched.evidence_metadata["external_parser_bbox"] = bbox_values
+            continue
+        description = ""
+        table_cells: list[dict[str, Any]] = []
+        if kind == "table":
+            description, table_cells = _table_fact_description(text, element_id)
         elements.append(LayoutElement(
             id=element_id, source=path.name, page=page_no, element_type=kind,
-            bbox=[float(v) for v in bbox[:4]], text=text, reading_order=100000 + index,
+            bbox=bbox_values, text=text, reading_order=100000 + index,
             chapter=meta.chapter, section=meta.section, content_hash=digest,
+            description=description,
             processor="pdf-extract-kit",
             source_page=meta.source_page or page_no,
+            evidence_metadata={"table_cells": table_cells} if table_cells else {},
         ))
 
     audit = [decisions[number] for number in sorted(decisions)]

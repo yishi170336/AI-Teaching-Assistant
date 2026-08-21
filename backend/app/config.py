@@ -123,10 +123,31 @@ class Settings:
     pdf_extract_kit_output_dir: str = os.getenv("PDF_EXTRACT_KIT_OUTPUT_DIR", "")
     pdf_extract_kit_dir: str = os.getenv("PDF_EXTRACT_KIT_DIR", "third_party/PDF-Extract-Kit")
     pdf_extract_kit_page_limit: int = int(os.getenv("PDF_EXTRACT_KIT_PAGE_LIMIT", "0"))
+    paddleocr_device: str = os.getenv("PADDLEOCR_DEVICE", "gpu:0")
+    paddleocr_engine: str = os.getenv("PADDLEOCR_ENGINE", "transformers")
+    paddleocr_dtype: str = os.getenv("PADDLEOCR_DTYPE", "float16")
+    paddleocr_pipeline_version: str = os.getenv(
+        "PADDLEOCR_PIPELINE_VERSION", "v1.6"
+    )
+    paddleocr_model_source: str = os.getenv("PADDLEOCR_MODEL_SOURCE", "BOS")
+    paddleocr_render_scale: float = float(os.getenv("PADDLEOCR_RENDER_SCALE", "2.0"))
+    paddleocr_retry_scale: float = float(os.getenv("PADDLEOCR_RETRY_SCALE", "3.0"))
+    paddleocr_key_block_confidence: float = float(
+        os.getenv("PADDLEOCR_KEY_BLOCK_CONFIDENCE", "0.70")
+    )
     rerank_model_path: str = os.getenv("RERANK_MODEL_PATH", "")
     multimodal_image_limit: int = int(os.getenv("MULTIMODAL_IMAGE_LIMIT", "0"))
     multimodal_min_image_area: int = int(os.getenv("MULTIMODAL_MIN_IMAGE_AREA", "12000"))
     formula_vl_retry_count: int = int(os.getenv("FORMULA_VL_RETRY_COUNT", "1"))
+    semantic_quality_min_text_units: int = int(
+        os.getenv("SEMANTIC_QUALITY_MIN_TEXT_UNITS", "100")
+    )
+    semantic_min_fact_evidence_coverage: float = float(
+        os.getenv("SEMANTIC_MIN_FACT_EVIDENCE_COVERAGE", "0.9882")
+    )
+    semantic_min_multimodal_fact_coverage: float = float(
+        os.getenv("SEMANTIC_MIN_MULTIMODAL_FACT_COVERAGE", "0.9952")
+    )
     frontend_origins: tuple[str, ...] = tuple(
         value.strip()
         for value in os.getenv(
