@@ -876,6 +876,266 @@ def _stable_graph_id(prefix: str, *values: object) -> str:
     return f"{prefix}:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
 
 
+def repair_community_relationship_mapping(graph: dict[str, Any]) -> dict[str, int]:
+    """Give every relationship a valid, evidence-neutral community context.
+
+    GraphRAG's hierarchical Leiden workflow intentionally emits communities for
+    the largest connected component. Textbook graphs commonly contain many
+    smaller, valid fact components, so those relationships otherwise have no
+    community mapping at all. Preserve Leiden communities and represent every
+    uncovered connected component as an explicit deterministic fallback
+    community. This only classifies existing nodes and relationships; it never
+    creates or rewrites a semantic fact.
+    """
+
+    nodes = [item for item in graph.get("nodes", []) if isinstance(item, dict)]
+    edges = [item for item in graph.get("edges", []) if isinstance(item, dict)]
+    node_ids = {str(item.get("id", "")) for item in nodes if item.get("id")}
+    edge_by_id = {
+        str(item.get("id", "")): item for item in edges if item.get("id")
+    }
+    node_by_id = {
+        str(item.get("id", "")): item for item in nodes if item.get("id")
+    }
+
+    official_communities = [
+        item
+        for item in graph.get("communities", [])
+        if isinstance(item, dict)
+        and item.get("algorithm") != "microsoft-graphrag-connected-component-fallback"
+    ]
+    official_reports = [
+        item
+        for item in graph.get("community_reports", [])
+        if isinstance(item, dict)
+        and item.get("algorithm") != "microsoft-graphrag-connected-component-fallback"
+    ]
+
+    edge_communities: dict[str, list[str]] = {}
+    edge_boundary_communities: dict[str, list[str]] = {}
+    for community in official_communities:
+        community_id = str(community.get("id", ""))
+        entity_ids = list(dict.fromkeys(
+            str(item) for item in _as_list(community.get("entity_ids"))
+            if str(item) in node_ids
+        ))
+        original_relationship_ids = community.get(
+            "official_relationship_ids", community.get("relationship_ids", [])
+        )
+        official_relationship_ids = list(dict.fromkeys(
+            str(item) for item in _as_list(original_relationship_ids)
+            if str(item) in edge_by_id
+        ))
+        entity_set = set(entity_ids)
+        official_relationship_set = set(official_relationship_ids)
+        inferred_relationship_ids = [
+            edge_id
+            for edge_id, edge in edge_by_id.items()
+            if edge_id not in official_relationship_set
+            and str(edge.get("source", "")) in entity_set
+            and str(edge.get("target", "")) in entity_set
+        ]
+        relationship_ids = list(dict.fromkeys([
+            *official_relationship_ids, *inferred_relationship_ids
+        ]))
+        relationship_set = set(relationship_ids)
+        boundary_relationship_ids = [
+            edge_id
+            for edge_id, edge in edge_by_id.items()
+            if edge_id not in relationship_set
+            and (
+                str(edge.get("source", "")) in entity_set
+                or str(edge.get("target", "")) in entity_set
+            )
+        ]
+        community["entity_ids"] = entity_ids
+        community["official_relationship_ids"] = official_relationship_ids
+        community["inferred_relationship_ids"] = inferred_relationship_ids
+        community["relationship_ids"] = relationship_ids
+        community["boundary_relationship_ids"] = boundary_relationship_ids
+        community["size"] = len(entity_ids)
+        for edge_id in relationship_ids:
+            edge_communities.setdefault(edge_id, []).append(community_id)
+        for edge_id in boundary_relationship_ids:
+            edge_boundary_communities.setdefault(edge_id, []).append(community_id)
+
+    uncovered_edge_ids = {
+        edge_id
+        for edge_id in edge_by_id
+        if not edge_communities.get(edge_id)
+        and not edge_boundary_communities.get(edge_id)
+    }
+    adjacency: dict[str, set[str]] = {}
+    incident_edges: dict[str, set[str]] = {}
+    for edge_id in uncovered_edge_ids:
+        edge = edge_by_id[edge_id]
+        source = str(edge.get("source", ""))
+        target = str(edge.get("target", ""))
+        if source not in node_ids or target not in node_ids:
+            continue
+        adjacency.setdefault(source, set()).add(target)
+        adjacency.setdefault(target, set()).add(source)
+        incident_edges.setdefault(source, set()).add(edge_id)
+        incident_edges.setdefault(target, set()).add(edge_id)
+
+    numeric_communities = [
+        int(item.get("community", 0) or 0)
+        for item in official_communities
+        if str(item.get("community", "")).lstrip("-").isdigit()
+    ]
+    next_community_number = max(numeric_communities, default=-1) + 1
+    fallback_communities: list[dict[str, Any]] = []
+    fallback_reports: list[dict[str, Any]] = []
+    visited: set[str] = set()
+    for start in sorted(adjacency):
+        if start in visited:
+            continue
+        component_nodes: set[str] = set()
+        stack = [start]
+        while stack:
+            node_id = stack.pop()
+            if node_id in visited:
+                continue
+            visited.add(node_id)
+            component_nodes.add(node_id)
+            stack.extend(adjacency.get(node_id, set()) - visited)
+        component_edges = sorted({
+            edge_id
+            for node_id in component_nodes
+            for edge_id in incident_edges.get(node_id, set())
+        })
+        if not component_edges:
+            continue
+        component_node_ids = sorted(component_nodes)
+        community_id = _stable_graph_id(
+            "community-fallback", *component_edges
+        )
+        degree = {
+            node_id: len(incident_edges.get(node_id, set()))
+            for node_id in component_node_ids
+        }
+        representative_ids = sorted(
+            component_node_ids,
+            key=lambda node_id: (
+                -degree[node_id],
+                -int(node_by_id[node_id].get("evidence_count", 0) or 0),
+                str(node_by_id[node_id].get("name", "")),
+            ),
+        )
+        representative_names = [
+            str(node_by_id[node_id].get("name", node_id))
+            for node_id in representative_ids[:3]
+        ]
+        title = "、".join(representative_names)
+        if len(component_node_ids) > len(representative_names):
+            title += "等概念"
+        text_unit_ids = list(dict.fromkeys(
+            str(text_unit_id)
+            for edge_id in component_edges
+            for text_unit_id in _as_list(
+                edge_by_id[edge_id].get("text_unit_ids")
+            )
+            if str(text_unit_id)
+        ))
+        source_pages = sorted({
+            int(page)
+            for edge_id in component_edges
+            for page in _as_list(edge_by_id[edge_id].get("source_pages"))
+            if str(page).isdigit()
+        })
+        community_number = next_community_number + len(fallback_communities)
+        fallback_community = {
+            "id": community_id,
+            "community": community_number,
+            "parent": None,
+            "children": [],
+            "level": 0,
+            "title": title,
+            "entity_ids": component_node_ids,
+            "official_relationship_ids": [],
+            "inferred_relationship_ids": component_edges,
+            "relationship_ids": component_edges,
+            "boundary_relationship_ids": [],
+            "text_unit_ids": text_unit_ids,
+            "source_pages": source_pages,
+            "size": len(component_node_ids),
+            "algorithm": "microsoft-graphrag-connected-component-fallback",
+            "fallback_reason": "not_emitted_by_hierarchical_leiden",
+        }
+        fallback_communities.append(fallback_community)
+        finding_edges = [edge_by_id[edge_id] for edge_id in component_edges[:5]]
+        fallback_reports.append({
+            "id": _stable_graph_id("community-report-fallback", community_id),
+            "community": community_number,
+            "level": 0,
+            "title": title,
+            "summary": (
+                f"该连通分量包含 {len(component_node_ids)} 个实体和 "
+                f"{len(component_edges)} 条已有证据关系。"
+            ),
+            "full_content": "\n".join(
+                str(edge.get("description", "")) for edge in finding_edges
+                if str(edge.get("description", "")).strip()
+            ),
+            "rank": float(len(component_edges)),
+            "findings": [
+                {
+                    "summary": (
+                        f"{node_by_id[str(edge['source'])].get('name', edge['source'])} "
+                        f"— {edge.get('relation', edge.get('type', '相关'))} — "
+                        f"{node_by_id[str(edge['target'])].get('name', edge['target'])}"
+                    ),
+                    "explanation": str(edge.get("description", "")),
+                }
+                for edge in finding_edges
+            ],
+            "algorithm": "microsoft-graphrag-connected-component-fallback",
+        })
+        for edge_id in component_edges:
+            edge_communities.setdefault(edge_id, []).append(community_id)
+
+    graph["communities"] = [*official_communities, *fallback_communities]
+    graph["community_reports"] = [*official_reports, *fallback_reports]
+    for edge_id, edge in edge_by_id.items():
+        community_ids = list(dict.fromkeys(edge_communities.get(edge_id, [])))
+        boundary_ids = list(dict.fromkeys(
+            edge_boundary_communities.get(edge_id, [])
+        ))
+        edge["community_ids"] = community_ids
+        edge["boundary_community_ids"] = boundary_ids
+        edge["cross_community"] = bool(boundary_ids)
+        if any(item.startswith("community-fallback:") for item in community_ids):
+            edge["community_mapping_source"] = "connected_component_fallback"
+        elif community_ids:
+            edge["community_mapping_source"] = "hierarchical_leiden"
+        elif boundary_ids:
+            edge["community_mapping_source"] = "hierarchical_leiden_boundary"
+        else:
+            edge["community_mapping_source"] = "unclassified"
+
+    summary = {
+        "official_communities": len(official_communities),
+        "fallback_communities": len(fallback_communities),
+        "communities": len(graph["communities"]),
+        "relationships": len(edges),
+        "intra_community_relationships": sum(
+            bool(item.get("community_ids")) for item in edges
+        ),
+        "boundary_relationships": sum(
+            not item.get("community_ids")
+            and bool(item.get("boundary_community_ids"))
+            for item in edges
+        ),
+        "unclassified_relationships": sum(
+            not item.get("community_ids")
+            and not item.get("boundary_community_ids")
+            for item in edges
+        ),
+    }
+    graph.setdefault("stats", {}).update(summary)
+    return summary
+
+
 def convert_graphrag_outputs(
     output_path: Path,
     units: Iterable[KnowledgeUnit],
@@ -1192,37 +1452,6 @@ def convert_graphrag_outputs(
             "algorithm": "microsoft-graphrag-hierarchical-leiden",
         })
 
-    edge_communities: dict[str, list[str]] = {}
-    edge_boundary_communities: dict[str, list[str]] = {}
-    for community in communities:
-        community_entity_ids = set(community["entity_ids"])
-        intra_relationship_ids = set(community["relationship_ids"])
-        boundary_relationship_ids = [
-            edge["id"]
-            for edge in edges
-            if edge["id"] not in intra_relationship_ids
-            and (
-                edge["source"] in community_entity_ids
-                or edge["target"] in community_entity_ids
-            )
-        ]
-        community["boundary_relationship_ids"] = boundary_relationship_ids
-        for relationship_id in community["relationship_ids"]:
-            edge_communities.setdefault(relationship_id, []).append(community["id"])
-        for relationship_id in boundary_relationship_ids:
-            edge_boundary_communities.setdefault(relationship_id, []).append(
-                community["id"]
-            )
-    for edge in edges:
-        community_ids = edge_communities.get(edge["id"], [])
-        edge["community_ids"] = community_ids
-        edge["boundary_community_ids"] = edge_boundary_communities.get(
-            edge["id"], []
-        )
-        # Leiden communities list intra-community edges only. Cross-community is a
-        # valid explicit classification, not silently missing coverage.
-        edge["cross_community"] = not community_ids
-
     reports = [
         {
             "id": str(row.get("id", "")),
@@ -1247,7 +1476,7 @@ def convert_graphrag_outputs(
         }
         for text_unit in text_units
     ]
-    return {
+    graph = {
         "schema_version": MICROSOFT_GRAPHRAG_SCHEMA_VERSION,
         "nodes": nodes,
         "edges": edges,
@@ -1304,11 +1533,14 @@ def convert_graphrag_outputs(
             "embedding_model": "Qwen3-Embedding-0.6B",
         },
     }
+    repair_community_relationship_mapping(graph)
+    return graph
 
 
 def audit_microsoft_graphrag(graph: dict[str, Any]) -> dict[str, Any]:
     node_ids = {str(node.get("id", "")) for node in graph.get("nodes", [])}
     edges = graph.get("edges", [])
+    edge_ids = {str(edge.get("id", "")) for edge in edges}
     attributes = graph.get("attribute_facts", [])
     text_units = graph.get("text_units", [])
     untyped = sum(
@@ -1370,6 +1602,54 @@ def audit_microsoft_graphrag(graph: dict[str, Any]) -> dict[str, Any]:
         ) / len(edges)
         if edges else 1.0
     )
+    community_by_id = {
+        str(item.get("id", "")): item
+        for item in graph.get("communities", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+
+    def invalid_community_mapping(edge: dict[str, Any]) -> bool:
+        edge_id = str(edge.get("id", ""))
+        source = str(edge.get("source", ""))
+        target = str(edge.get("target", ""))
+        for community_id in _as_list(edge.get("community_ids")):
+            community = community_by_id.get(str(community_id))
+            if community is None:
+                return True
+            members = {str(item) for item in _as_list(community.get("entity_ids"))}
+            relationships = {
+                str(item) for item in _as_list(community.get("relationship_ids"))
+            }
+            if source not in members or target not in members:
+                return True
+            if edge_id not in relationships:
+                return True
+        for community_id in _as_list(edge.get("boundary_community_ids")):
+            community = community_by_id.get(str(community_id))
+            if community is None:
+                return True
+            members = {str(item) for item in _as_list(community.get("entity_ids"))}
+            boundaries = {
+                str(item)
+                for item in _as_list(community.get("boundary_relationship_ids"))
+            }
+            if source not in members and target not in members:
+                return True
+            if edge_id not in boundaries:
+                return True
+        return False
+
+    invalid_community_mappings = sum(
+        invalid_community_mapping(edge) for edge in edges
+    )
+    dangling_community_members = sum(
+        sum(str(item) not in node_ids for item in _as_list(community.get("entity_ids")))
+        + sum(
+            str(item) not in edge_ids
+            for item in _as_list(community.get("relationship_ids"))
+        )
+        for community in community_by_id.values()
+    )
     no_facts = int(not edges and not attributes)
     units_without_facts = int(
         graph.get("stats", {}).get("knowledge_units_without_statements", 0) or 0
@@ -1390,6 +1670,8 @@ def audit_microsoft_graphrag(graph: dict[str, Any]) -> dict[str, Any]:
         unsupported_attributes,
         isolated,
         unclassified_community_edges,
+        invalid_community_mappings,
+        dangling_community_members,
         no_facts,
         units_without_facts,
         len(missing_modalities),
@@ -1404,6 +1686,8 @@ def audit_microsoft_graphrag(graph: dict[str, Any]) -> dict[str, Any]:
         ("attributes_without_evidence", unsupported_attributes),
         ("isolated_entities", isolated),
         ("unclassified_community_relationships", unclassified_community_edges),
+        ("invalid_community_relationship_mappings", invalid_community_mappings),
+        ("dangling_community_members", dangling_community_members),
         ("graph_without_facts", no_facts),
         ("knowledge_units_without_facts", units_without_facts),
         ("knowledge_modalities_without_facts", len(missing_modalities)),
@@ -1445,7 +1729,20 @@ def audit_microsoft_graphrag(graph: dict[str, Any]) -> dict[str, Any]:
             "community_context_relationship_coverage": round(
                 community_context_coverage, 4
             ),
+            "invalid_community_relationship_mappings": invalid_community_mappings,
             "communities": len(graph.get("communities", [])),
+            "official_communities": sum(
+                item.get("algorithm")
+                != "microsoft-graphrag-connected-component-fallback"
+                for item in graph.get("communities", [])
+                if isinstance(item, dict)
+            ),
+            "fallback_communities": sum(
+                item.get("algorithm")
+                == "microsoft-graphrag-connected-component-fallback"
+                for item in graph.get("communities", [])
+                if isinstance(item, dict)
+            ),
             "knowledge_units_without_facts": units_without_facts,
             "missing_knowledge_modalities": missing_modalities,
             "multimodal_element_fact_coverage": round(element_coverage, 4),

@@ -9,6 +9,7 @@ from backend.app.rag.graphrag_adapter import (
     _normalize_graphrag_records,
     audit_microsoft_graphrag,
     convert_graphrag_outputs,
+    repair_community_relationship_mapping,
 )
 from backend.app.rag.knowledge_document import KnowledgeStatement, KnowledgeUnit
 
@@ -256,3 +257,86 @@ def test_atomic_statements_are_documents_and_attribute_facts_survive_conversion(
     failed = audit_microsoft_graphrag(graph)
     assert failed["status"] == "failed"
     assert failed["metrics"]["missing_knowledge_modalities"] == ["image"]
+
+
+def test_disconnected_relationships_receive_grounded_fallback_communities():
+    nodes = [
+        {
+            "id": node_id,
+            "name": name,
+            "entity_type": "课程概念",
+            "source_pages": [95],
+            "evidence_count": 1,
+        }
+        for node_id, name in (
+            ("e1", "镜像电流源"),
+            ("e2", "输出电阻"),
+            ("e3", "共射极放大电路"),
+            ("e4", "电压增益"),
+        )
+    ]
+    edges = [
+        {
+            "id": "r1",
+            "source": "e1",
+            "target": "e2",
+            "relation": "具有",
+            "description": "镜像电流源具有较高输出电阻。",
+            "evidence_ids": ["ocr:p95"],
+            "text_unit_ids": ["tu1"],
+            "source_pages": [95],
+        },
+        {
+            "id": "r2",
+            "source": "e3",
+            "target": "e4",
+            "relation": "决定",
+            "description": "电路参数决定电压增益。",
+            "evidence_ids": ["ocr:p96"],
+            "text_unit_ids": ["tu2"],
+            "source_pages": [96],
+        },
+    ]
+    graph = {
+        "nodes": nodes,
+        "edges": edges,
+        "attribute_facts": [],
+        "text_units": [{"id": "tu1"}, {"id": "tu2"}],
+        "communities": [{
+            "id": "c1",
+            "community": 1,
+            "entity_ids": ["e1", "e2"],
+            "relationship_ids": ["r1"],
+            "algorithm": "microsoft-graphrag-hierarchical-leiden",
+        }],
+        "community_reports": [],
+        "stats": {
+            "knowledge_units_without_statements": 0,
+            "expected_modalities": [],
+            "statement_modalities": {},
+        },
+    }
+
+    summary = repair_community_relationship_mapping(graph)
+    audit = audit_microsoft_graphrag(graph)
+
+    assert summary["official_communities"] == 1
+    assert summary["fallback_communities"] == 1
+    assert summary["unclassified_relationships"] == 0
+    fallback = next(
+        item for item in graph["communities"]
+        if item["algorithm"]
+        == "microsoft-graphrag-connected-component-fallback"
+    )
+    assert fallback["entity_ids"] == ["e3", "e4"]
+    assert fallback["relationship_ids"] == ["r2"]
+    assert edges[1]["community_ids"] == [fallback["id"]]
+    assert edges[1]["community_mapping_source"] == "connected_component_fallback"
+    assert audit["status"] == "passed"
+    assert audit["metrics"]["community_context_relationship_coverage"] == 1.0
+    assert audit["metrics"]["invalid_community_relationship_mappings"] == 0
+
+    edges[1]["community_ids"] = ["missing-community"]
+    failed = audit_microsoft_graphrag(graph)
+    assert failed["status"] == "failed"
+    assert failed["metrics"]["invalid_community_relationship_mappings"] == 1
