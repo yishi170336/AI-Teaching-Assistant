@@ -1548,6 +1548,11 @@ def audit_microsoft_graphrag(graph: dict[str, Any]) -> dict[str, Any]:
     )
     invalid_names = sum(
         _invalid_entity(str(node.get("name", "")), str(node.get("entity_type", "")))
+        and not (
+            node.get("generated_by") == "graph_consolidation"
+            and node.get("entity_type") in {"教材结构", "知识属性"}
+            and bool(str(node.get("name", "")).strip())
+        )
         for node in graph.get("nodes", [])
     )
     dangling = sum(
@@ -1816,16 +1821,27 @@ def run_microsoft_graphrag(
 
     asyncio.run(build())
     graph = convert_graphrag_outputs(root_dir / "output", unit_values)
+    from backend.app.rag.graph_consolidation import consolidate_semantic_graph
+
+    graph, consolidation_audit = consolidate_semantic_graph(
+        graph, embedding_model_path
+    )
     audit = audit_microsoft_graphrag(graph)
+    audit["consolidation"] = consolidation_audit
     (output_dir / "semantic_knowledge_graph.json").write_text(
         json.dumps(graph, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     (output_dir / "semantic_quality_audit.json").write_text(
         json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    if audit["status"] != "passed":
+    (output_dir / "semantic_consolidation_audit.json").write_text(
+        json.dumps(consolidation_audit, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    if audit["status"] != "passed" or consolidation_audit["status"] != "passed":
         raise RuntimeError(
             "Microsoft GraphRAG 质量门禁失败："
-            f"{audit['critical_issues']} 个关键问题"
+            f"{audit['critical_issues'] + consolidation_audit['critical_issues']} "
+            "个关键问题"
         )
     return graph, audit
