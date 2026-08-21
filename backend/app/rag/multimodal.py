@@ -39,8 +39,10 @@ from backend.app.rag.ontology import (
     normalize_concept_name,
 )
 from backend.app.rag.paddleocr_vl import (
+    PADDLEOCR_VL_API_MODEL,
     PADDLEOCR_VL_GIT_REVISION,
     PADDLEOCR_VL_MODEL_ID,
+    PADDLEOCR_VL_PIPELINE_VERSION,
     PADDLEOCR_VL_SCHEMA_VERSION,
     PaddleOCRVLClient,
     PaddleOCRVLInferenceError,
@@ -709,6 +711,40 @@ def _write_page_ocr_cache(path: Path, entries: dict[int, dict[str, Any]]) -> Non
     temporary.replace(path)
 
 
+def _page_ocr_cache_identity_is_compatible(
+    item: dict[str, Any],
+    expected_identity: dict[str, Any],
+) -> bool:
+    """Reuse pinned PaddleOCR-VL 1.6 pages across local/API providers.
+
+    Runtime fields remain attached to every page as audit evidence. They are not
+    content invalidators when both sides are the pinned local revision or the
+    official PaddleOCR-VL 1.6 API, which lets an interrupted local build finish
+    through the API without discarding already completed OCR pages.
+    """
+
+    if not expected_identity:
+        return True
+    identity_fields = ("model_revision", "engine", "dtype", "pipeline_version")
+    if all(
+        str(item.get(field_name, "")) == str(expected_identity.get(field_name, ""))
+        for field_name in identity_fields
+    ):
+        return True
+
+    compatible_revisions = {
+        PADDLEOCR_VL_GIT_REVISION,
+        f"aistudio-api:{PADDLEOCR_VL_API_MODEL}",
+    }
+    return (
+        str(item.get("model_revision", "")) in compatible_revisions
+        and str(expected_identity.get("model_revision", "")) in compatible_revisions
+        and str(item.get("pipeline_version", "")) == PADDLEOCR_VL_PIPELINE_VERSION
+        and str(expected_identity.get("pipeline_version", ""))
+        == PADDLEOCR_VL_PIPELINE_VERSION
+    )
+
+
 def _reuse_near_complete_page_ocr_cache(
     pages: Iterable[PageDocument],
     entries: dict[int, dict[str, Any]],
@@ -1133,10 +1169,7 @@ def _ocr_scanned_pages(
                     and item.get("blocks")
                 ):
                     continue
-                if expected_identity and any(
-                    str(item.get(field_name, "")) != str(expected_identity.get(field_name, ""))
-                    for field_name in ("model_revision", "engine", "dtype", "pipeline_version")
-                ):
+                if not _page_ocr_cache_identity_is_compatible(item, expected_identity):
                     continue
                 cache_entries[int(item["page"])] = item
         except (OSError, ValueError, json.JSONDecodeError):

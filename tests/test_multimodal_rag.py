@@ -13,7 +13,13 @@ from backend.app.rag import manager as manager_module
 from backend.app.rag.models import PageDocument, TextChunk
 from backend.app.rag.manager import KnowledgeBaseManager
 from backend.app.rag.pdf_extract_kit import DetectedRegion, PDFExtractKitAdapter
-from backend.app.rag.paddleocr_vl import PaddleOCRVLConfig, PaddleOCRVLInferenceError
+from backend.app.rag.paddleocr_vl import (
+    PADDLEOCR_VL_API_MODEL,
+    PADDLEOCR_VL_GIT_REVISION,
+    PADDLEOCR_VL_PIPELINE_VERSION,
+    PaddleOCRVLConfig,
+    PaddleOCRVLInferenceError,
+)
 from backend.app.rag.pipeline import KnowledgeBaseBuildCancelled
 from backend.app.rag.multimodal import (
     LayoutElement,
@@ -33,6 +39,7 @@ from backend.app.rag.multimodal import (
     _retry_low_confidence_key_blocks,
     _ocr_scanned_pages,
     _page_cleaning_decisions,
+    _page_ocr_cache_identity_is_compatible,
     _reuse_near_complete_page_ocr_cache,
     _safe_partial_noise_fragment,
     _summarize_table,
@@ -131,6 +138,27 @@ def test_scanned_page_ocr_recovers_text_hierarchy_concepts_and_cache(tmp_path):
     cached = _ocr_scanned_pages(pdf_path, docs, tmp_path, None, "doc-hash")
     assert cached[0].text == first[0].text
     assert cached[0].section == "1.1.3 PN结"
+
+
+def test_page_ocr_cache_reuses_pinned_local_pages_when_switching_to_api():
+    local_entry = {
+        "model_revision": PADDLEOCR_VL_GIT_REVISION,
+        "engine": "transformers",
+        "dtype": "float16",
+        "pipeline_version": PADDLEOCR_VL_PIPELINE_VERSION,
+    }
+    api_identity = {
+        "model_revision": f"aistudio-api:{PADDLEOCR_VL_API_MODEL}",
+        "engine": "aistudio-api",
+        "dtype": "remote",
+        "pipeline_version": PADDLEOCR_VL_PIPELINE_VERSION,
+    }
+
+    assert _page_ocr_cache_identity_is_compatible(local_entry, api_identity)
+    assert not _page_ocr_cache_identity_is_compatible(
+        {**local_entry, "model_revision": "outdated-local-revision"},
+        api_identity,
+    )
 
 
 def test_legacy_qwen_page_ocr_cache_is_invalidated_and_replaced(tmp_path):
