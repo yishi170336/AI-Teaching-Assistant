@@ -52,6 +52,11 @@ def main() -> None:
         action="store_true",
         help="不调用 DeepSeek 做语义清洗和电路图理解，仅运行可审计的本地降级流程",
     )
+    parser.add_argument(
+        "--defer-graph-store-sync",
+        action="store_true",
+        help="候选构建期间不同步 Neo4j；通过质量门禁并切换后再同步",
+    )
     args = parser.parse_args()
 
     if args.resources_dir is not None:
@@ -72,6 +77,7 @@ def main() -> None:
             else _cleaning_model_config()
         ),
         knowledge_base_id=args.knowledge_base,
+        sync_graph_store=not args.defer_graph_store_sync,
     )
     print(json.dumps(meta, ensure_ascii=False, indent=2))
 
