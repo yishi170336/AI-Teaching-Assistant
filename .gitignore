@@ -1,5 +1,6 @@
 .env
 .env.local
+.venv-paddleocr-vl-gpu/
 models/
 __pycache__/
 *.py[cod]

@@ -291,6 +291,29 @@ docker compose up -d qdrant redis
 
 ## 测试与诊断
 
+### PaddleOCR-VL GPU 对照试验
+
+PaddleOCR-VL 目前仅作为实验性本地对照引擎，不会替换生产环境的 Qwen OCR。
+GitHub 版要求 Transformers `>=5.8`，与主项目锁定的 `<5` 不兼容，因此使用
+`llm` 的 Python 创建继承现有 PyTorch CUDA 的隔离环境：
+
+```powershell
+conda activate llm
+python -m venv --system-site-packages .venv-paddleocr-vl-gpu
+.\.venv-paddleocr-vl-gpu\Scripts\python.exe -m pip install -r requirements-paddleocr-vl-gpu.txt
+```
+
+在 RTX GPU 上解析单张图片，或只渲染并解析 PDF 的指定页：
+
+```powershell
+.\.venv-paddleocr-vl-gpu\Scripts\python.exe scripts\try_paddleocr_vl.py <图片路径>
+.\.venv-paddleocr-vl-gpu\Scripts\python.exe scripts\try_paddleocr_vl.py <PDF路径> --page 1
+```
+
+输出默认写入 `tmp/paddleocr-vl/`，包括 Markdown、结构化 JSON、抽取图片和
+`benchmark.json`。本机实测数据与同页 Qwen 对照见
+[PaddleOCR-VL 本地试验记录](docs/PADDLEOCR_VL_EVALUATION.md)。
+
 ```powershell
 conda activate llm
 python -m pytest -q
