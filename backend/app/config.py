@@ -43,8 +43,13 @@ class Settings:
     qwen_chat_model: str = os.getenv("QWEN_CHAT_MODEL", "qwen3.7-plus")
     qwen_graph_model: str = os.getenv("QWEN_GRAPH_MODEL", "qwen3.7-flash")
     qwen_vision_model: str = os.getenv("QWEN_VISION_MODEL", "qwen3-vl-flash")
+    qwen_visual_summary_model: str = os.getenv(
+        "QWEN_VISUAL_SUMMARY_MODEL",
+        os.getenv("QWEN_CIRCUIT_VISION_MODEL", "qwen3-vl-flash"),
+    )
+    # Backward-compatible alias for existing deployments and index metadata.
     qwen_circuit_vision_model: str = os.getenv(
-        "QWEN_CIRCUIT_VISION_MODEL", "qwen3-vl-flash"
+        "QWEN_CIRCUIT_VISION_MODEL", qwen_visual_summary_model
     )
     qwen_cleaning_model: str = os.getenv("QWEN_CLEANING_MODEL", "qwen3.7-flash")
     qwen_homework_extraction_model: str = os.getenv(

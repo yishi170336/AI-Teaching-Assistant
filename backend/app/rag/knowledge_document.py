@@ -592,7 +592,7 @@ def enrich_formula_knowledge(
     cache_path: Path | None = None,
     batch_size: int = 4,
 ) -> list[KnowledgeUnit]:
-    """Turn verified formula evidence into natural-language knowledge with Qwen."""
+    """Use the text model to explain Paddle formula evidence in nearby context."""
 
     values = list(units)
     if client is None or not getattr(getattr(client, "config", None), "enabled", False):
@@ -639,13 +639,14 @@ def enrich_formula_knowledge(
             cached
             and cached.get("content_hash") == content_hash
             and cached.get("model") == model
-            and cached.get("schema_version") == "1.0-formula-knowledge"
+            and cached.get("schema_version") == "2.0-paddle-formula-text-knowledge"
         ):
             results[unit.id] = cached.get("formulas", [])
         else:
             pending.append((unit, content_hash, formula_values))
 
-    prompt = """你是电子电路教材公式知识整理器。输入包含已经通过视觉识别的公式、变量说明、邻近正文和本知识单元正文。
+    prompt = """你是电子电路教材公式知识整理器。输入包含由 PaddleOCR-VL 转写的公式、变量说明、邻近正文和本知识单元正文。
+你是纯文本知识整理步骤，不会收到图片，不得重做 OCR 或改写 raw_formula。
 只依据输入，把公式表达的成立条件、变量关系及可直接推出的结论写成简洁中文知识陈述。公式编号、图号、变量符号和局部元件编号不是知识实体；不得仅复述符号表，不得补充教材没有说明的结论。看不清、上下文不足或无法确定含义时返回空 knowledge。
 只返回 JSON：{"items":[{"knowledge_unit_id":"...","formulas":[{"id":"...","knowledge":"...","confidence":0.0}]}]}。
 输入："""
@@ -672,7 +673,7 @@ def enrich_formula_knowledge(
             formula_results = returned.get(unit.id, [])
             results[unit.id] = formula_results if isinstance(formula_results, list) else []
             cache[unit.id] = {
-                "schema_version": "1.0-formula-knowledge",
+                "schema_version": "2.0-paddle-formula-text-knowledge",
                 "knowledge_unit_id": unit.id,
                 "content_hash": content_hash,
                 "model": model,

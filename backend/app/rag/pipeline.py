@@ -916,10 +916,8 @@ def _formula_pipeline_stats(output_dir: Path, elements: list[LayoutElement]) -> 
             else sum(element.uncertain for element in formulas)
         ),
         "recognition": (
-            "PDF-Extract-Kit localization + page OCR + "
-            f"qwen/{settings.qwen_circuit_vision_model} formula recognition"
-            if settings.qwen_api_key
-            else "PDF-Extract-Kit localization + page OCR formula fallback"
+            "PaddleOCR-VL page formula transcription + PDF-Extract-Kit "
+            "localization/validation; vision formula recognition disabled"
         ),
     }
 
@@ -1056,10 +1054,10 @@ def build_knowledge_base(
     if visual_quality["status"] == "failed":
         raise RuntimeError(
             "图像语义质量门禁失败："
-            f"{visual_quality['critical_issues']} 个电路类型与拓扑冲突"
+            f"{visual_quality['critical_issues']} 个图片/表格语义或公式职责边界冲突"
         )
 
-    report(49, "knowledge_document", "正在融合正文、公式、电路图和表格知识")
+    report(49, "knowledge_document", "正在融合正文、公式、课程图片和表格知识")
     knowledge_units = compile_knowledge_document(documents, elements)
     if not knowledge_units:
         raise RuntimeError(f"在 {resources_dir} 中没有编译出可用的教材知识单元")
@@ -1274,12 +1272,17 @@ def build_knowledge_base(
         },
         "qdrant": qdrant_status,
         "circuit_vision_model": (
-            f"qwen/{settings.qwen_circuit_vision_model}"
+            f"qwen/{settings.qwen_visual_summary_model}"
             if settings.qwen_api_key
             else "not-configured (safe fallback)"
         ),
+        "visual_summary_model": (
+            f"qwen/{settings.qwen_visual_summary_model}"
+            if settings.qwen_api_key
+            else "not-configured (localized evidence only)"
+        ),
         "vision_model": (
-            f"qwen/{settings.qwen_circuit_vision_model}"
+            f"qwen/{settings.qwen_visual_summary_model}"
             if settings.qwen_api_key
             else "not-configured (safe fallback)"
         ),
@@ -1309,7 +1312,7 @@ def build_knowledge_base(
         },
         "document_parsing": {
             "status": "ready",
-            "engine": "Qwen3-VL all-page OCR (cache-first) + PDF-Extract-Kit layout; PyMuPDF rendering only",
+            "engine": "PaddleOCR-VL all-page OCR (cache-first) + PDF-Extract-Kit layout; PyMuPDF rendering only",
             "ocr_pages": metadata["ocr_pages"],
             "placeholder_text_chunks": extraction_quality["placeholder_text_chunks"],
             "layout_elements": len(elements),
@@ -1324,6 +1327,9 @@ def build_knowledge_base(
             "formula_processing": formula_processing,
             "table_elements": metadata["table_elements"],
             "circuit_vision_model": metadata["vision_model"],
+            "visual_summary_model": metadata["visual_summary_model"],
+            "vision_summary_scope": ["course_image", "table"],
+            "formula_vision_enabled": False,
         },
         "knowledge_fusion": {
             "status": "ready",

@@ -34,6 +34,9 @@ from backend.app.rag.multimodal import (
     _page_cleaning_decisions,
     _reuse_near_complete_page_ocr_cache,
     _safe_partial_noise_fragment,
+    _summarize_table,
+    _table_fact_description,
+    audit_visual_semantics,
     build_chapter_knowledge_summaries,
     build_local_knowledge_graph,
     enhance_pdf,
@@ -893,6 +896,81 @@ def test_waveform_figure_is_not_promoted_to_circuit_when_vision_fails(monkeypatc
     assert element.components == []
 
 
+def test_course_curve_keeps_grounded_visual_summary_without_becoming_circuit(monkeypatch):
+    class CurveVision:
+        model = "qwen3-vl-flash"
+
+        def complete_json(self, prompt, **_kwargs):
+            assert "特性曲线" in prompt
+            assert "PaddleOCR-VL 独占识别" in prompt
+            return {
+                "is_course_relevant": True,
+                "visual_type": "characteristic_curve",
+                "is_circuit": False,
+                "caption": "二极管伏安特性",
+                "summary": "曲线展示二极管正向导通与反向截止区域。",
+                "knowledge_points": ["二极管伏安特性"],
+                "confidence": 0.94,
+            }
+
+    monkeypatch.setattr(
+        "backend.app.rag.multimodal._circuit_image_heuristic",
+        lambda _image: (True, 0.8),
+    )
+    element = LayoutElement(
+        id="curve",
+        source="lesson.pdf",
+        page=30,
+        element_type="image",
+        bbox=[0, 0, 100, 100],
+        chapter="第一章",
+        section="1.3 二极管",
+        nearby_text="图 1.3.2 二极管伏安特性曲线",
+    )
+
+    _analyze_image(element, _diagram_png(), CurveVision())
+
+    assert element.element_type == "image"
+    assert "正向导通" in element.description
+    assert "二极管伏安特性" in element.description
+    assert element.evidence_metadata["is_course_relevant"] is True
+    assert element.evidence_metadata["visual_type"] == "characteristic_curve"
+    assert "image-summary" in element.processor
+
+
+def test_unrelated_image_is_localized_but_excluded_from_visual_knowledge(monkeypatch):
+    class IrrelevantVision:
+        model = "qwen3-vl-flash"
+
+        def complete_json(self, *_args, **_kwargs):
+            return {
+                "is_course_relevant": False,
+                "visual_type": "other",
+                "is_circuit": False,
+                "description": "出版社装饰图片。",
+                "confidence": 0.99,
+            }
+
+    monkeypatch.setattr(
+        "backend.app.rag.multimodal._circuit_image_heuristic",
+        lambda _image: (False, 0.1),
+    )
+    element = LayoutElement(
+        id="publisher-logo",
+        source="lesson.pdf",
+        page=1,
+        element_type="image",
+        bbox=[0, 0, 100, 100],
+        nearby_text="出版社",
+    )
+
+    _analyze_image(element, _diagram_png(), IrrelevantVision())
+
+    assert element.element_type == "image"
+    assert element.description == ""
+    assert element.evidence_metadata["is_course_relevant"] is False
+
+
 def test_unconfirmed_line_art_is_not_promoted_to_circuit(monkeypatch):
     class FailedVision:
         model = "qwen3-vl-flash"
@@ -1326,6 +1404,7 @@ def test_detected_formulas_use_paddle_page_evidence_without_qwen_formula_ocr(
         "(2.2.1a)", "(2.2.1b)", "(2.2.1c)"
     ]
     assert all("paddleocr-vl-page-evidence" in element.processor for element in formulas)
+    assert all("qwen-vl" not in element.processor for element in formulas)
     assert all(not element.uncertain for element in formulas)
     assert formula_audit["detected"] == 3
     assert formula_audit["recognized"] == 3
@@ -1333,7 +1412,7 @@ def test_detected_formulas_use_paddle_page_evidence_without_qwen_formula_ocr(
     assert all(item["fallback_source"] == "paddle-page-ocr" for item in formula_audit["formulas"])
 
 
-def test_detected_table_reuses_paddle_markdown_without_qwen_table_ocr(
+def test_detected_table_uses_paddle_markdown_and_qwen_summary_without_qwen_ocr(
     tmp_path, monkeypatch
 ):
     pdf_path = tmp_path / "table.pdf"
@@ -1351,18 +1430,27 @@ def test_detected_table_reuses_paddle_markdown_without_qwen_table_ocr(
         ],
     )
 
-    class CircuitOnlyClient:
+    class GroundedTableSummaryClient:
         model = "qwen3-vl-flash"
         calls = 0
 
-        def complete_json(self, *_args, **_kwargs):
+        def complete_json(self, prompt, **kwargs):
             self.calls += 1
-            raise AssertionError("table OCR must not call Qwen")
+            assert "不负责 OCR" in prompt
+            assert "PaddleOCR-VL Markdown" in prompt
+            assert "| 电压增益 | 40 | dB |" in prompt
+            assert kwargs["image_bytes"]
+            return {
+                "is_course_relevant": True,
+                "summary": "该表给出电压增益的典型值为 40 dB。",
+                "knowledge_points": ["电压增益参数"],
+                "confidence": 0.96,
+            }
 
         def close(self):
             return None
 
-    circuit_client = CircuitOnlyClient()
+    circuit_client = GroundedTableSummaryClient()
     monkeypatch.setattr(
         "backend.app.rag.multimodal.QwenVisionClient",
         lambda **_kwargs: circuit_client,
@@ -1405,8 +1493,92 @@ def test_detected_table_reuses_paddle_markdown_without_qwen_table_ocr(
     assert len(tables) == 1
     assert tables[0].text == markdown
     assert tables[0].evidence_metadata["table_cells"]
+    assert tables[0].evidence_metadata["summary_grounded_in"] == (
+        "paddleocr-vl-table-markdown"
+    )
+    assert "视觉总结" in tables[0].description
+    assert "40 dB" in tables[0].description
     assert "pdf-extract-kit:layout-localized" in tables[0].processor
-    assert circuit_client.calls == 0
+    assert "table-summary" in tables[0].processor
+    assert circuit_client.calls == 1
+
+
+def test_table_visual_summary_cannot_introduce_numbers_absent_from_paddle():
+    markdown = "| 参数 | 典型值 | 单位 |\n|---|---:|---|\n| 电压增益 | 40 | dB |"
+    description, cells = _table_fact_description(markdown, "table-1")
+    element = LayoutElement(
+        id="table-1",
+        source="lesson.pdf",
+        page=1,
+        element_type="table",
+        bbox=[0, 0, 100, 100],
+        text=markdown,
+        description=description,
+        evidence_metadata={"table_cells": cells},
+    )
+
+    class HallucinatingSummary:
+        model = "qwen3-vl-flash"
+
+        def complete_json(self, *_args, **_kwargs):
+            return {
+                "is_course_relevant": True,
+                "summary": "电压增益的典型值为 60 dB。",
+                "confidence": 0.99,
+            }
+
+    _summarize_table(element, _diagram_png(), HallucinatingSummary())
+
+    assert element.description == description
+    assert "visual_summary" not in element.evidence_metadata
+    assert "table-summary" not in element.processor
+
+
+def test_table_visual_summary_rejects_low_confidence_output():
+    markdown = "| 参数 | 典型值 |\n|---|---:|\n| 电压增益 | 40 |"
+    description, cells = _table_fact_description(markdown, "table-low-confidence")
+    element = LayoutElement(
+        id="table-low-confidence",
+        source="lesson.pdf",
+        page=1,
+        element_type="table",
+        bbox=[0, 0, 100, 100],
+        text=markdown,
+        description=description,
+        evidence_metadata={"table_cells": cells},
+    )
+
+    class LowConfidenceSummary:
+        model = "qwen3-vl-flash"
+
+        def complete_json(self, *_args, **_kwargs):
+            return {
+                "is_course_relevant": True,
+                "summary": "电压增益的典型值为 40。",
+                "confidence": 0.2,
+            }
+
+    _summarize_table(element, _diagram_png(), LowConfidenceSummary())
+
+    assert element.description == description
+    assert "visual_summary" not in element.evidence_metadata
+
+
+def test_visual_quality_gate_rejects_formula_processed_by_qwen():
+    audit = audit_visual_semantics([
+        LayoutElement(
+            id="formula-1",
+            source="lesson.pdf",
+            page=3,
+            element_type="formula",
+            bbox=[0, 0, 100, 100],
+            text="I=U/R",
+            processor="paddleocr-vl-layout+qwen-vl:model:formula-summary",
+        )
+    ])
+
+    assert audit["status"] == "failed"
+    assert audit["formula_vision_violations"] == 1
 
 
 def test_formula_symbols_map_to_course_concepts():

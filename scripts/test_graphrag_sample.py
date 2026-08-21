@@ -30,6 +30,7 @@ from backend.app.rag.multimodal import (  # noqa: E402
     _normalize_section_heading,
     _ocr_blocks,
     _analyze_image,
+    _summarize_table,
 )
 from backend.app.services.qwen_multimodal_client import QwenVisionClient  # noqa: E402
 
@@ -64,7 +65,7 @@ def _load_documents(cache_path: Path) -> list[PageDocument]:
             chapter=chapter,
             section=section,
             extra={
-                "ocr_processor": f"qwen-vl:{item.get('model', '')}",
+                "ocr_processor": f"paddleocr-vl:{item.get('model_revision', '')}",
                 "ocr_concepts": item.get("concepts", []),
                 "text_blocks": blocks,
             },
@@ -85,21 +86,25 @@ def _refresh_visual_semantics(
     index_dir: Path,
     elements: list[LayoutElement],
 ) -> int:
-    """Re-evaluate only figure crops; page OCR and formula/table caches stay reusable."""
+    """Re-evaluate course image and table summaries without touching formula OCR."""
 
     refreshed = 0
     with QwenVisionClient(
         api_key=settings.qwen_api_key,
-        model=settings.qwen_circuit_vision_model,
+        model=settings.qwen_visual_summary_model,
         base_url=settings.qwen_base_url,
     ) as client:
         for element in elements:
-            if element.element_type not in {"image", "circuit"} or not element.image_path:
+            if element.element_type not in {"image", "circuit", "table"} or not element.image_path:
                 continue
             image_path = (index_dir / element.image_path).resolve()
             if not image_path.exists() or index_dir.resolve() not in image_path.parents:
                 continue
-            _analyze_image(element, image_path.read_bytes(), client)
+            image_bytes = image_path.read_bytes()
+            if element.element_type == "table":
+                _summarize_table(element, image_bytes, client)
+            else:
+                _analyze_image(element, image_bytes, client)
             refreshed += 1
     return refreshed
 
@@ -113,7 +118,7 @@ def main() -> int:
     parser.add_argument(
         "--visual-cache",
         type=Path,
-        help="复用已用当前电路 schema 复核过的样本图件 JSONL",
+        help="复用已用当前图片/表格总结 schema 复核过的样本元素 JSONL",
     )
     args = parser.parse_args()
 
@@ -165,7 +170,7 @@ def main() -> int:
         if visual_audit["status"] == "failed":
             raise RuntimeError(
                 "图像语义质量门禁失败："
-                f"{visual_audit['critical_issues']} 个类型与拓扑冲突"
+                f"{visual_audit['critical_issues']} 个视觉语义或公式职责边界冲突"
             )
     else:
         refreshed = 0

@@ -19,7 +19,7 @@ from backend.app.services.qwen_multimodal_client import (
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="验证 Qwen3-VL 电路结构化和多模态向量 API 配置"
+        description="验证 Qwen3-VL 课程图片/表格总结和多模态向量 API 配置"
     )
     parser.add_argument("image", type=Path)
     parser.add_argument(
@@ -30,12 +30,16 @@ def main() -> None:
     if not settings.qwen_api_key:
         raise RuntimeError("QWEN_API_KEY 未配置")
     image = args.image.read_bytes()
-    prompt = """识别该电路，只返回 JSON：
-{"is_circuit":true,"caption":"","components":[{"id":"R1","type":"resistor","value":null,"terminals":["n1","n2"],"bbox":[]}],"nets":[{"id":"n1","terminals":["R1.1"]}],"netlist":"","description":"","confidence":0.0}
-列出所有可见元件及连接；看不清的值写 null，不得猜测。"""
+    prompt = """总结该教材图片表达的课程知识，只返回 JSON：
+{"is_course_relevant":true,"visual_type":"circuit|characteristic_curve|waveform|physical_structure|device_photo|system_block_diagram|illustration|other","caption":"","summary":"","knowledge_points":[],"is_circuit":false,"components":[],"nets":[],"description":"","confidence":0.0}
+不得进行页面 OCR 或公式识别；只记录图中可核验的信息，看不清的内容不得猜测。"""
 
-    with QwenVisionClient(api_key=settings.qwen_api_key) as vision_client:
-        circuit = vision_client.complete_json(prompt, image_bytes=image)
+    with QwenVisionClient(
+        api_key=settings.qwen_api_key,
+        model=settings.qwen_visual_summary_model,
+        base_url=settings.qwen_base_url,
+    ) as vision_client:
+        visual_summary = vision_client.complete_json(prompt, image_bytes=image)
     with QwenMultimodalEmbeddingClient(
         api_key=settings.qwen_api_key
     ) as embedding_client:
@@ -43,9 +47,9 @@ def main() -> None:
         image_vector = embedding_client.embed_image(image)
 
     report = {
-        "vision_model": settings.qwen_circuit_vision_model,
+        "vision_model": settings.qwen_visual_summary_model,
         "embedding_model": settings.qwen_multimodal_embedding_model,
-        "circuit": circuit,
+        "visual_summary": visual_summary,
         "text_embedding": {
             "dimension": len(text_vector),
             "l2_norm": round(sum(value * value for value in text_vector) ** 0.5, 6),

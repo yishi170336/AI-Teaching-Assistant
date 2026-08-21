@@ -131,7 +131,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start.ps1
 - 检索阶段可以临时调用文本或多模态 Embedding、BM25、知识图谱和重排器；这些专用模型只产生检索依据，不会替换当前回答模型。
 - 页面模型配置只影响普通答疑、拍照答题、同类题生成、交互式批改和知识讲解文本生成。
 - `qwen3-vl-embedding` 仅用于知识库多模态向量化，不会出现在交互模型列表中。
-- 上传或重建知识库固定使用本地 PaddleOCR-VL 做页面、标题、公式和表格转写；`qwen3-vl-flash` 只分析电路图语义，并可按需调用 `qwen3-vl-embedding`。浏览器模型和 API Key 不会发送给建库任务。
+- 上传或重建知识库固定使用本地 PaddleOCR-VL 做页面、标题、公式和表格转写；`qwen3-vl-flash` 只总结与课程相关的图片和表格，不参与公式 OCR 或公式改写，并可按需调用 `qwen3-vl-embedding`。浏览器模型和 API Key 不会发送给建库任务。
 - 题库建立、作业识别与批改继续使用 `QWEN_HOMEWORK_EXTRACTION_MODEL`、`QWEN_HOMEWORK_GRADING_MODEL` 和 `QWEN_HOMEWORK_REVIEW_MODEL`。
 
 页面输入的模型配置和 API Key 会写入当前浏览器的 `localStorage`，不会写入项目文件；配置弹窗提供清除入口。公用电脑不建议保存云端密钥。也可以在 `.env` 配置对应服务的 API Key 和 Base URL。使用云端模型时，题目、最近对话、检索上下文及附件视觉内容会发送到所选 API。
@@ -177,7 +177,7 @@ docker compose up -d redis
 
 1. 先选择首份 PDF、Word、Markdown 或文本资料。
 2. 输入新知识库的英文标识，再点击“确认建立知识库”。
-3. 后端在构建子进程中复用一个本地 PaddleOCR-VL GPU 实例完成版面转写，仅使用 `qwen3-vl-flash` 做电路图语义理解；API Key 不写入知识库产物。
+3. 后端在构建子进程中复用一个本地 PaddleOCR-VL GPU 实例完成版面转写，使用 `qwen3-vl-flash` 总结课程图片与表格语义；API Key 不写入知识库产物。
 4. `/api/kb/status` 返回 `building`、`ready` 或 `error`；Windows 下的短暂进度文件占用会自动重试，不会中断实际构建。
 
 默认知识库、当前目标知识库和追加资料仍在同一弹窗的“管理已有知识库”区域维护。已有资料无需重新上传：点击“使用 PaddleOCR-VL 重新构建已有资料”即可启动多模态重建。
@@ -201,13 +201,13 @@ Excel/JSON 题库不会进入 RAG 知识库，也不会参与检索或图谱构�
 - `pipeline_audit.json`：清洗、解析、模态处理、融合、检索和应用六层状态与数量审计。
 - `qdrant/`：Linux/macOS 未配置 `QDRANT_URL` 时可使用 Qdrant 嵌入式持久化；同时保留 `vectors.faiss` 兼容回退。
 
-完整处理顺序为：所有 PDF 页使用本地 PaddleOCR-VL GPU 解析（缓存优先）→ 几何阅读顺序校正与低置信度关键区域高清重试 → `qwen3.7-flash`/规则语义清洗 → Paddle 版面块与 PDF-Extract-Kit Layout/MFD 定位去重 → Paddle 公式、表格 Markdown 和表头/单元格证据整理 → Qwen 电路图语义理解 → 按页内标题层级编译知识单元与块级证据 → Microsoft GraphRAG 实体关系抽取、Leiden 社区与社区报告 → 本地 `Qwen3-Embedding-0.6B` 向量化 → Qdrant/FAISS + BM25 + Neo4j/本地图融合检索。PyMuPDF 仅用于页数、页面渲染、图片对象和矢量图形发现，不读取 PDF 文本层。校验失败的暂存索引不会被激活，也不会回退到 Qwen OCR。
+完整处理顺序为：所有 PDF 页使用本地 PaddleOCR-VL GPU 解析（缓存优先）→ 几何阅读顺序校正与低置信度关键区域高清重试 → `qwen3.7-flash`/规则语义清洗 → Paddle 版面块与 PDF-Extract-Kit Layout/MFD 定位去重 → Paddle 独占公式转写并产出表格 Markdown、表头和单元格证据 → Qwen 只对课程相关图片与表格做有证据总结 → 按页内标题层级编译知识单元与块级证据 → Microsoft GraphRAG 实体关系抽取、Leiden 社区与社区报告 → 本地 `Qwen3-Embedding-0.6B` 向量化 → Qdrant/FAISS + BM25 + Neo4j/本地图融合检索。表格总结不得引入 Paddle Markdown 中不存在的数值，无关图片不进入图谱。PyMuPDF 仅用于页数、页面渲染、图片对象和矢量图形发现，不读取 PDF 文本层。校验失败的暂存索引不会被激活，也不会回退到 Qwen OCR。
 
-PaddleOCR-VL 和 PDF-Extract-Kit 使用本地模型，Qwen3-VL 电路分析使用百炼 API：
+PaddleOCR-VL 和 PDF-Extract-Kit 使用本地模型，Qwen3-VL 图片/表格总结使用百炼 API：
 
 1. 在 `.env` 设置 `PDF_EXTRACT_KIT_DIR=third_party/PDF-Extract-Kit`；小样联调可用 `PDF_EXTRACT_KIT_PAGE_LIMIT=3`限制页数。
 2. Paddle 默认使用 `PADDLEOCR_DEVICE=gpu:0`、`PADDLEOCR_ENGINE=transformers`、`PADDLEOCR_DTYPE=float16`；GPU 不可用时会显式记录 CPU 降级。
-3. 设置 `QWEN_CIRCUIT_VISION_MODEL=qwen3-vl-flash`；文本与 GraphRAG 向量固定使用 `models/Qwen3-Embedding-0.6B`（1024 维），图片向量可按需使用 `QWEN_MULTIMODAL_EMBEDDING_MODEL=qwen3-vl-embedding`。
+3. 设置 `QWEN_VISUAL_SUMMARY_MODEL=qwen3-vl-flash`（旧 `QWEN_CIRCUIT_VISION_MODEL` 仍兼容）；文本与 GraphRAG 向量固定使用 `models/Qwen3-Embedding-0.6B`（1024 维），图片向量可按需使用 `QWEN_MULTIMODAL_EMBEDDING_MODEL=qwen3-vl-embedding`。
 4. 设置 `RERANK_MODEL_PATH` 可额外启用 CrossEncoder 重排；未配置时仍使用向量、BM25、图关系和图片相似度融合。
 
 GraphRAG 构建结果可以直接生成静态 PNG、可交互 HTML 和 GraphML。脚本通过 Microsoft GraphRAG 2.7.2 的 `create_graph` 读取原生 `entities.parquet` / `relationships.parquet`，自关系会由质量层过滤；HTML 支持按来源页和文本、公式、电路图、表格等知识模态筛选：

@@ -63,6 +63,7 @@ SCANNED_PAGE_PLACEHOLDER = "[本页主要包含电路图、公式或其他图形
 PAGE_OCR_SCHEMA_VERSION = PADDLEOCR_VL_SCHEMA_VERSION
 LEGACY_PAGE_OCR_SCHEMA_VERSIONS: set[str] = set()
 CIRCUIT_ANALYSIS_SCHEMA_VERSION = "2.1-grounded-circuit-family"
+VISUAL_SUMMARY_SCHEMA_VERSION = "1.0-grounded-course-images-tables"
 
 CHAPTER_MARKER_PATTERN = r"第[零〇一二三四五六七八九十百两0-9]+章"
 CHAPTER_SENTENCE_PREFIXES = (
@@ -1420,6 +1421,96 @@ def _table_fact_description(markdown: str, block_id: str) -> tuple[str, list[dic
     return "；".join(facts[:80]), cells
 
 
+def _summary_numbers_are_grounded(summary: str, evidence: str) -> bool:
+    """Reject new Arabic numeric claims that are absent from Paddle evidence."""
+
+    number_pattern = r"(?<![A-Za-z0-9_])[-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:\s*[%℃℉])?"
+    summary_numbers = {
+        re.sub(r"\s+", "", item) for item in re.findall(number_pattern, summary)
+    }
+    evidence_numbers = {
+        re.sub(r"\s+", "", item) for item in re.findall(number_pattern, evidence)
+    }
+    return summary_numbers.issubset(evidence_numbers)
+
+
+def _summarize_table(
+    element: LayoutElement,
+    image_bytes: bytes,
+    client: QwenVisionClient | None,
+) -> None:
+    """Summarize table meaning without allowing the VLM to transcribe cells."""
+
+    paddle_text = str(element.text).strip()
+    if client is None or not paddle_text or not _image_is_safe(image_bytes):
+        return
+    prompt = f"""你只负责总结教材表格表达的知识，不负责 OCR、单元格转写或公式识别。
+下方 PaddleOCR-VL Markdown 是表格文字和数值的唯一事实来源；图片只用于理解表头层级、行列分组和视觉强调。
+不得增加 Markdown 中没有的数值、单位、公式或因果关系；公式单元格只可逐字引用，不得推导、改写。
+若表格与当前课程无关，令 is_course_relevant=false 并留空 summary。
+
+章节：{element.chapter} / {element.section}
+邻近正文：{element.nearby_text[:1200]}
+PaddleOCR-VL 表格 Markdown：
+{paddle_text[:12000]}
+
+返回 JSON：{{"is_course_relevant":true,"summary":"只总结表格的比较维度、变化趋势或关键结论","knowledge_points":["表格直接支持的知识点"],"confidence":0.0}}。
+""".strip()
+    try:
+        raw = client.complete_json(
+            prompt,
+            image_bytes=image_bytes,
+            image_mime=mimetypes.guess_type(element.image_path or "table.png")[0]
+            or "image/png",
+        )
+    except QwenMultimodalAPIError as exc:
+        logger.warning("Qwen3-VL table summary failed; retaining Paddle evidence: %s", exc)
+        return
+    relevant_value = raw.get("is_course_relevant", raw.get("summary"))
+    relevant = (
+        relevant_value.strip().lower() in {"true", "1", "yes", "是"}
+        if isinstance(relevant_value, str)
+        else bool(relevant_value)
+    )
+    summary = str(raw.get("summary", "")).strip()[:4000]
+    points = [
+        str(item).strip() for item in raw.get("knowledge_points", [])
+        if str(item).strip()
+    ][:12] if isinstance(raw.get("knowledge_points"), list) else []
+    if points:
+        point_text = "；".join(points)
+        summary = f"{summary}\n表格知识点：{point_text}" if summary else f"表格知识点：{point_text}"
+    try:
+        summary_confidence = max(0.0, min(1.0, float(raw.get("confidence", 0))))
+    except (TypeError, ValueError):
+        summary_confidence = 0.0
+    if (
+        not relevant
+        or not summary
+        or summary_confidence < 0.45
+        or not _summary_numbers_are_grounded(summary, paddle_text)
+    ):
+        return
+    # Rebuild facts from Paddle Markdown so a refreshed summary can never carry
+    # an older vision-generated description forward as if it were cell evidence.
+    paddle_facts, table_cells = _table_fact_description(paddle_text, element.id)
+    element.evidence_metadata["table_cells"] = table_cells
+    element.description = (
+        f"视觉总结：{summary}\n可核验单元格事实：{paddle_facts}"
+        if paddle_facts
+        else f"视觉总结：{summary}"
+    )
+    processor = _visual_processor(client, "table")
+    if processor and processor not in element.processor:
+        element.processor += f"+{processor}"
+    element.evidence_metadata.update({
+        "visual_summary_schema": VISUAL_SUMMARY_SCHEMA_VERSION,
+        "visual_summary": summary,
+        "visual_summary_confidence": summary_confidence,
+        "summary_grounded_in": "paddleocr-vl-table-markdown",
+    })
+
+
 def _localized_nearby_text(
     target_bbox: list[float],
     text_blocks: list[tuple[list[float], str]],
@@ -1685,6 +1776,25 @@ def _normalize_circuit_result(value: dict[str, Any]) -> dict[str, Any]:
         if isinstance(raw_is_circuit, str)
         else bool(raw_is_circuit)
     )
+    raw_course_relevant = value.get(
+        "is_course_relevant",
+        is_circuit
+        or value.get("summary")
+        or value.get("description")
+        or value.get("knowledge_points"),
+    )
+    is_course_relevant = is_circuit or (
+        raw_course_relevant.strip().lower() in {"true", "1", "yes", "是"}
+        if isinstance(raw_course_relevant, str)
+        else bool(raw_course_relevant)
+    )
+    visual_type = str(value.get("visual_type", "circuit" if is_circuit else "other"))
+    visual_type = visual_type.strip().lower()[:80] or "other"
+    summary = str(value.get("summary", value.get("description", ""))).strip()[:5000]
+    knowledge_points = [
+        str(item).strip() for item in value.get("knowledge_points", [])
+        if str(item).strip()
+    ][:12] if isinstance(value.get("knowledge_points"), list) else []
     circuit_type = str(value.get("circuit_type", "")).strip()[:200]
     grounding_quotes = [
         str(item).strip() for item in value.get("grounding_quotes", [])
@@ -1694,13 +1804,20 @@ def _normalize_circuit_result(value: dict[str, Any]) -> dict[str, Any]:
         str(item).strip() for item in value.get("contradictions", [])
         if str(item).strip()
     ][:8] if isinstance(value.get("contradictions"), list) else []
-    description = str(value.get("description", "")).strip()[:8000]
+    description = str(value.get("description") or summary).strip()[:8000]
+    if not is_circuit and knowledge_points:
+        point_text = "；".join(knowledge_points)
+        description = (
+            f"{description}\n图示知识点：{point_text}" if description else f"图示知识点：{point_text}"
+        )
     if circuit_type and circuit_type not in description:
         description = f"电路类型：{circuit_type}。{description}"
     if grounding_quotes:
         description = (
             f"{description}\n类型判定依据：" + "；".join(grounding_quotes)
         ).strip()
+    if not is_course_relevant:
+        description = ""
     if contradictions:
         confidence = min(confidence, 0.69)
     # Always serialize from the structured component list. This prevents a VLM
@@ -1708,6 +1825,9 @@ def _normalize_circuit_result(value: dict[str, Any]) -> dict[str, Any]:
     netlist = _synthesize_netlist(components) if components else ""
     return {
         "is_circuit": is_circuit,
+        "is_course_relevant": is_course_relevant,
+        "visual_type": visual_type,
+        "knowledge_points": knowledge_points,
         "components": components,
         "nets": nets,
         "netlist": netlist,
@@ -1722,9 +1842,32 @@ def _normalize_circuit_result(value: dict[str, Any]) -> dict[str, Any]:
 
 def _circuit_processor(client: QwenVisionClient | None) -> str:
     return (
-        f"qwen-vl:{client.model}:circuit-{CIRCUIT_ANALYSIS_SCHEMA_VERSION}"
+        f"{_visual_processor(client, 'image')}+circuit-{CIRCUIT_ANALYSIS_SCHEMA_VERSION}"
         if client else ""
     )
+
+
+def _visual_processor(client: QwenVisionClient | None, kind: str) -> str:
+    return (
+        f"qwen-vl:{client.model}:{kind}-summary-{VISUAL_SUMMARY_SCHEMA_VERSION}"
+        if client else ""
+    )
+
+
+def _visual_cache_compatible(
+    cached: dict[str, Any] | None,
+    client: QwenVisionClient | None,
+    kind: str,
+) -> bool:
+    if not cached:
+        return False
+    expected = _visual_processor(client, kind)
+    processor = str(cached.get("processor", ""))
+    if expected and expected not in processor:
+        return False
+    if kind == "image" and str(cached.get("element_type", "")) == "circuit":
+        return f"circuit-{CIRCUIT_ANALYSIS_SCHEMA_VERSION}" in processor
+    return True
 
 
 def _ground_circuit_family(
@@ -1803,7 +1946,29 @@ def _ground_circuit_family(
 def audit_visual_semantics(elements: Iterable[LayoutElement]) -> dict[str, Any]:
     issues: list[dict[str, Any]] = []
     circuits = 0
+    course_images = 0
+    table_summaries = 0
+    formula_vision_violations = 0
     for element in elements:
+        if element.element_type == "formula" and "qwen-vl:" in element.processor:
+            formula_vision_violations += 1
+            issues.append({
+                "severity": "critical",
+                "code": "formula_processed_by_vision_model",
+                "element_id": element.id,
+                "page": int(element.source_page or element.page),
+            })
+        if (
+            element.element_type == "table"
+            and element.evidence_metadata.get("visual_summary")
+        ):
+            table_summaries += 1
+        if (
+            element.element_type in {"image", "circuit"}
+            and element.evidence_metadata.get("is_course_relevant")
+            and element.description
+        ):
+            course_images += 1
         if element.element_type != "circuit":
             continue
         circuits += 1
@@ -1847,9 +2012,12 @@ def audit_visual_semantics(elements: Iterable[LayoutElement]) -> dict[str, Any]:
     critical = sum(issue["severity"] == "critical" for issue in issues)
     warnings = sum(issue["severity"] == "warning" for issue in issues)
     return {
-        "schema_version": CIRCUIT_ANALYSIS_SCHEMA_VERSION,
+        "schema_version": VISUAL_SUMMARY_SCHEMA_VERSION,
         "status": "failed" if critical else "passed",
         "circuits": circuits,
+        "course_image_summaries": course_images,
+        "table_summaries": table_summaries,
+        "formula_vision_violations": formula_vision_violations,
         "critical_issues": critical,
         "warning_issues": warnings,
         "issues": issues,
@@ -1975,11 +2143,17 @@ def _analyze_image(
     client: QwenVisionClient | None,
 ) -> None:
     likely, heuristic_score = _circuit_image_heuristic(image_bytes)
-    prompt = """只有包含至少两个电气元件且存在可核验导线连接的原理图、等效电路或小信号模型才可令 is_circuit=true。器件实物/外形、单个器件符号、半导体物理结构、特性曲线、波形图和系统框图必须令 is_circuit=false，即使它们包含端子、箭头或直线。
-类型判定必须有“图内拓扑 + 图题/邻近正文”双重证据：正文仅出现某种电路名称，不代表图中就是该电路。不得从邻近其他图补入本图不存在的元件。电流源与电阻并联是诺顿/电流源模型，不是戴维南模型；戴维南模型必须是电压源与电阻串联。Wilson 电流源必须在图内确认第三只晶体管的反馈拑；只有两只晶体管时不得标为 Wilson。若图中含 (a)/(b) 等多个子图，必须分别描述各子图，components 中增加 subfigure 字段，不得将 (a) 的器件与 (b) 的拓扑合并成一个电路。
-""" + f"""你是电路图结构化识别器。判断图片是否为电路图；若是，结合邻近教材正文识别所有元件、端口、节点和导线连接，输出可复核的 SPICE 风格 Netlist 和中文结构/功能描述。跨线但无连接点时不得当作连接。看不清的值写 null，不得猜测。components.role 填该元件在本图中的具体作用（例如负载电阻、基极偏置电阻、输入耦合电容），不得只重复元件类型；无法判断时填 null。components.terminals 必须直接填写网络 ID；BJT 顺序为 collector/base/emitter，MOS 顺序为 drain/gate/source/bulk，其它二端元件按图中方向列出。
-附近正文：{element.nearby_text[:1800]}
-返回 JSON：{{"is_circuit":true,"caption":"","circuit_type":"有双重证据的类型，否则写通用电路原理图","grounding_quotes":["图中/图题可核验的短证据"],"contradictions":[],"components":[{{"id":"R1","type":"resistor","role":"负载电阻","value":"4 ohm","terminals":["n1","n2"],"bbox":[]}}],"nets":[{{"id":"n1","terminals":["R1.1"]}}],"netlist":"R1 n1 n2 4","description":"只描述本图可见拓扑、类型及教材明示的功能","confidence":0.0}}。"""
+    prompt = f"""你负责总结教材中与课程内容相关的图片，包括电路图、半导体结构图、器件实物或外形、特性曲线、波形图、系统框图和其他教学插图。
+你不负责页面文字或公式转写；公式由 PaddleOCR-VL 独占识别，不得根据图片改写、推导或补全公式。
+只描述图中可见信息与邻近正文直接支持的课程知识；出版社标识、二维码、装饰图和与课程无关的照片令 is_course_relevant=false。
+
+只有包含至少两个电气元件且存在可核验导线连接的原理图、等效电路或小信号模型才可令 is_circuit=true。器件实物/外形、单个器件符号、物理结构、特性曲线、波形图和系统框图必须令 is_circuit=false，但与课程相关时仍需总结其含义。
+电路类型必须有“图内拓扑 + 图题/邻近正文”双重证据，不得从其他图补入元件。电流源与电阻并联是诺顿/电流源模型，不是戴维南模型；戴维南模型必须是电压源与电阻串联。Wilson 电流源必须确认第三只晶体管的反馈拓扑。若含 (a)/(b) 等子图，必须分别描述，不得合并拓扑。
+若是电路图，识别可核验的元件、端口、节点和导线连接；跨线但无连接点不得当作连接，看不清的值写 null。
+
+章节：{element.chapter} / {element.section}
+邻近正文：{element.nearby_text[:1800]}
+返回 JSON：{{"is_course_relevant":true,"visual_type":"circuit|characteristic_curve|waveform|physical_structure|device_photo|system_block_diagram|illustration|other","caption":"","summary":"图片所表达的课程知识总结","knowledge_points":["可核验知识点"],"grounding_quotes":["图内/图题可核验的短证据"],"is_circuit":false,"circuit_type":"","contradictions":[],"components":[],"nets":[],"description":"与 summary 一致；电路图可补充拓扑与功能","confidence":0.0}}。"""
     try:
         raw_vlm_result = (
             client.complete_json(
@@ -1991,7 +2165,7 @@ def _analyze_image(
             else {}
         )
     except QwenMultimodalAPIError as exc:
-        logger.warning("Qwen3-VL circuit analysis failed; using local uncertain fallback: %s", exc)
+        logger.warning("Qwen3-VL image summary failed; retaining localized evidence: %s", exc)
         raw_vlm_result = {}
     vlm_result = _ground_circuit_family(
         _normalize_circuit_result(raw_vlm_result),
@@ -2007,6 +2181,7 @@ def _analyze_image(
     # similar to schematics and previously became false circuit nodes whenever
     # the vision endpoint timed out.
     is_circuit = bool(result.get("is_circuit"))
+    course_relevant = bool(result.get("is_course_relevant"))
     if is_circuit:
         element.element_type = "circuit"
         element.components = result.get("components", [])
@@ -2033,9 +2208,16 @@ def _analyze_image(
         element.components = []
         element.nets = []
         element.netlist = ""
-        element.description = result.get("description") or element.nearby_text[:1200]
+        element.description = result.get("description", "") if course_relevant else ""
         element.caption = result.get("caption", "")
         element.confidence = float(result.get("confidence") or heuristic_score)
+        visual_processor = _visual_processor(client, "image") if raw_vlm_result else ""
+        if visual_processor:
+            element.processor = (
+                f"{element.processor}+{visual_processor}"
+                if element.processor and element.processor != "ocr-layout"
+                else visual_processor
+            )
         if heuristic_circuit and not raw_vlm_result:
             heuristic_processor = "opencv-heuristic-unconfirmed"
             element.processor = (
@@ -2044,6 +2226,13 @@ def _analyze_image(
                 else heuristic_processor
             )
             element.uncertain = True
+    element.evidence_metadata.update({
+        "visual_summary_schema": VISUAL_SUMMARY_SCHEMA_VERSION,
+        "is_course_relevant": course_relevant,
+        "visual_type": str(result.get("visual_type", "")),
+        "visual_knowledge_points": list(result.get("knowledge_points", [])),
+        "visual_grounding_quotes": list(result.get("grounding_quotes", [])),
+    })
     _enforce_verified_circuit(element)
 
 
@@ -2085,7 +2274,7 @@ def enhance_pdf(
     vision_client = (
         QwenVisionClient(
             api_key=settings.qwen_api_key,
-            model=settings.qwen_circuit_vision_model,
+            model=settings.qwen_visual_summary_model,
             base_url=settings.qwen_base_url,
         )
         if settings.qwen_api_key
@@ -2317,6 +2506,42 @@ def enhance_pdf(
                         ),
                     },
                 )
+                if element_type == "table":
+                    clip = fitz.Rect(*bbox) & page.rect
+                    table_image_bytes = b""
+                    if not clip.is_empty and clip.width >= 2 and clip.height >= 2:
+                        table_image_bytes = page.get_pixmap(
+                            matrix=fitz.Matrix(2.0, 2.0), clip=clip, alpha=False
+                        ).tobytes("png")
+                    if _image_is_safe(table_image_bytes):
+                        table_image_path = artifacts_dir / (
+                            f"p{page_no:04d}-{digest[:10]}-paddle-table.png"
+                        )
+                        table_image_path.write_bytes(table_image_bytes)
+                        element.image_path = str(
+                            table_image_path.relative_to(output_dir)
+                        ).replace("\\", "/")
+                        cached_table = cached_images.get(digest)
+                        if _visual_cache_compatible(
+                            cached_table, vision_client, "table"
+                        ):
+                            element.description = str(
+                                cached_table.get("description", element.description)
+                            )
+                            cached_processor = str(cached_table.get("processor", ""))
+                            expected_processor = _visual_processor(vision_client, "table")
+                            if expected_processor and expected_processor not in element.processor:
+                                element.processor += f"+{expected_processor}"
+                            cached_evidence = cached_table.get("evidence_metadata", {})
+                            if isinstance(cached_evidence, dict):
+                                element.evidence_metadata.update({
+                                    key: value for key, value in cached_evidence.items()
+                                    if key.startswith("visual_") or key == "summary_grounded_in"
+                                })
+                            if cached_processor and expected_processor not in cached_processor:
+                                element.evidence_metadata["previous_processor"] = cached_processor
+                        else:
+                            _summarize_table(element, table_image_bytes, vision_client)
                 if element_type in {"formula", "table"}:
                     element.uncertain = element.uncertain or not bool(text.strip())
                 elements.append(element)
@@ -2421,10 +2646,8 @@ def enhance_pdf(
                     cached = cached_images.get(digest)
                     append_element = True
                     if category == "figure":
-                        expected_vlm = _circuit_processor(vision_client)
-                        cache_compatible = bool(cached) and (
-                            (bool(expected_vlm) and str(cached.get("processor", "")).endswith(expected_vlm))
-                            or not expected_vlm
+                        cache_compatible = _visual_cache_compatible(
+                            cached, vision_client, "image"
                         )
                         if cached and cache_compatible:
                             for field_name in (
@@ -2433,6 +2656,10 @@ def enhance_pdf(
                             ):
                                 if field_name in cached:
                                     setattr(element, field_name, cached[field_name])
+                            if isinstance(cached.get("evidence_metadata"), dict):
+                                element.evidence_metadata.update(
+                                    cached["evidence_metadata"]
+                                )
                             if element.components:
                                 element.netlist = _synthesize_netlist(element.components)
                         else:
@@ -2459,6 +2686,12 @@ def enhance_pdf(
                                     image_path.relative_to(output_dir)
                                 ).replace("\\", "/")
                             element.evidence_metadata["pdf_extract_kit_bbox"] = bbox_points
+                            if (
+                                crop_bytes
+                                and _visual_processor(vision_client, "table")
+                                not in element.processor
+                            ):
+                                _summarize_table(element, crop_bytes, vision_client)
                         else:
                             element.text = _overlapping_text(bbox_points, text_blocks)
                             description, cells = _table_fact_description(
@@ -2477,6 +2710,7 @@ def enhance_pdf(
                                     bbox_points, text_blocks, text_block_records
                                 ),
                             }
+                            _summarize_table(element, crop_bytes, vision_client)
                     else:
                         matched = _matching_layout_element(
                             elements,
@@ -2659,7 +2893,23 @@ def enhance_pdf(
                         ),
                     },
                 )
-                _analyze_image(element, image_bytes, vision_client)
+                cached = cached_images.get(digest)
+                cache_compatible = _visual_cache_compatible(
+                    cached, vision_client, "image"
+                )
+                if cached and cache_compatible:
+                    for field_name in (
+                        "element_type", "caption", "components", "nets", "netlist",
+                        "description", "confidence", "processor", "uncertain",
+                    ):
+                        if field_name in cached:
+                            setattr(element, field_name, cached[field_name])
+                    if isinstance(cached.get("evidence_metadata"), dict):
+                        element.evidence_metadata.update(cached["evidence_metadata"])
+                    if element.components:
+                        element.netlist = _synthesize_netlist(element.components)
+                else:
+                    _analyze_image(element, image_bytes, vision_client)
                 _enforce_verified_circuit(element)
                 elements.append(element)
                 page_image_count += 1
@@ -2724,13 +2974,8 @@ def enhance_pdf(
                         source_page=meta.source_page or page_no,
                     )
                     cached = cached_images.get(digest)
-                    expected_vlm = _circuit_processor(vision_client)
-                    cache_compatible = bool(cached) and (
-                        (
-                            bool(expected_vlm)
-                            and cached.get("processor") == expected_vlm
-                        )
-                        or not expected_vlm
+                    cache_compatible = _visual_cache_compatible(
+                        cached, vision_client, "image"
                     )
                     if cached and cache_compatible:
                         for field_name in (
@@ -2746,6 +2991,8 @@ def enhance_pdf(
                         ):
                             if field_name in cached:
                                 setattr(element, field_name, cached[field_name])
+                        if isinstance(cached.get("evidence_metadata"), dict):
+                            element.evidence_metadata.update(cached["evidence_metadata"])
                         if element.components:
                             element.netlist = _synthesize_netlist(element.components)
                     else:
@@ -2794,10 +3041,8 @@ def enhance_pdf(
                     source_page=meta.source_page or page_no,
                 )
                 cached = cached_images.get(digest)
-                expected_vlm = _circuit_processor(vision_client)
-                cache_compatible = bool(cached) and (
-                    (bool(expected_vlm) and cached.get("processor") == expected_vlm)
-                    or not expected_vlm
+                cache_compatible = _visual_cache_compatible(
+                    cached, vision_client, "image"
                 )
                 if cached and cache_compatible:
                     for field_name in (
@@ -2806,6 +3051,8 @@ def enhance_pdf(
                     ):
                         if field_name in cached:
                             setattr(element, field_name, cached[field_name])
+                    if isinstance(cached.get("evidence_metadata"), dict):
+                        element.evidence_metadata.update(cached["evidence_metadata"])
                     if element.components:
                         element.netlist = _synthesize_netlist(element.components)
                 else:

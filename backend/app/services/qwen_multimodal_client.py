@@ -68,13 +68,13 @@ def _parse_json_object(value: Any) -> dict[str, Any]:
         match = re.search(r"\{.*\}", text, re.S)
         if not match:
             raise QwenMultimodalAPIError(
-                "Qwen3-VL 未返回合法 JSON，无法提取电路结构"
+                "Qwen3-VL 未返回合法 JSON，无法完成课程视觉分析"
             ) from exc
         try:
             parsed = json.loads(match.group(0))
         except json.JSONDecodeError as nested_exc:
             raise QwenMultimodalAPIError(
-                "Qwen3-VL 未返回合法 JSON，无法提取电路结构"
+                "Qwen3-VL 未返回合法 JSON，无法完成课程视觉分析"
             ) from nested_exc
     if not isinstance(parsed, dict):
         raise QwenMultimodalAPIError("Qwen3-VL JSON 顶层必须是对象")
