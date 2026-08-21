@@ -63,4 +63,3 @@ def test_first_index_still_requires_each_regression_query_to_return_hits():
 
     assert audit["status"] == "failed"
     assert audit["regressions"] == 1
-

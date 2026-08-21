@@ -136,4 +136,3 @@ def audit_retrieval_regression(
         "baseline_average_term_coverage": baseline_average,
         "results": results,
     }
-
