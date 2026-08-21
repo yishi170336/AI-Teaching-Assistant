@@ -800,6 +800,17 @@ def _retry_low_confidence_key_blocks(
             )
             candidates = _ocr_blocks(result.get("blocks", []))
         except PaddleOCRVLInferenceError as exc:
+            if block_type in {"formula", "table"} and str(updated.get("text", "")).strip():
+                updated["uncertain"] = True
+                updated["corrections"].append({
+                    "type": "paddle-high-resolution-retry-failed",
+                    "previous_confidence": confidence,
+                    "reason": str(exc),
+                    "fallback": "original-paddle-block",
+                })
+                updated["content_hash"] = stable_block_content_hash(updated)
+                retried.append(updated)
+                continue
             raise PaddleOCRVLInferenceError(
                 f"{source} 第 {page_number} 页的低置信度 {block_type} "
                 f"高清重试失败：{exc}"
@@ -831,6 +842,17 @@ def _retry_low_confidence_key_blocks(
             default=None,
         )
         if candidate is None:
+            if block_type in {"formula", "table"} and str(updated.get("text", "")).strip():
+                updated["uncertain"] = True
+                updated["corrections"].append({
+                    "type": "paddle-high-resolution-retry-failed",
+                    "previous_confidence": confidence,
+                    "reason": "retry-returned-no-compatible-content",
+                    "fallback": "original-paddle-block",
+                })
+                updated["content_hash"] = stable_block_content_hash(updated)
+                retried.append(updated)
+                continue
             raise PaddleOCRVLInferenceError(
                 f"{source} 第 {page_number} 页的低置信度 {block_type} "
                 "高清重试未返回可用内容"

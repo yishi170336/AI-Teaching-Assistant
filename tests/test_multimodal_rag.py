@@ -30,6 +30,7 @@ from backend.app.rag.multimodal import (
     _normalize_formula_result,
     _ocr_heading_context,
     _reconcile_formula_with_page_ocr,
+    _retry_low_confidence_key_blocks,
     _ocr_scanned_pages,
     _page_cleaning_decisions,
     _reuse_near_complete_page_ocr_cache,
@@ -289,6 +290,36 @@ def test_failed_paddle_key_block_retry_aborts_candidate_build(tmp_path):
             FakePaddleClient(),
             "failed-retry-hash",
         )
+
+
+def test_failed_formula_crop_retry_preserves_original_paddle_block(tmp_path):
+    pdf = fitz.open()
+    page = pdf.new_page(width=500, height=700)
+
+    class FailedCropClient:
+        def predict_page(self, *_args, **_kwargs):
+            raise PaddleOCRVLInferenceError("crop returned no parsed blocks")
+
+    result = _retry_low_confidence_key_blocks(
+        page,
+        [{
+            "id": "formula-1",
+            "type": "formula",
+            "text": r"$I_C=\beta I_B$",
+            "bbox": [100, 100, 900, 180],
+            "reading_order": 1,
+            "confidence": 0.4,
+        }],
+        FailedCropClient(),
+        source="lesson.pdf",
+        page_number=111,
+    )
+    pdf.close()
+
+    assert result[0]["text"] == r"$I_C=\beta I_B$"
+    assert result[0]["uncertain"] is True
+    assert result[0]["corrections"][-1]["type"] == "paddle-high-resolution-retry-failed"
+    assert result[0]["corrections"][-1]["fallback"] == "original-paddle-block"
 
 
 def test_ocr_heading_context_rejects_contents_prose_and_answer_labels():
