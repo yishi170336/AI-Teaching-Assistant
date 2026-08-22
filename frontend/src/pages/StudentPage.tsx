@@ -2216,6 +2216,12 @@ const graphNodeName = (node?: KnowledgeGraphNode) => (
 
 const NEO4J_VIEWBOX_WIDTH = 1200
 const NEO4J_VIEWBOX_HEIGHT = 760
+const NEO4J_ZOOM_MIN = 0.4
+const NEO4J_ZOOM_MAX = 8
+
+const clampNeo4jZoom = (value: number) => (
+  Math.min(NEO4J_ZOOM_MAX, Math.max(NEO4J_ZOOM_MIN, value))
+)
 
 const neo4jEntityColors: Record<string, string> = {
   '课程概念': '#68BDF6',
@@ -2238,6 +2244,12 @@ const neo4jNodeColor = (node: KnowledgeGraphNode) => {
   if ((node.level || 0) === 1) return '#68BDF6'
   return '#A5ABB6'
 }
+
+const neo4jEdgeTypeLabel = (type?: string) => ({
+  concept_relation: '概念关系',
+  entity_section: '实体归属',
+  parent_child: '章节层级',
+}[String(type || '').toLocaleLowerCase()] || '关系')
 
 const neo4jNodeRadius = (node: KnowledgeGraphNode, total: number) => {
   const densityScale = total < 120 ? 2 : total < 480 ? 1.45 : 1
@@ -2442,6 +2454,18 @@ function HierarchicalKnowledgeGraphView({
   const [entityQuery, setEntityQuery] = useState('')
   const [entityType, setEntityType] = useState('all')
   const [graphZoom, setGraphZoom] = useState(1)
+  const [graphCenter, setGraphCenter] = useState({ x: NEO4J_VIEWBOX_WIDTH / 2, y: NEO4J_VIEWBOX_HEIGHT / 2 })
+  const [graphDragging, setGraphDragging] = useState(false)
+  const graphSvgRef = useRef<SVGSVGElement | null>(null)
+  const graphDragRef = useRef<{
+    pointerId: number
+    clientX: number
+    clientY: number
+    centerX: number
+    centerY: number
+    moved: boolean
+  } | null>(null)
+  const suppressGraphClickRef = useRef(false)
   const [expandedChapterId, setExpandedChapterId] = useState('')
   const [evidence, setEvidence] = useState<KnowledgeGraphEvidence[]>([])
   const [evidenceLoading, setEvidenceLoading] = useState(false)
@@ -2530,6 +2554,58 @@ function HierarchicalKnowledgeGraphView({
   const selected = graph.nodes.find((node) => node.id === selectedId)
   const edgeKey = (edge: KnowledgeGraphEdge) => `${edge.source}\u0000${edge.relation || edge.type}\u0000${edge.target}`
   const selectedEdge = graphEdges.find((edge) => edgeKey(edge) === selectedEdgeKey)
+  const graphViewport = {
+    width: NEO4J_VIEWBOX_WIDTH / graphZoom,
+    height: NEO4J_VIEWBOX_HEIGHT / graphZoom,
+    x: graphCenter.x - NEO4J_VIEWBOX_WIDTH / graphZoom / 2,
+    y: graphCenter.y - NEO4J_VIEWBOX_HEIGHT / graphZoom / 2,
+  }
+  const graphViewBox = `${graphViewport.x} ${graphViewport.y} ${graphViewport.width} ${graphViewport.height}`
+  const changeNeo4jZoom = (requestedZoom: number) => setGraphZoom(clampNeo4jZoom(requestedZoom))
+  const resetNeo4jViewport = () => {
+    setGraphZoom(1)
+    setGraphCenter({ x: NEO4J_VIEWBOX_WIDTH / 2, y: NEO4J_VIEWBOX_HEIGHT / 2 })
+  }
+  const handleNeo4jPointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (event.button !== 0) return
+    graphDragRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      centerX: graphCenter.x,
+      centerY: graphCenter.y,
+      moved: false,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setGraphDragging(true)
+  }
+  const handleNeo4jPointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const drag = graphDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    event.preventDefault()
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (!rect.width || !rect.height) return
+    const deltaX = event.clientX - drag.clientX
+    const deltaY = event.clientY - drag.clientY
+    if (Math.abs(deltaX) + Math.abs(deltaY) > 4) drag.moved = true
+    setGraphCenter({
+      x: drag.centerX - deltaX * graphViewport.width / rect.width,
+      y: drag.centerY - deltaY * graphViewport.height / rect.height,
+    })
+  }
+  const finishNeo4jPointer = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const drag = graphDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    if (drag.moved) {
+      suppressGraphClickRef.current = true
+      window.setTimeout(() => { suppressGraphClickRef.current = false }, 0)
+    }
+    graphDragRef.current = null
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    setGraphDragging(false)
+  }
 
   useEffect(() => {
     const roots = sections.filter((node) => !node.parent)
@@ -2539,6 +2615,7 @@ function HierarchicalKnowledgeGraphView({
     ))[0]
     setSelectedId(initialEntity?.id || roots[0]?.id || sections[0]?.id || '')
     setSelectedEdgeKey('')
+    resetNeo4jViewport()
   }, [graph.knowledge_base])
 
   const evidenceIds = selectedEdge?.evidence_ids || selected?.evidence_ids || []
@@ -2618,68 +2695,61 @@ function HierarchicalKnowledgeGraphView({
   const entityEdgeCount = graph.stats.semantic_relations || conceptEdges.length
   const completeNodeCount = graph.stats.nodes
   const completeEdgeCount = graph.stats.edges
-  const scopedQuery = view === 'entities'
-    ? `MATCH (n:KnowledgeEntity {knowledge_base: '${graph.knowledge_base}', type: 'entity'})-[r:CONCEPT_RELATION]-(m:KnowledgeEntity {knowledge_base: '${graph.knowledge_base}', type: 'entity'}) RETURN n, r, m`
-    : `MATCH (n:KnowledgeEntity {knowledge_base: '${graph.knowledge_base}'})-[r]-(m:KnowledgeEntity {knowledge_base: '${graph.knowledge_base}'}) RETURN n, r, m`
 
   return (
     <section className="feature-view neo4j-graph-view">
       <header className="neo4j-page-heading">
-        <div className="neo4j-page-brand"><span className="neo4j-brand-mark"><Network size={22} /></span><div><span>KNOWLEDGE GRAPH</span><h1>{displayName}</h1><p>Neo4j 风格课程知识图谱 · Schema 4.0</p></div></div>
-        <div className="neo4j-kb-scope"><ShieldCheck size={16} /><div><span>仅显示选中知识库</span><strong>{graph.knowledge_base}</strong></div><i /></div>
+        <div className="neo4j-page-brand"><span className="neo4j-brand-mark"><Network size={22} /></span><div><span>KNOWLEDGE GRAPH</span><h1>{displayName}</h1></div></div>
       </header>
       <div className="neo4j-workbench">
-        <div className="neo4j-query-editor" aria-label="当前知识库查询范围">
-          <span>neo4j$</span><code>{scopedQuery}</code><div><span className="neo4j-readonly-dot" />READ ONLY</div>
-        </div>
         <div className="neo4j-workbench-body">
           <aside className="neo4j-database-panel">
-            <div className="neo4j-panel-title"><Database size={17} /><div><strong>Database information</strong><span>neo4j · connected</span></div></div>
-            <section><h2>Nodes <small>{graph.stats.nodes}</small></h2><button type="button" className="active"><i style={{ background: '#68BDF6' }} />KnowledgeEntity <b>{graph.stats.entities || allEntities.length}</b></button><button type="button"><i style={{ background: '#A5ABB6' }} />SECTION <b>{graph.stats.sections || sections.length}</b></button></section>
-            <section className="neo4j-label-list"><h2>Node labels</h2>{entityTypeCounts.map(([label, count]) => <button type="button" className={entityType === label ? 'active' : ''} key={label} onClick={() => { setEntityType(entityType === label ? 'all' : label); setView('entities') }}><i style={{ background: neo4jEntityColor(label) }} />{label}<b>{count}</b></button>)}</section>
-            <section><h2>Relationships</h2><button type="button"><span className="neo4j-rel-chip">CONCEPT_RELATION</span><b>{conceptEdges.length}</b></button><button type="button"><span className="neo4j-rel-chip">ENTITY_SECTION</span><b>{graph.edges.filter((edge) => edge.type === 'entity_section').length}</b></button><button type="button"><span className="neo4j-rel-chip">PARENT_CHILD</span><b>{graph.edges.filter((edge) => edge.type === 'parent_child').length}</b></button></section>
+            <div className="neo4j-panel-title"><Database size={17} /><div><strong>课程知识图谱</strong><span>已连接</span></div></div>
+            <section><h2>节点 <small>{graph.stats.nodes}</small></h2><button type="button" className="active"><i style={{ background: '#68BDF6' }} />知识实体 <b>{graph.stats.entities || allEntities.length}</b></button><button type="button"><i style={{ background: '#A5ABB6' }} />章节 <b>{graph.stats.sections || sections.length}</b></button></section>
+            <section className="neo4j-label-list"><h2>节点类型</h2>{entityTypeCounts.map(([label, count]) => <button type="button" className={entityType === label ? 'active' : ''} key={label} onClick={() => { setEntityType(entityType === label ? 'all' : label); setView('entities'); resetNeo4jViewport() }}><i style={{ background: neo4jEntityColor(label) }} />{label}<b>{count}</b></button>)}</section>
+            <section><h2>关系</h2><button type="button"><span className="neo4j-rel-chip">概念关系</span><b>{conceptEdges.length}</b></button><button type="button"><span className="neo4j-rel-chip">实体归属</span><b>{graph.edges.filter((edge) => edge.type === 'entity_section').length}</b></button><button type="button"><span className="neo4j-rel-chip">章节层级</span><b>{graph.edges.filter((edge) => edge.type === 'parent_child').length}</b></button></section>
           </aside>
           <main className="neo4j-result-panel">
             <div className="neo4j-result-toolbar">
               <Segmented
                 value={view}
-                onChange={(value) => { setView(String(value) as 'sections' | 'entities'); setSelectedEdgeKey('') }}
+                onChange={(value) => { setView(String(value) as 'sections' | 'entities'); setSelectedEdgeKey(''); resetNeo4jViewport() }}
                 options={[
                   { label: `实体关系 · ${entityNodeCount} / ${entityEdgeCount}`, value: 'entities' },
                   { label: `完整图谱 · ${completeNodeCount} / ${completeEdgeCount}`, value: 'sections' },
                 ]}
               />
-              {view === 'entities' && <><Input allowClear value={entityQuery} onChange={(event) => setEntityQuery(event.target.value)} prefix={<Search size={14} />} placeholder="搜索实体或别名" /><Select value={entityType} onChange={setEntityType} options={[{ value: 'all', label: '全部类型' }, ...entityTypeCounts.map(([label, count]) => ({ value: label, label: `${label} (${count})` }))]} /><Segmented value={coreOnly ? 'core' : 'all'} onChange={(value) => setCoreOnly(value === 'core')} options={[{ label: '核心', value: 'core' }, { label: '全部', value: 'all' }]} /></>}
+              {view === 'entities' && <><Input allowClear value={entityQuery} onChange={(event) => setEntityQuery(event.target.value)} prefix={<Search size={14} />} placeholder="搜索实体或别名" /><Select value={entityType} onChange={(value) => { setEntityType(value); resetNeo4jViewport() }} options={[{ value: 'all', label: '全部类型' }, ...entityTypeCounts.map(([label, count]) => ({ value: label, label: `${label} (${count})` }))]} /><Segmented value={coreOnly ? 'core' : 'all'} onChange={(value) => { setCoreOnly(value === 'core'); resetNeo4jViewport() }} options={[{ label: '核心', value: 'core' }, { label: '全部', value: 'all' }]} /></>}
             </div>
             <div className="neo4j-graph-stage" data-mode={view}>
-              <div className="neo4j-canvas-toolbar"><button type="button" aria-label="放大图谱" disabled={graphZoom >= 2.6} onClick={() => setGraphZoom((value) => Math.min(2.6, value + .2))}><ZoomIn size={16} /></button><button type="button" aria-label="缩小图谱" disabled={graphZoom <= .55} onClick={() => setGraphZoom((value) => Math.max(.55, value - .2))}><ZoomOut size={16} /></button><button type="button" aria-label="重置缩放" onClick={() => setGraphZoom(1)}><RotateCcw size={15} /></button><span>{Math.round(graphZoom * 100)}%</span></div>
-              {graphNodes.length ? <svg viewBox={`0 0 ${NEO4J_VIEWBOX_WIDTH} ${NEO4J_VIEWBOX_HEIGHT}`} role="img" aria-label={`${displayName}${view === 'sections' ? '完整' : '实体关系'}知识图谱`}>
+              <div className="neo4j-canvas-toolbar"><button type="button" aria-label="放大图谱" disabled={graphZoom >= NEO4J_ZOOM_MAX} onClick={() => changeNeo4jZoom(graphZoom * 1.35)}><ZoomIn size={18} /></button><button type="button" aria-label="缩小图谱" disabled={graphZoom <= NEO4J_ZOOM_MIN} onClick={() => changeNeo4jZoom(graphZoom / 1.35)}><ZoomOut size={18} /></button><button type="button" aria-label="重置图谱位置与缩放" onClick={resetNeo4jViewport}><RotateCcw size={17} /></button><span>{Math.round(graphZoom * 100)}%</span></div>
+              {graphNodes.length ? <svg ref={graphSvgRef} className={graphDragging ? 'is-dragging' : ''} viewBox={graphViewBox} role="img" aria-label={`${displayName}${view === 'sections' ? '完整' : '实体关系'}知识图谱`} onPointerDown={handleNeo4jPointerDown} onPointerMove={handleNeo4jPointerMove} onPointerUp={finishNeo4jPointer} onPointerCancel={finishNeo4jPointer}>
                 <defs><marker id="neo4j-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>
-                <g transform={`translate(${NEO4J_VIEWBOX_WIDTH / 2} ${NEO4J_VIEWBOX_HEIGHT / 2}) scale(${graphZoom}) translate(${-NEO4J_VIEWBOX_WIDTH / 2} ${-NEO4J_VIEWBOX_HEIGHT / 2})`}>
+                <g>
                   <g className="neo4j-edges">{graphEdges.map((edge, index) => {
                     const from = layout.positions.get(edge.source)
                     const to = layout.positions.get(edge.target)
                     if (!from || !to) return null
                     const key = edgeKey(edge)
                     const isSelected = selectedEdgeKey === key
-                    return <g key={`${key}\u0000${index}`} className={`${edge.type} ${isSelected ? 'selected' : ''}`} role="button" onClick={() => { setSelectedEdgeKey(key); setSelectedId('') }}><line className="hit" x1={from.x} y1={from.y} x2={to.x} y2={to.y} /><line className="line" x1={from.x} y1={from.y} x2={to.x} y2={to.y} markerEnd={isSelected ? 'url(#neo4j-arrow)' : undefined} />{isSelected && <text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 5}>{(edge.relation || edge.type || '关联').slice(0, 12)}</text>}</g>
+                    return <g key={`${key}\u0000${index}`} className={`${edge.type} ${isSelected ? 'selected' : ''}`} role="button" onClick={(event) => { event.stopPropagation(); if (suppressGraphClickRef.current) return; setSelectedEdgeKey(key); setSelectedId('') }}><line className="hit" x1={from.x} y1={from.y} x2={to.x} y2={to.y} /><line className="line" x1={from.x} y1={from.y} x2={to.x} y2={to.y} markerEnd={isSelected ? 'url(#neo4j-arrow)' : undefined} />{isSelected && <text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 5}>{(edge.relation || edge.type || '关联').slice(0, 12)}</text>}</g>
                   })}</g>
                   <g className="neo4j-nodes">{graphNodes.map((node) => {
                     const position = layout.positions.get(node.id) || { x: NEO4J_VIEWBOX_WIDTH / 2, y: NEO4J_VIEWBOX_HEIGHT / 2 }
                     const radius = neo4jNodeRadius(node, graphNodes.length)
                     const queryMatch = matchedNodeIds.has(node.id)
                     const queryDim = Boolean(normalizedEntityQuery) && node.type === 'entity' && !queryMatch
-                    return <g key={node.id} className={`${node.type === 'section' ? 'section' : 'entity'} ${node.is_core ? 'core' : ''} ${selectedId === node.id ? 'selected' : ''} ${queryMatch ? 'query-match' : ''} ${queryDim ? 'query-dim' : ''}`} transform={`translate(${position.x} ${position.y})`} role="button" tabIndex={0} onClick={() => { setSelectedId(node.id); setSelectedEdgeKey('') }} onKeyDown={(event) => { if (event.key === 'Enter') { setSelectedId(node.id); setSelectedEdgeKey('') } }}><title>{graphNodeName(node)}{node.type === 'entity' && node.entity_type ? ` · ${node.entity_type}` : ''}</title><circle r={radius} style={{ fill: neo4jNodeColor(node) }} />{labelNodeIds.has(node.id) && <text y={radius + 11}>{graphNodeName(node).slice(0, node.type === 'section' ? 18 : 14)}</text>}</g>
+                    return <g key={node.id} className={`${node.type === 'section' ? 'section' : 'entity'} ${node.is_core ? 'core' : ''} ${selectedId === node.id ? 'selected' : ''} ${queryMatch ? 'query-match' : ''} ${queryDim ? 'query-dim' : ''}`} transform={`translate(${position.x} ${position.y})`} role="button" tabIndex={0} onClick={(event) => { event.stopPropagation(); if (suppressGraphClickRef.current) return; setSelectedId(node.id); setSelectedEdgeKey('') }} onKeyDown={(event) => { if (event.key === 'Enter') { setSelectedId(node.id); setSelectedEdgeKey('') } }}><title>{graphNodeName(node)}{node.type === 'entity' && node.entity_type ? ` · ${node.entity_type}` : ''}</title><circle r={radius} style={{ fill: neo4jNodeColor(node) }} />{labelNodeIds.has(node.id) && <text y={radius + 11}>{graphNodeName(node).slice(0, node.type === 'section' ? 18 : 14)}</text>}</g>
                   })}</g>
                 </g>
               </svg> : <div className="neo4j-empty"><Search size={26} /><strong>没有符合筛选条件的实体</strong><span>尝试切换实体类型或显示全部实体。</span></div>}
-              <div className="neo4j-stage-status"><span>{view === 'sections' ? '完整图谱模式' : '实体关系模式'}</span><span>Nodes ({graphNodes.length})</span><span>Relationships ({graphEdges.length})</span><small>{normalizedEntityQuery ? `搜索匹配 ${matchedNodeIds.size} 个实体 · ` : ''}画布已加载全部当前范围数据，无节点或关系截断</small></div>
+              <div className="neo4j-stage-status"><span>{view === 'sections' ? '完整图谱模式' : '实体关系模式'}</span><span>节点（{graphNodes.length}）</span><span>关系（{graphEdges.length}）</span><small>{normalizedEntityQuery ? `搜索匹配 ${matchedNodeIds.size} 个实体 · ` : ''}已加载当前范围的全部节点和关系，可拖动画布查看</small></div>
             </div>
           </main>
           <aside className="neo4j-inspector">
-            <div className="neo4j-inspector-heading"><strong>Properties</strong><span>{selectedEdge ? 'Relationship' : selected ? 'Node' : 'Selection'}</span></div>
-            {selectedEdge ? <div className="neo4j-property-content"><span className="neo4j-object-type">{selectedEdge.type.toUpperCase()}</span><h2>{selectedEdge.relation || '关联'}</h2><dl><dt>source</dt><dd><InlineMath content={graphNodeName(graphNodeMap.get(selectedEdge.source)) || selectedEdge.source} /></dd><dt>target</dt><dd><InlineMath content={graphNodeName(graphNodeMap.get(selectedEdge.target)) || selectedEdge.target} /></dd><dt>strength</dt><dd>{selectedEdge.strength?.toFixed(1) || '—'}</dd><dt>confidence</dt><dd>{selectedEdge.confidence ? `${Math.round(selectedEdge.confidence * 100)}%` : '—'}</dd></dl>{selectedEdge.description && <p>{selectedEdge.description}</p>}</div> : selected?.type === 'section' ? <div className="neo4j-property-content"><span className="neo4j-object-type section">SECTION · LEVEL {selected.level || 0}</span><h2><InlineMath content={selected.title || selected.name} /></h2><p>{selected.summary || '该节点仅用于补全目录结构，没有可摘要的直接正文。'}</p>{selectedSectionEntities.length > 0 && <div className="hierarchical-chip-list">{selectedSectionEntities.slice(0, 24).map((entity) => <button type="button" key={entity.id} className={entity.is_core ? 'core' : ''} onClick={() => { setView('entities'); setSelectedId(entity.id) }}>{entity.name}</button>)}</div>}</div> : selected?.type === 'entity' ? <div className="neo4j-property-content"><span className="neo4j-object-type" style={{ borderColor: neo4jEntityColor(selected.entity_type), color: neo4jEntityColor(selected.entity_type) }}>{selected.entity_type}{selected.is_core ? ' · CORE' : ''}</span><h2><InlineMath content={graphNodeName(selected)} /></h2><dl><dt>core_score</dt><dd>{selected.core_score?.toFixed(2) || '—'}</dd><dt>relations</dt><dd>{selectedNeighbors}</dd><dt>sections</dt><dd>{selectedEntitySections.length}</dd></dl>{selected.aliases?.length ? <p><strong>别名：</strong>{selected.aliases.join('、')}</p> : null}{selected.raw_description && <><h3>原始描述</h3><p>{selected.raw_description}</p></>}{selected.description && <><h3>邻域增强描述</h3><p>{selected.description}</p></>}{selectedEntitySections.length > 0 && <p><strong>所属章节：</strong>{selectedEntitySections.map((section) => section.title || section.name).join('、')}</p>}</div> : <div className="neo4j-inspector-empty"><Network size={30} /><strong>选择图谱对象</strong><span>点击节点、关系或章节，查看属性和块级证据。</span></div>}
-            {(selected || selectedEdge) && <><div className="graph-evidence-title">Evidence blocks</div>{evidenceLoading && <div className="graph-evidence-state"><LoaderCircle className="spin" size={15} /> 正在读取证据…</div>}{!evidenceLoading && evidence.length > 0 && <div className="graph-evidence-list">{evidence.slice(0, 10).map((item) => <article key={item.id}><span>{item.modality} {item.page ? `· 第 ${item.page} 页` : ''}</span><p>{item.text || item.caption || item.description}</p><small>{item.id}</small></article>)}</div>}{!evidenceLoading && !evidence.length && <div className="graph-evidence-state">当前选择没有可展示的证据块。</div>}</>}
+            <div className="neo4j-inspector-heading"><strong>属性</strong><span>{selectedEdge ? '关系' : selected ? '节点' : '选择项'}</span></div>
+            {selectedEdge ? <div className="neo4j-property-content"><span className="neo4j-object-type">{neo4jEdgeTypeLabel(selectedEdge.type)}</span><h2>{selectedEdge.relation || '关联'}</h2><dl><dt>起点</dt><dd><InlineMath content={graphNodeName(graphNodeMap.get(selectedEdge.source)) || selectedEdge.source} /></dd><dt>终点</dt><dd><InlineMath content={graphNodeName(graphNodeMap.get(selectedEdge.target)) || selectedEdge.target} /></dd><dt>强度</dt><dd>{selectedEdge.strength?.toFixed(1) || '—'}</dd><dt>置信度</dt><dd>{selectedEdge.confidence ? `${Math.round(selectedEdge.confidence * 100)}%` : '—'}</dd></dl>{selectedEdge.description && <p>{selectedEdge.description}</p>}</div> : selected?.type === 'section' ? <div className="neo4j-property-content"><span className="neo4j-object-type section">章节 · 第 {selected.level || 0} 级</span><h2><InlineMath content={selected.title || selected.name} /></h2><p>{selected.summary || '该节点仅用于补全目录结构，没有可摘要的直接正文。'}</p>{selectedSectionEntities.length > 0 && <div className="hierarchical-chip-list">{selectedSectionEntities.slice(0, 24).map((entity) => <button type="button" key={entity.id} className={entity.is_core ? 'core' : ''} onClick={() => { setView('entities'); setSelectedId(entity.id) }}>{entity.name}</button>)}</div>}</div> : selected?.type === 'entity' ? <div className="neo4j-property-content"><span className="neo4j-object-type" style={{ borderColor: neo4jEntityColor(selected.entity_type), color: neo4jEntityColor(selected.entity_type) }}>{selected.entity_type}{selected.is_core ? ' · 核心' : ''}</span><h2><InlineMath content={graphNodeName(selected)} /></h2><dl><dt>核心评分</dt><dd>{selected.core_score?.toFixed(2) || '—'}</dd><dt>关系数量</dt><dd>{selectedNeighbors}</dd><dt>章节数量</dt><dd>{selectedEntitySections.length}</dd></dl>{selected.aliases?.length ? <p><strong>别名：</strong>{selected.aliases.join('、')}</p> : null}{selected.raw_description && <><h3>原始描述</h3><p>{selected.raw_description}</p></>}{selected.description && <><h3>邻域增强描述</h3><p>{selected.description}</p></>}{selectedEntitySections.length > 0 && <p><strong>所属章节：</strong>{selectedEntitySections.map((section) => section.title || section.name).join('、')}</p>}</div> : <div className="neo4j-inspector-empty"><Network size={30} /><strong>选择图谱对象</strong><span>点击节点、关系或章节，查看属性和块级证据。</span></div>}
+            {(selected || selectedEdge) && <><div className="graph-evidence-title">证据块</div>{evidenceLoading && <div className="graph-evidence-state"><LoaderCircle className="spin" size={15} /> 正在读取证据…</div>}{!evidenceLoading && evidence.length > 0 && <div className="graph-evidence-list">{evidence.slice(0, 10).map((item) => <article key={item.id}><span>{item.modality} {item.page ? `· 第 ${item.page} 页` : ''}</span><p>{item.text || item.caption || item.description}</p><small>{item.id}</small></article>)}</div>}{!evidenceLoading && !evidence.length && <div className="graph-evidence-state">当前选择没有可展示的证据块。</div>}</>}
           </aside>
         </div>
       </div>

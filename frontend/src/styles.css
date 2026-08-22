@@ -776,25 +776,13 @@ button { color: inherit; }
 .hierarchical-chip-list button { padding: 5px 8px; color: #496d68; cursor: pointer; background: #edf5f3; border: 1px solid #d5e6e2; border-radius: 12px; font-size: 9px; }
 .hierarchical-chip-list button.core { color: #a95325; background: #fff1e7; border-color: #f1cfb9; }
 .neo4j-graph-view { padding: 22px 26px 42px; color: #2d3439; background: #f4f5f6; }
-.neo4j-page-heading { display: flex; align-items: center; justify-content: space-between; max-width: 1440px; margin: 0 auto 14px; }
+.neo4j-page-heading { display: flex; align-items: center; justify-content: flex-start; max-width: 1440px; margin: 0 auto 14px; }
 .neo4j-page-brand { display: flex; align-items: center; gap: 12px; }
 .neo4j-brand-mark { display: grid; width: 42px; height: 42px; place-items: center; color: #fff; background: linear-gradient(145deg, #68bdf6, #4c8eda); border-radius: 9px; box-shadow: 0 7px 18px rgba(76,142,218,.22); }
 .neo4j-page-brand > div { display: flex; flex-direction: column; }
 .neo4j-page-brand > div > span { color: #76828a; font-size: 8px; font-weight: 800; letter-spacing: .16em; }
 .neo4j-page-brand h1 { margin: 2px 0; color: #20272c; font-size: 22px; }
-.neo4j-page-brand p { margin: 0; color: #7d898f; font-size: 10px; }
-.neo4j-kb-scope { display: flex; align-items: center; gap: 9px; min-width: 245px; padding: 8px 11px; color: #45636a; background: #fff; border: 1px solid #d7dce0; border-radius: 8px; box-shadow: 0 2px 8px rgba(25,39,45,.04); }
-.neo4j-kb-scope > svg { color: #1597a7; }
-.neo4j-kb-scope > div { display: flex; min-width: 0; flex: 1; flex-direction: column; }
-.neo4j-kb-scope span { color: #879096; font-size: 8px; }
-.neo4j-kb-scope strong { overflow: hidden; color: #354248; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.neo4j-kb-scope > i { width: 8px; height: 8px; background: #47b881; border: 2px solid #dff5ea; border-radius: 50%; }
 .neo4j-workbench { max-width: 1440px; margin: auto; overflow: hidden; background: #fff; border: 1px solid #ccd3d7; border-radius: 10px; box-shadow: 0 13px 32px rgba(26,40,46,.1); }
-.neo4j-query-editor { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; min-height: 48px; gap: 10px; padding: 7px 12px; color: #dce4e7; background: #17212b; border-bottom: 1px solid #0c141b; }
-.neo4j-query-editor > span { color: #59c6d1; font: 700 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
-.neo4j-query-editor code { display: block; padding: 8px 10px; overflow: hidden; color: #d7dee1; background: #111920; border: 1px solid #2b3944; border-radius: 5px; font: 9px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
-.neo4j-query-editor > div { display: flex; align-items: center; gap: 6px; color: #82919a; font-size: 8px; font-weight: 800; letter-spacing: .08em; }
-.neo4j-readonly-dot { width: 7px; height: 7px; background: #4abe83; border-radius: 50%; box-shadow: 0 0 0 3px rgba(74,190,131,.12); }
 .neo4j-workbench-body { display: grid; grid-template-columns: 220px minmax(440px, 1fr) 320px; min-height: 710px; }
 .neo4j-database-panel { max-height: 780px; padding: 15px 11px 20px; overflow: auto; background: #fbfcfc; border-right: 1px solid #dce1e4; }
 .neo4j-panel-title { display: flex; align-items: center; gap: 9px; padding: 0 5px 13px; border-bottom: 1px solid #e3e7e9; }
@@ -817,12 +805,15 @@ button { color: inherit; }
 .neo4j-result-toolbar .ant-select { width: 145px; }
 .neo4j-result-toolbar .ant-select-selector { font-size: 9px !important; }
 .neo4j-graph-stage { position: relative; min-height: 740px; overflow: hidden; background-color: #fafbfc; background-image: radial-gradient(#dce2e5 1px, transparent 1px); background-size: 19px 19px; }
-.neo4j-graph-stage svg { display: block; width: 100%; height: 700px; }
-.neo4j-canvas-toolbar { position: absolute; z-index: 2; top: 12px; right: 12px; display: flex; align-items: center; padding: 3px; overflow: hidden; background: rgba(255,255,255,.96); border: 1px solid #d6dde0; border-radius: 5px; box-shadow: 0 3px 10px rgba(28,45,52,.08); }
-.neo4j-canvas-toolbar button { display: grid; width: 29px; height: 27px; place-items: center; color: #53646c; cursor: pointer; background: transparent; border: 0; border-radius: 3px; }
-.neo4j-canvas-toolbar button:hover:not(:disabled) { color: #087f94; background: #eaf3f5; }
-.neo4j-canvas-toolbar button:disabled { color: #bdc4c8; cursor: default; }
-.neo4j-canvas-toolbar span { width: 40px; color: #65737a; text-align: center; font-size: 8px; font-variant-numeric: tabular-nums; }
+.neo4j-graph-stage > svg { display: block; width: 100%; height: 700px; cursor: grab; touch-action: none; user-select: none; }
+.neo4j-graph-stage > svg.is-dragging, .neo4j-graph-stage > svg.is-dragging * { cursor: grabbing !important; }
+.neo4j-canvas-toolbar { position: absolute; z-index: 2; top: 12px; right: 12px; display: flex; align-items: center; padding: 4px; overflow: hidden; color: #7d8a91; background: rgba(255,255,255,.96); border: 1px solid #d9e0e4; border-radius: 7px; box-shadow: 0 4px 13px rgba(28,45,52,.11); }
+.neo4j-canvas-toolbar button { display: grid; width: 33px; height: 31px; place-items: center; color: #718087; cursor: pointer; background: transparent; border: 0; border-radius: 4px; }
+.neo4j-canvas-toolbar button svg { display: block; width: 18px; height: 18px; color: currentColor; opacity: 1; stroke: currentColor; stroke-width: 2.4; }
+.neo4j-canvas-toolbar button:hover:not(:disabled) { color: #168fa1; background: #edf5f6; }
+.neo4j-canvas-toolbar button:focus-visible { outline: 2px solid #68bdf6; outline-offset: -2px; }
+.neo4j-canvas-toolbar button:disabled { color: #c4ccd0; cursor: default; }
+.neo4j-canvas-toolbar span { width: 50px; color: #9aa5aa; text-align: center; font-size: 9px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .neo4j-edges > g { cursor: pointer; outline: none; }
 .neo4j-edges .line { opacity: .64; stroke: #9aa6ac; stroke-width: .72; }
 .neo4j-edges .hit { stroke: transparent; stroke-width: 8; }
@@ -900,15 +891,12 @@ button { color: inherit; }
 @media (max-width: 820px) {
   .neo4j-graph-view { padding: 15px 12px 28px; }
   .neo4j-page-heading, .neo4j-chapter-overview > header { align-items: flex-start; flex-direction: column; }
-  .neo4j-kb-scope { width: 100%; }
-  .neo4j-query-editor { grid-template-columns: auto minmax(0, 1fr); }
-  .neo4j-query-editor > div { display: none; }
   .neo4j-workbench-body { grid-template-columns: 1fr; }
   .neo4j-database-panel { max-height: 250px; border-right: 0; border-bottom: 1px solid #dce1e4; }
   .neo4j-result-toolbar { align-items: stretch; flex-wrap: wrap; }
   .neo4j-result-toolbar .ant-input-affix-wrapper { width: 100%; }
   .neo4j-graph-stage { min-height: 600px; }
-  .neo4j-graph-stage svg { height: 560px; }
+  .neo4j-graph-stage > svg { height: 560px; }
   .neo4j-chapter-grid { grid-template-columns: 1fr; }
   .neo4j-chapter-grid > article.expanded { grid-column: auto; }
 }
