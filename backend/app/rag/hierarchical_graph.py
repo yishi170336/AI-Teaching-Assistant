@@ -33,6 +33,7 @@ SCHEMA_VERSION = "4.0-hierarchical-summary-entity-graph"
 CACHE_VERSION = "4.0-hierarchical-summary-entity-graph"
 PROMPT_VERSION = "4.0.2"
 EMBEDDING_DIMENSION = 1024
+ENTITY_AGGREGATION_BATCH_SIZE = 8
 ENTITY_TYPES = (
     "课程概念",
     "物理定律与原理",
@@ -1045,6 +1046,49 @@ def enhance_entity_descriptions(
     for relation in relationships:
         incident[str(relation["source"])].append(relation)
         incident[str(relation["target"])].append(relation)
+
+    def apply_payload(
+        entity: dict[str, Any],
+        neighbors: list[dict[str, Any]],
+        payload: dict[str, Any],
+    ) -> None:
+        allowed_evidence = set(entity["evidence_ids"])
+        allowed_evidence.update(
+            evidence_id for item in neighbors for evidence_id in item["evidence_ids"]
+        )
+        description = _compact(payload.get("description"))
+        allowed_text = " ".join([
+            entity["raw_description"],
+            *[
+                " ".join(filter(None, [
+                    _compact(item.get("name")),
+                    _compact(item.get("relation")),
+                    _compact(item.get("description")),
+                ]))
+                for item in neighbors
+            ],
+        ])
+        introduced_numbers = set(
+            re.findall(r"(?<![\w.])\d+(?:\.\d+)?", description)
+        ) - set(re.findall(r"(?<![\w.])\d+(?:\.\d+)?", allowed_text))
+        if introduced_numbers:
+            logger.warning(
+                "邻域增强为 %s 引入了无证据数值 %s，已回退原始描述",
+                entity["id"],
+                sorted(introduced_numbers),
+            )
+            description = ""
+        entity["description"] = description or entity["raw_description"]
+        entity["evidence_ids"] = list(dict.fromkeys([
+            *entity["evidence_ids"],
+            *[
+                str(value)
+                for value in payload.get("evidence_ids", [])
+                if str(value) in allowed_evidence
+            ],
+        ]))
+
+    pending: list[dict[str, Any]] = []
     for entity in entities:
         neighbors: list[dict[str, Any]] = []
         for relation in incident.get(str(entity["id"]), []):
@@ -1066,72 +1110,106 @@ def enhance_entity_descriptions(
         )
         key = _cache_key("aggregation", synthetic_unit, model)
         payload = cache.get(key, {}).get("result")
-        if not isinstance(payload, dict):
+        if isinstance(payload, dict) and _compact(payload.get("description")):
+            apply_payload(entity, neighbors, payload)
+            continue
+        if not neighbors or client is None:
+            apply_payload(entity, neighbors, {
+                "entity_id": entity["id"],
+                "description": entity["raw_description"],
+                "evidence_ids": entity["evidence_ids"],
+            })
+            cache[key] = {
+                "cache_key": key,
+                "schema_version": CACHE_VERSION,
+                "stage": "aggregation",
+                "entity_id": entity["id"],
+                "model": model,
+                "prompt_version": PROMPT_VERSION,
+                "result": {
+                    "entity_id": entity["id"],
+                    "description": entity["description"],
+                    "evidence_ids": entity["evidence_ids"],
+                },
+            }
+            continue
+        pending.append({
+            "entity": entity,
+            "neighbors": neighbors,
+            "cache_key": key,
+        })
+
+    for start in range(0, len(pending), ENTITY_AGGREGATION_BATCH_SIZE):
+        batch = pending[start:start + ENTITY_AGGREGATION_BATCH_SIZE]
+        batch_input = [
+            {
+                "center": {
+                    key: item["entity"][key]
+                    for key in (
+                        "id", "name", "entity_type", "raw_description", "evidence_ids"
+                    )
+                },
+                "neighbors": item["neighbors"],
+            }
+            for item in batch
+        ]
+        descriptions: dict[str, dict[str, Any]] = {}
+        missing_ids = {str(item["entity"]["id"]) for item in batch}
+        for attempt in range(2):
+            retry_input = [
+                item for item in batch_input
+                if str(item["center"]["id"]) in missing_ids
+            ]
             prompt = f"""Role: 你是电子课程实体描述编辑专家。
-Task: 用中心实体和一跳邻域证据生成准确、紧凑的增强描述。
+Task: 批量使用每个中心实体及其一跳邻域证据生成准确、紧凑的增强描述。
 Constraints:
-1. 不得引入 raw_description 和 neighbors 之外的事实。
-2. 必须保留中心实体本身含义；无邻居时原样返回 raw_description。
-3. evidence_ids 只能来自输入，输出有效 JSON，不输出思考过程。
-Output Template: {{"entity_id":"...","description":"...","evidence_ids":["..."]}}
+1. 每个 description 不得引入对应 raw_description 和 neighbors 之外的事实。
+2. 必须保留中心实体本身含义，不得遗漏任何输入 entity_id。
+3. evidence_ids 只能来自该实体对应输入，输出有效 JSON，不输出思考过程。
+4. 输出顺序可以不同，但 entity_id 必须逐字复制输入。
+Output Template: {{"entities":[{{"entity_id":"...","description":"...","evidence_ids":["..."]}}]}}
 Positive Example: 可把明确的“定义/影响”关系组织为连贯描述。
 Negative Example: 不得补充邻域未给出的用途、参数或推导。
-Center: {json.dumps({key: entity[key] for key in ('id', 'name', 'entity_type', 'raw_description', 'evidence_ids')}, ensure_ascii=False)}
-Neighbors: {json.dumps(neighbors, ensure_ascii=False)}
+Batch: {json.dumps(retry_input, ensure_ascii=False)}
+{('上次有实体缺失或结构无效，请补全所有输入 entity_id。' if attempt else '')}
 """
             payload = _call_json(client, prompt)
-            if client is not None and not _compact(payload.get("description")):
-                raise RuntimeError(f"邻域增强阶段连续两次返回无效 JSON：{entity['id']}")
-        allowed_evidence = set(entity["evidence_ids"])
-        allowed_evidence.update(
-            evidence_id for item in neighbors for evidence_id in item["evidence_ids"]
-        )
-        description = _compact(payload.get("description")) if payload else ""
-        allowed_text = " ".join([
-            entity["raw_description"],
-            *[
-                " ".join(filter(None, [
-                    _compact(item.get("name")),
-                    _compact(item.get("relation")),
-                    _compact(item.get("description")),
-                ]))
-                for item in neighbors
-            ],
-        ])
-        introduced_numbers = set(re.findall(r"(?<![\w.])\d+(?:\.\d+)?", description)) - set(
-            re.findall(r"(?<![\w.])\d+(?:\.\d+)?", allowed_text)
-        )
-        if introduced_numbers:
-            logger.warning(
-                "邻域增强为 %s 引入了无证据数值 %s，已回退原始描述",
-                entity["id"],
-                sorted(introduced_numbers),
+            raw_results = payload.get("entities", []) if isinstance(payload, dict) else []
+            if isinstance(raw_results, list):
+                for raw in raw_results:
+                    if not isinstance(raw, dict):
+                        continue
+                    entity_id = str(raw.get("entity_id", ""))
+                    if entity_id in missing_ids and _compact(raw.get("description")):
+                        descriptions[entity_id] = raw
+            missing_ids -= descriptions.keys()
+            if not missing_ids:
+                break
+        if missing_ids:
+            raise RuntimeError(
+                "邻域增强阶段连续两次返回无效 JSON或缺失实体："
+                + ", ".join(sorted(missing_ids))
             )
-            description = ""
-        if not description:
-            description = entity["raw_description"]
-        entity["description"] = description
-        entity["evidence_ids"] = list(dict.fromkeys([
-            *entity["evidence_ids"],
-            *[
-                str(value)
-                for value in (payload or {}).get("evidence_ids", [])
-                if str(value) in allowed_evidence
-            ],
-        ]))
-        cache[key] = {
-            "cache_key": key,
-            "schema_version": CACHE_VERSION,
-            "stage": "aggregation",
-            "entity_id": entity["id"],
-            "model": model,
-            "prompt_version": PROMPT_VERSION,
-            "result": {
+        for item in batch:
+            entity = item["entity"]
+            apply_payload(entity, item["neighbors"], descriptions[str(entity["id"])])
+            cache[item["cache_key"]] = {
+                "cache_key": item["cache_key"],
+                "schema_version": CACHE_VERSION,
+                "stage": "aggregation",
                 "entity_id": entity["id"],
-                "description": entity["description"],
-                "evidence_ids": entity["evidence_ids"],
-            },
-        }
+                "model": model,
+                "prompt_version": PROMPT_VERSION,
+                "result": {
+                    "entity_id": entity["id"],
+                    "description": entity["description"],
+                    "evidence_ids": entity["evidence_ids"],
+                },
+            }
+        # Persist only completed batches so an interruption resumes at most one batch.
+        _atomic_write_jsonl(cache_path, cache)
+    if pending or cache:
+        # This also checkpoints no-neighbor entities without issuing unnecessary calls.
         _atomic_write_jsonl(cache_path, cache)
     return entities
 

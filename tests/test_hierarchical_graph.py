@@ -14,6 +14,7 @@ from backend.app.rag.hierarchical_graph import (
     build_hierarchical_summary_entity_graph,
     compile_hierarchical_knowledge_document,
     deduplicate_entities,
+    enhance_entity_descriptions,
     summarize_sections,
 )
 from backend.app.rag.models import PageDocument
@@ -223,6 +224,59 @@ def _entity(entity_id: str, name: str, section_id: str) -> dict:
         "source_pages": [1],
         "confidence": 0.9,
     }
+
+
+class _BatchAggregationClient:
+    config = SimpleNamespace(model="qwen3.7-flash", enabled=True)
+
+    def __init__(self):
+        self.calls = 0
+
+    def complete_json(self, prompt):
+        self.calls += 1
+        batch = json.loads(prompt.split("Batch: ", 1)[1].split("\n", 1)[0])
+        return {
+            "entities": [
+                {
+                    "entity_id": item["center"]["id"],
+                    "description": item["center"]["raw_description"] + "，并保留一跳关系说明",
+                    "evidence_ids": item["center"]["evidence_ids"],
+                }
+                for item in batch
+            ]
+        }
+
+
+def test_neighborhood_enhancement_batches_calls_and_reuses_checkpoint(tmp_path):
+    entities = [
+        _entity(f"entity-{index}", f"概念{chr(65 + index)}", "section:a:1")
+        for index in range(9)
+    ]
+    relationships = [
+        {
+            "source": entities[index]["id"],
+            "target": entities[index + 1]["id"],
+            "relation": "影响",
+            "description": "两个概念具有明确关系",
+            "claim_ids": ["claim_1"],
+            "evidence_ids": [f"evidence-{index}"],
+        }
+        for index in range(len(entities) - 1)
+    ]
+    cache_path = tmp_path / "entity-aggregations.jsonl"
+    client = _BatchAggregationClient()
+
+    enhanced = enhance_entity_descriptions(
+        entities, relationships, client, cache_path
+    )
+
+    assert client.calls == 2
+    assert all("一跳关系说明" in item["description"] for item in enhanced)
+    assert len(cache_path.read_text("utf-8").splitlines()) == 9
+
+    replay_client = _BatchAggregationClient()
+    enhance_entity_descriptions(entities, relationships, replay_client, cache_path)
+    assert replay_client.calls == 0
 
 
 @pytest.mark.parametrize(("duplicate", "expected"), [(True, 1), (False, 2)])
