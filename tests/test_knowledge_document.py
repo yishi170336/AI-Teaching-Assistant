@@ -251,6 +251,7 @@ def test_statement_enrichment_keeps_attributes_conditions_modalities_and_page_ev
 
 def test_uncovered_verified_image_gets_grounded_attribute_fallback(tmp_path):
     image_id = "image:p96:curve"
+    second_image_id = "image:p96:bias"
     meaning = "该图为双极型晶体管输出特性曲线，展示集电极电流随集电极-发射极电压的变化。"
     unit = KnowledgeUnit(
         id="knowledge-unit:image",
@@ -262,10 +263,15 @@ def test_uncovered_verified_image_gets_grounded_attribute_fallback(tmp_path):
         page_end=96,
         text="晶体管的输出特性体现恒流特点。",
         source_text="[第 96 页]\n晶体管的输出特性体现恒流特点。",
-        evidence_ids=["ocr:教材.pdf:p96", image_id],
+        evidence_ids=["ocr:教材.pdf:p96", image_id, second_image_id],
         knowledge_elements=[{
             "id": image_id, "type": "image", "page": 96,
-            "meaning": meaning, "raw_text": "", "caption": "",
+            "meaning": f"电路类型：None。{meaning}", "raw_text": "", "caption": "",
+            "confidence": 0.95, "included_in_graph": True,
+        }, {
+            "id": second_image_id, "type": "image", "page": 96,
+            "meaning": "电路类型：None。该图展示晶体管偏置电路及静态工作点。",
+            "raw_text": "", "caption": "",
             "confidence": 0.95, "included_in_graph": True,
         }],
         quality={"status": "verified", "warnings": []},
@@ -285,12 +291,16 @@ def test_uncovered_verified_image_gets_grounded_attribute_fallback(tmp_path):
         [unit], EmptyClient(), cache_path=tmp_path / "empty-statement-cache.jsonl"
     )
 
-    assert len(enriched[0].statements) == 1
+    assert len(enriched[0].statements) == 2
     fallback = enriched[0].statements[0]
     assert fallback.statement_type == "attribute"
     assert fallback.subject == "双极型晶体管输出特性曲线"
     assert fallback.evidence_id == image_id
     assert fallback.modality == "image"
+    assert set(item.evidence_id for item in enriched[0].statements) == {
+        image_id, second_image_id
+    }
+    assert all(item.value != "电路类型：None。" for item in enriched[0].statements)
 
 
 def test_invalid_statement_responses_fail_without_checkpointing(tmp_path):

@@ -9,6 +9,7 @@ import pytest
 from backend.app.rag.hierarchical_graph import (
     EMBEDDING_DIMENSION,
     SCHEMA_VERSION,
+    _attribute_facts,
     assign_core_entities,
     audit_hierarchical_graph,
     build_hierarchical_summary_entity_graph,
@@ -18,6 +19,7 @@ from backend.app.rag.hierarchical_graph import (
     enhance_entity_descriptions,
     summarize_sections,
 )
+from backend.app.rag.knowledge_document import KnowledgeStatement, KnowledgeUnit
 from backend.app.rag.models import PageDocument
 from backend.app.rag.pipeline import repair_section_provenance, validate_section_semantics
 
@@ -511,6 +513,46 @@ def test_canonicalization_merges_exact_names_and_assigns_shared_alias_once():
     assert audit["entities_after"] == 2
     assert audit["exact_name_rows_merged"] == 1
     assert audit["conflicts_after"] == 0
+
+
+def test_multimodal_relation_statement_is_preserved_as_grounded_fact():
+    statement = KnowledgeStatement(
+        id="statement:image",
+        knowledge_unit_id="unit:image",
+        statement_type="relation",
+        subject="晶体管输出特性曲线",
+        subject_type="课程概念",
+        predicate_original="展示",
+        predicate_normalized="SHOWS",
+        object="集电极电流变化",
+        object_type="参数与物理量",
+        evidence_text="该图展示集电极电流的变化。",
+        evidence_id="image:p96:curve",
+        source_page=96,
+        modality="image",
+        confidence=0.95,
+    )
+    unit = KnowledgeUnit(
+        id="unit:image",
+        source="book.pdf",
+        title_path=["2.1 晶体管"],
+        chapter="第二章",
+        section="2.1 晶体管",
+        page_start=96,
+        page_end=96,
+        text="晶体管输出特性。",
+        source_text="晶体管输出特性。",
+        section_id="section:a:2.1",
+        statements=[statement],
+    )
+
+    facts = _attribute_facts([unit])
+
+    assert len(facts) == 1
+    assert facts[0]["statement_type"] == "attribute"
+    assert facts[0]["source_statement_type"] == "relation"
+    assert facts[0]["value"] == "集电极电流变化"
+    assert facts[0]["evidence_ids"] == ["image:p96:curve"]
 
 
 def test_core_score_guarantees_one_core_entity_per_nonempty_leaf():

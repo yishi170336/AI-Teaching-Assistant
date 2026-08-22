@@ -2105,9 +2105,30 @@ def _attribute_facts(units: Iterable[KnowledgeUnit]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for unit in units:
         for statement in unit.statements:
-            if statement.statement_type != "attribute" or not statement.evidence_id:
+            is_multimodal_relation = (
+                statement.statement_type == "relation"
+                and statement.modality != "text"
+            )
+            if (
+                not statement.evidence_id
+                or (
+                    statement.statement_type != "attribute"
+                    and not is_multimodal_relation
+                )
+            ):
                 continue
             item = statement.to_dict()
+            if is_multimodal_relation:
+                # Schema 4 entity relations come only from summary claims.  Keep
+                # visual-model relation output as a grounded fact so its image,
+                # circuit or table evidence is not silently discarded.
+                item.update({
+                    "source_statement_type": "relation",
+                    "statement_type": "attribute",
+                    "value": statement.object,
+                    "value_type": "grounded_relation",
+                    "description": statement.evidence_text,
+                })
             item.update({
                 "section_id": unit.section_id,
                 "evidence_ids": [statement.evidence_id],

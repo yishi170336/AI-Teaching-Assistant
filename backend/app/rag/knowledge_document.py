@@ -211,7 +211,12 @@ def _element_fact_subject(
         candidate = re.sub(r"^所示的?(?:是)?", "", candidate).strip()
         if value := _concept_name(candidate):
             return value
-    meaning = _compact(source.get("meaning", ""))
+    meaning = re.sub(
+        r"^电路类型[：:]\s*(?:None|未知|未识别|无)[。；;]?\s*",
+        "",
+        _compact(source.get("meaning", "")),
+        flags=re.I,
+    )
     match = re.search(
         r"(?:电路类型[：:]|(?:该图|图中|本图)为|(?:该表|本表)总结)([^，,。；;]{2,28})",
         meaning,
@@ -1079,6 +1084,12 @@ evidence_source_id 必须逐字复制对应 id；evidence_text 必须是该 sour
             )
             if len(evidence_source) < 8:
                 continue
+            evidence_source = re.sub(
+                r"^电路类型[\uff1a:]\s*(?:None|未知|未识别|无)[。；;]?\s*",
+                "",
+                evidence_source,
+                flags=re.I,
+            ) or evidence_source
             summary_match = re.match(r".*?[。；;]", evidence_source)
             summary = (
                 summary_match.group(0) if summary_match else evidence_source
@@ -1093,10 +1104,6 @@ evidence_source_id 必须逐字复制对应 id；evidence_text 必须是该 sour
                 "circuit": "表达的电路图知识",
                 "image": "表达的视觉知识",
             }.get(modality, "表达的多模态知识")
-            fallback_key = ("attribute", subject, "HAS_GROUNDED_SEMANTICS", summary)
-            if fallback_key in seen:
-                continue
-            seen.add(fallback_key)
             try:
                 fallback_confidence = float(source.get("confidence", 0) or 0)
             except (TypeError, ValueError):
