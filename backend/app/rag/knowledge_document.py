@@ -750,6 +750,25 @@ def _statement_response_items(response: Any) -> list[Any]:
     return []
 
 
+def _has_statement_response_array(response: Any) -> bool:
+    """Return whether a response contains a parseable statement array.
+
+    An empty array is a valid, conservative model answer.  A missing array is
+    instead a transport/schema failure and must not be checkpointed as if the
+    unit had no knowledge.
+    """
+
+    if not isinstance(response, dict):
+        return False
+    if isinstance(response.get("statements"), list):
+        return True
+    for key in ("result", "data", "output"):
+        nested = response.get(key)
+        if isinstance(nested, dict) and isinstance(nested.get("statements"), list):
+            return True
+    return isinstance(response.get("items"), list)
+
+
 def _statement_qualifiers(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -880,6 +899,7 @@ def enrich_knowledge_statements(
             }
             response: dict[str, Any] = {}
             raw_statements: list[Any] = []
+            response_valid = False
             for attempt in range(2):
                 response = client.complete_json(
                     prompt
@@ -891,18 +911,39 @@ def enrich_knowledge_statements(
                     )
                 )
                 raw_statements = _statement_response_items(response)
-                if raw_statements:
+                if _has_statement_response_array(response):
+                    response_valid = True
                     break
+            if not response_valid:
+                raise RuntimeError(
+                    "Knowledge statement extraction returned invalid JSON twice "
+                    f"for {unit.id}; candidate cache was not updated"
+                )
             coverage_response: dict[str, Any] = {}
             if elements:
-                coverage_response = client.complete_json(
-                    """你是教材多模态事实补全器。对输入的每个 evidence_source 分别输出 1-2 条不重复、有教学价值的原子事实，不得跳过任何证据源。
+                coverage_valid = False
+                for attempt in range(2):
+                    coverage_response = client.complete_json(
+                        """你是教材多模态事实补全器。对输入的每个 evidence_source 分别输出 1-2 条不重复、有教学价值的原子事实，不得跳过任何证据源。
 主体和客体必须是脱离图号仍可理解的中文概念，不得使用 T1、R_o、I_0、节点名或完整句子作实体。
 evidence_source_id 必须逐字复制对应 id；evidence_text 必须是该 source.text 中的最短连续原文。公式值或表格数值关系可用 attribute。
 仅返回 JSON：{"statements":[{"statement_type":"relation|attribute","subject":"...","subject_type":"课程概念|电路|器件与元件|电路参数|物理过程与效应|方法与模型","predicate_original":"...","predicate_normalized":"...","object":"...","object_type":"...","value":"...","value_type":"formula|quantity|text","qualifiers":[],"evidence_source_id":"...","evidence_text":"...","confidence":0.0}]}。
 输入："""
-                    + json.dumps({"evidence_sources": elements}, ensure_ascii=False)
-                )
+                        + json.dumps({"evidence_sources": elements}, ensure_ascii=False)
+                        + (
+                            "\n上次未返回可解析的 statements 数组，"
+                            "请仅返回紧凑合法 JSON。"
+                            if attempt else ""
+                        )
+                    )
+                    if _has_statement_response_array(coverage_response):
+                        coverage_valid = True
+                        break
+                if not coverage_valid:
+                    raise RuntimeError(
+                        "Multimodal statement coverage returned invalid JSON twice "
+                        f"for {unit.id}; candidate cache was not updated"
+                    )
                 raw_statements = [
                     *raw_statements,
                     *_statement_response_items(coverage_response),

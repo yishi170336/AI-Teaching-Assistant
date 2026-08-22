@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from backend.app.rag.knowledge_document import (
     KnowledgeUnit,
     compile_knowledge_document,
@@ -277,7 +279,7 @@ def test_uncovered_verified_image_gets_grounded_attribute_fallback(tmp_path):
         config = Config()
 
         def complete_json(self, _prompt):
-            return {}
+            return {"statements": []}
 
     enriched = enrich_knowledge_statements(
         [unit], EmptyClient(), cache_path=tmp_path / "empty-statement-cache.jsonl"
@@ -289,6 +291,38 @@ def test_uncovered_verified_image_gets_grounded_attribute_fallback(tmp_path):
     assert fallback.subject == "双极型晶体管输出特性曲线"
     assert fallback.evidence_id == image_id
     assert fallback.modality == "image"
+
+
+def test_invalid_statement_responses_fail_without_checkpointing(tmp_path):
+    unit = KnowledgeUnit(
+        id="knowledge-unit:invalid-response",
+        source="教材.pdf",
+        title_path=["2.6 电流源"],
+        chapter="第二章",
+        section="2.6 电流源",
+        page_start=96,
+        page_end=96,
+        text="电流源输出电阻很大。",
+        source_text="电流源输出电阻很大。",
+        evidence_ids=["ocr:教材.pdf:p96"],
+        quality={"status": "verified", "warnings": []},
+    )
+    cache_path = tmp_path / "invalid-statement-cache.jsonl"
+
+    class InvalidClient:
+        class Config:
+            enabled = True
+            model = "qwen3.7-flash"
+
+        config = Config()
+
+        def complete_json(self, _prompt):
+            return {}
+
+    with pytest.raises(RuntimeError, match="invalid JSON twice"):
+        enrich_knowledge_statements([unit], InvalidClient(), cache_path=cache_path)
+
+    assert not cache_path.exists()
 
 
 def test_semantic_chunking_does_not_cut_an_oversized_formula_statement():
