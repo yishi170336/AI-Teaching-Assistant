@@ -1777,6 +1777,228 @@ Entity 2: {json.dumps(second, ensure_ascii=False)}
     return merged, remapped, audit
 
 
+def canonicalize_entity_labels(
+    entities: list[dict[str, Any]],
+    relationships: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Collapse exact canonical names and assign every alias to one owner.
+
+    Semantic deduplication remains conservative.  This final deterministic pass
+    enforces the storage invariant that one normalized label resolves to one
+    graph entity, while preserving every section, claim and evidence reference.
+    """
+
+    if not entities:
+        return [], [], {
+            "entities_before": 0,
+            "entities_after": 0,
+            "duplicate_entity_rows_merged": 0,
+            "exact_name_rows_merged": 0,
+            "aliases_removed": 0,
+            "conflicts_after": 0,
+            "events": [],
+        }
+
+    def normalized(value: Any) -> str:
+        return _compact(value).casefold()
+
+    degree: dict[str, int] = defaultdict(int)
+    for relation in relationships:
+        degree[str(relation.get("source", ""))] += 1
+        degree[str(relation.get("target", ""))] += 1
+
+    def rank(entity: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            entity.get("entity_type") != "课程概念",
+            len(entity.get("evidence_ids", [])),
+            len(entity.get("section_ids", [])),
+            degree.get(str(entity.get("id", "")), 0),
+            -min(entity.get("source_pages", []) or [10**9]),
+            normalized(entity.get("name")),
+            str(entity.get("id", "")),
+        )
+
+    id_counts: dict[str, int] = defaultdict(int)
+    for entity in entities:
+        id_counts[str(entity.get("id", ""))] += 1
+
+    name_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for entity in entities:
+        name_groups[normalized(entity.get("name"))].append(entity)
+
+    canonical: list[dict[str, Any]] = []
+    id_map: dict[str, str] = {}
+    events: list[dict[str, Any]] = []
+    for label, group in name_groups.items():
+        representative_source = max(group, key=rank)
+        representative = dict(representative_source)
+        representative["id"] = f"entity:{_stable_hash(label, representative['entity_type'])}"
+        representative["local_ids"] = list(dict.fromkeys(
+            local_id
+            for item in group
+            for local_id in item.get("local_ids", [item.get("id")])
+            if local_id
+        ))
+        representative["aliases"] = list(dict.fromkeys(
+            value
+            for item in group
+            for value in [item.get("name"), *item.get("aliases", [])]
+            if _compact(value) and normalized(value) != label
+        ))
+        for field in ("section_ids", "claim_ids", "evidence_ids", "source_pages"):
+            representative[field] = list(dict.fromkeys(
+                value for item in group for value in item.get(field, [])
+            ))
+        first_introduction = min(
+            group,
+            key=lambda item: (
+                min(item.get("source_pages", []) or [10**9]),
+                str(item.get("section_id", "")),
+            ),
+        )
+        representative["section_id"] = first_introduction["section_id"]
+        representative["raw_description"] = "；".join(dict.fromkeys(
+            _compact(item.get("raw_description"))
+            for item in group
+            if _compact(item.get("raw_description"))
+        ))
+        representative["description"] = "；".join(dict.fromkeys(
+            _compact(item.get("description"))
+            for item in group
+            if _compact(item.get("description"))
+        ))
+        representative["confidence"] = max(
+            (float(item.get("confidence", 0.0) or 0.0) for item in group),
+            default=0.0,
+        )
+        representative["entity_type_variants"] = list(dict.fromkeys(
+            str(item.get("entity_type", "")) for item in group
+            if item.get("entity_type")
+        ))
+        representative["canonicalized_entity_ids"] = list(dict.fromkeys(
+            str(item.get("id", "")) for item in group if item.get("id")
+        ))
+        canonical.append(representative)
+        for item in group:
+            id_map[str(item["id"])] = representative["id"]
+        if len(group) > 1:
+            events.append({
+                "action": "merge_exact_canonical_name",
+                "label": representative["name"],
+                "target_entity_id": representative["id"],
+                "source_entity_ids": representative["canonicalized_entity_ids"],
+                "source_rows": len(group),
+                "type_variants": representative["entity_type_variants"],
+            })
+
+    canonical_owner = {
+        normalized(entity.get("name")): str(entity["id"])
+        for entity in canonical
+    }
+    aliases_removed = 0
+    for entity in canonical:
+        retained: list[str] = []
+        for alias in entity.get("aliases", []):
+            label = normalized(alias)
+            owner = canonical_owner.get(label)
+            if not label or label == normalized(entity.get("name")):
+                continue
+            if owner and owner != entity["id"]:
+                aliases_removed += 1
+                events.append({
+                    "action": "remove_alias_owned_as_canonical_name",
+                    "label": alias,
+                    "removed_from": entity["id"],
+                    "canonical_owner": owner,
+                })
+                continue
+            if label not in {normalized(value) for value in retained}:
+                retained.append(alias)
+        entity["aliases"] = retained
+
+    alias_owners: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    alias_spelling: dict[str, str] = {}
+    for entity in canonical:
+        for alias in entity.get("aliases", []):
+            label = normalized(alias)
+            alias_owners[label].append(entity)
+            alias_spelling.setdefault(label, alias)
+    for label, owners in alias_owners.items():
+        unique_owners = list({str(item["id"]): item for item in owners}.values())
+        if len(unique_owners) <= 1:
+            continue
+        winner = max(unique_owners, key=rank)
+        for entity in unique_owners:
+            if entity["id"] == winner["id"]:
+                continue
+            entity["aliases"] = [
+                alias for alias in entity.get("aliases", [])
+                if normalized(alias) != label
+            ]
+            aliases_removed += 1
+            events.append({
+                "action": "assign_shared_alias_to_best_supported_entity",
+                "label": alias_spelling[label],
+                "removed_from": entity["id"],
+                "retained_by": winner["id"],
+            })
+
+    relation_groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for relation in relationships:
+        source = id_map.get(str(relation.get("source", "")), str(relation.get("source", "")))
+        target = id_map.get(str(relation.get("target", "")), str(relation.get("target", "")))
+        if source == target:
+            continue
+        key = (source, target, str(relation.get("relation", "")))
+        if key not in relation_groups:
+            relation_groups[key] = {**relation, "source": source, "target": target}
+            continue
+        current = relation_groups[key]
+        current["strength"] = max(
+            float(current.get("strength", 0.0) or 0.0),
+            float(relation.get("strength", 0.0) or 0.0),
+        )
+        current["confidence"] = max(
+            float(current.get("confidence", 0.0) or 0.0),
+            float(relation.get("confidence", 0.0) or 0.0),
+        )
+        for field in ("evidence_ids", "claim_ids"):
+            current[field] = list(dict.fromkeys([
+                *current.get(field, []), *relation.get(field, [])
+            ]))
+        current["description"] = "；".join(dict.fromkeys(filter(None, [
+            _compact(current.get("description")),
+            _compact(relation.get("description")),
+        ])))
+    remapped = list(relation_groups.values())
+    for relation in remapped:
+        relation["id"] = f"relation:{_stable_hash(relation['source'], relation['target'], relation['relation'])}"
+
+    final_owners: dict[str, set[str]] = defaultdict(set)
+    for entity in canonical:
+        for value in [entity.get("name"), *entity.get("aliases", [])]:
+            label = normalized(value)
+            if label:
+                final_owners[label].add(str(entity["id"]))
+    conflicts_after = sum(len(owners) > 1 for owners in final_owners.values())
+    if conflicts_after:
+        raise RuntimeError(f"实体规范化后仍有 {conflicts_after} 个名称或别名冲突")
+
+    audit = {
+        "schema_version": SCHEMA_VERSION,
+        "entities_before": len(entities),
+        "entities_after": len(canonical),
+        "duplicate_entity_rows_merged": sum(
+            count - 1 for count in id_counts.values() if count > 1
+        ),
+        "exact_name_rows_merged": len(entities) - len(canonical),
+        "aliases_removed": aliases_removed,
+        "conflicts_after": conflicts_after,
+        "events": events,
+    }
+    return canonical, remapped, audit
+
+
 def assign_core_entities(
     entities: list[dict[str, Any]],
     relationships: list[dict[str, Any]],
@@ -1968,6 +2190,19 @@ def audit_hierarchical_graph(
     nodes = [item for item in graph.get("nodes", []) if isinstance(item, dict)]
     entities = [item for item in nodes if item.get("type") == "entity"]
     sections = [item for item in nodes if item.get("type") == "section"]
+    entity_id_counts: dict[str, int] = defaultdict(int)
+    canonical_name_counts: dict[str, int] = defaultdict(int)
+    for entity in entities:
+        entity_id_counts[str(entity.get("id", ""))] += 1
+        canonical_name_counts[_compact(entity.get("name")).casefold()] += 1
+    duplicate_entity_ids = sum(
+        count - 1 for count in entity_id_counts.values() if count > 1
+    )
+    duplicate_canonical_names = sum(
+        count - 1
+        for name, count in canonical_name_counts.items()
+        if name and count > 1
+    )
     node_ids = {str(item.get("id")) for item in nodes}
     evidence_ids = {str(item.get("id")) for item in graph.get("evidence", [])}
     edges = [item for item in graph.get("edges", []) if isinstance(item, dict)]
@@ -2054,6 +2289,7 @@ def audit_hierarchical_graph(
         + vector_mismatch + missing_summaries + missing_summary_evidence
         + oversized_summaries + alias_conflicts + invalid_claims
         + ungrounded_entities + ungrounded_relationships
+        + duplicate_entity_ids + duplicate_canonical_names
     )
     attribute_facts = graph.get("attribute_facts", [])
     fact_coverage = (
@@ -2082,6 +2318,8 @@ def audit_hierarchical_graph(
         "missing_summary_evidence": missing_summary_evidence,
         "oversized_section_summaries": oversized_summaries,
         "canonical_alias_conflicts": alias_conflicts,
+        "duplicate_entity_ids": duplicate_entity_ids,
+        "duplicate_canonical_names": duplicate_canonical_names,
     }
     return {
         "schema_version": SCHEMA_VERSION,
@@ -2163,6 +2401,7 @@ def build_hierarchical_summary_entity_graph(
     )
     initial_runtime: dict[str, Any] = {}
     final_runtime: dict[str, Any] = {}
+    canonicalization_audit: dict[str, Any] = {}
     try:
         initial_embeddings, initial_runtime = embed_entities(
             entities, embedding_model_path, encoder=embedding_encoder
@@ -2173,6 +2412,13 @@ def build_hierarchical_summary_entity_graph(
             initial_embeddings,
             client,
             output_dir / "dedup_confirmations.jsonl",
+        )
+        entities, relationships, canonicalization_audit = canonicalize_entity_labels(
+            entities, relationships
+        )
+        (output_dir / "canonicalization_audit.json").write_text(
+            json.dumps(canonicalization_audit, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
         # Re-embed canonical entities so retrieval vectors exactly match final descriptions.
         final_embeddings, final_runtime = embed_entities(
@@ -2317,6 +2563,11 @@ def build_hierarchical_summary_entity_graph(
         "qwen_rejected": sum(item["decision"] == "qwen_rejected" for item in dedup_audit),
         "threshold_rejected": sum(item["decision"] == "threshold_rejected" for item in dedup_audit),
     }
+    audit["canonicalization"] = {
+        key: value
+        for key, value in canonicalization_audit.items()
+        if key != "events"
+    }
     audit["embedding_runtime"] = {
         "initial": initial_runtime,
         "final": final_runtime,
@@ -2350,6 +2601,7 @@ def build_hierarchical_summary_entity_graph(
                 "entity_aggregations.jsonl",
                 "dedup_confirmations.jsonl",
             ],
+            "canonicalization_audit": "canonicalization_audit.json",
         }, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )

@@ -12,6 +12,7 @@ from backend.app.rag.hierarchical_graph import (
     assign_core_entities,
     audit_hierarchical_graph,
     build_hierarchical_summary_entity_graph,
+    canonicalize_entity_labels,
     compile_hierarchical_knowledge_document,
     deduplicate_entities,
     enhance_entity_descriptions,
@@ -432,6 +433,86 @@ def test_alias_first_dedup_respects_qwen_final_decision(tmp_path, duplicate, exp
     assert audit[0]["decision"] == ("merged" if duplicate else "qwen_rejected")
 
 
+def test_canonicalization_merges_exact_names_and_assigns_shared_alias_once():
+    first = _entity("entity-a", "PN结", "section:a:1")
+    first.update({
+        "aliases": ["p-n 结", "势垒区"],
+        "entity_type": "课程概念",
+        "source_pages": [3],
+    })
+    second = _entity("entity-b", "PN结", "section:a:2")
+    second.update({
+        "aliases": ["PN junction"],
+        "entity_type": "器件与元件",
+        "evidence_ids": ["evidence-entity-b", "evidence-extra"],
+        "source_pages": [8],
+    })
+    third = _entity("entity-c", "势垒区", "section:a:3")
+    third["aliases"] = ["p-n 结"]
+    relations = [
+        {
+            "source": "entity-a",
+            "target": "entity-c",
+            "relation": "包含",
+            "strength": 7.0,
+            "confidence": 0.8,
+            "description": "PN结包含势垒区",
+            "claim_ids": ["claim_1"],
+            "evidence_ids": ["evidence-relation-a"],
+        },
+        {
+            "source": "entity-b",
+            "target": "entity-c",
+            "relation": "包含",
+            "strength": 9.0,
+            "confidence": 0.9,
+            "description": "PN junction 包含势垒区",
+            "claim_ids": ["claim_2"],
+            "evidence_ids": ["evidence-relation-b"],
+        },
+        {
+            "source": "entity-a",
+            "target": "entity-b",
+            "relation": "等价于",
+            "strength": 8.0,
+            "confidence": 0.9,
+            "description": "同名实体",
+            "claim_ids": ["claim_1"],
+            "evidence_ids": ["evidence-relation-self"],
+        },
+    ]
+
+    canonical, remapped, audit = canonicalize_entity_labels(
+        [first, second, third], relations
+    )
+
+    assert len(canonical) == 2
+    assert len({item["id"] for item in canonical}) == 2
+    pn = next(item for item in canonical if item["name"] == "PN结")
+    barrier = next(item for item in canonical if item["name"] == "势垒区")
+    assert pn["entity_type"] == "器件与元件"
+    assert set(pn["section_ids"]) == {"section:a:1", "section:a:2"}
+    assert set(pn["evidence_ids"]) == {
+        "evidence-entity-a", "evidence-entity-b", "evidence-extra"
+    }
+    assert "势垒区" not in pn["aliases"]
+    normalized_labels = [
+        value.casefold()
+        for item in canonical
+        for value in [item["name"], *item["aliases"]]
+    ]
+    assert len(normalized_labels) == len(set(normalized_labels))
+    assert len(remapped) == 1
+    assert remapped[0]["source"] == pn["id"]
+    assert remapped[0]["target"] == barrier["id"]
+    assert remapped[0]["strength"] == 9.0
+    assert set(remapped[0]["claim_ids"]) == {"claim_1", "claim_2"}
+    assert audit["entities_before"] == 3
+    assert audit["entities_after"] == 2
+    assert audit["exact_name_rows_merged"] == 1
+    assert audit["conflicts_after"] == 0
+
+
 def test_core_score_guarantees_one_core_entity_per_nonempty_leaf():
     entities = [_entity("entity-a", "PN结", "section:a:1.1")]
     sections = [{
@@ -473,3 +554,30 @@ def test_audit_rejects_dangling_edges_and_invalid_embedding_refs():
     assert audit["status"] == "failed"
     assert audit["metrics"]["dangling_relationships"] == 1
     assert audit["metrics"]["invalid_embedding_refs"] == 1
+
+
+def test_audit_rejects_duplicate_entity_ids_and_canonical_names():
+    duplicate = {
+        **_entity("entity-a", "PN结", "section:a:1"),
+        "type": "entity",
+        "embedding_ref": {
+            "file": "entity_embeddings.npy",
+            "index_file": "entity_vectors.faiss",
+            "dimension": EMBEDDING_DIMENSION,
+        },
+    }
+    graph = {
+        "nodes": [duplicate, {**duplicate}],
+        "edges": [],
+        "evidence": [{"id": "evidence-entity-a"}],
+        "attribute_facts": [],
+        "text_units": [],
+    }
+
+    audit = audit_hierarchical_graph(
+        graph, np.vstack([_normalized_encoder(None, ["a"])] * 2)
+    )
+
+    assert audit["status"] == "failed"
+    assert audit["metrics"]["duplicate_entity_ids"] == 1
+    assert audit["metrics"]["duplicate_canonical_names"] == 1
