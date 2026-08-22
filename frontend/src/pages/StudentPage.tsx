@@ -6,6 +6,16 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
+import {
+  forceCollide,
+  forceLink,
+  forceManyBody,
+  forceSimulation,
+  forceX,
+  forceY,
+  type SimulationLinkDatum,
+  type SimulationNodeDatum,
+} from 'd3-force'
 import { Link } from 'react-router-dom'
 import {
   App as AntApp,
@@ -2204,20 +2214,219 @@ const graphNodeName = (node?: KnowledgeGraphNode) => (
   node?.display_name?.trim() || node?.name?.trim() || ''
 )
 
+const NEO4J_VIEWBOX_WIDTH = 1200
+const NEO4J_VIEWBOX_HEIGHT = 760
+
 const neo4jEntityColors: Record<string, string> = {
-  '课程概念': '#60b5cc',
-  '物理定律与原理': '#f2b65f',
-  '电路与系统': '#dd7f63',
-  '器件与元件': '#a78bd4',
-  '参数与物理量': '#67b98c',
-  '物理过程与效应': '#ef8aa7',
-  '方法与模型': '#8f9fd5',
-  '材料与结构': '#c6a568',
+  '课程概念': '#68BDF6',
+  '物理定律与原理': '#FFD86E',
+  '电路与系统': '#FF756E',
+  '器件与元件': '#DE9BF9',
+  '参数与物理量': '#6DCE9E',
+  '物理过程与效应': '#FB95AF',
+  '方法与模型': '#A5ABB6',
+  '材料与结构': '#F79767',
 }
 
 const neo4jEntityColor = (entityType?: string) => (
-  neo4jEntityColors[String(entityType || '')] || '#8fa7ad'
+  neo4jEntityColors[String(entityType || '')] || '#A5ABB6'
 )
+
+const neo4jNodeColor = (node: KnowledgeGraphNode) => {
+  if (node.type !== 'section') return neo4jEntityColor(node.entity_type)
+  if ((node.level || 0) === 0) return '#4C8EDA'
+  if ((node.level || 0) === 1) return '#68BDF6'
+  return '#A5ABB6'
+}
+
+const neo4jNodeRadius = (node: KnowledgeGraphNode, total: number) => {
+  const densityScale = total < 120 ? 2 : total < 480 ? 1.45 : 1
+  if (node.type === 'section') {
+    if ((node.level || 0) === 0) return 8 * densityScale
+    if ((node.level || 0) === 1) return 6.5 * densityScale
+    return 3.5 * densityScale
+  }
+  return (node.is_core ? 3.8 : 2.6) * densityScale
+}
+
+const stableGraphHash = (value: string) => {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
+type Neo4jForceNode = SimulationNodeDatum & {
+  id: string
+  graphNode: KnowledgeGraphNode
+  group: string
+  x: number
+  y: number
+}
+
+type Neo4jForceLink = SimulationLinkDatum<Neo4jForceNode> & {
+  source: string | Neo4jForceNode
+  target: string | Neo4jForceNode
+  graphEdge: KnowledgeGraphEdge
+}
+
+const buildNeo4jForceLayout = (
+  nodes: KnowledgeGraphNode[],
+  edges: KnowledgeGraphEdge[],
+  completeGraph: boolean,
+  sectionMap: Map<string, KnowledgeGraphNode>,
+) => {
+  const degrees = new Map<string, number>()
+  const adjacency = new Map(nodes.map((node) => [node.id, new Set<string>()]))
+  edges.forEach((edge) => {
+    if (!adjacency.has(edge.source) || !adjacency.has(edge.target)) return
+    adjacency.get(edge.source)?.add(edge.target)
+    adjacency.get(edge.target)?.add(edge.source)
+    degrees.set(edge.source, (degrees.get(edge.source) || 0) + 1)
+    degrees.set(edge.target, (degrees.get(edge.target) || 0) + 1)
+  })
+
+  const componentByNode = new Map<string, string>()
+  const components: string[][] = []
+  nodes.forEach((node) => {
+    if (componentByNode.has(node.id)) return
+    const component: string[] = []
+    const pending = [node.id]
+    componentByNode.set(node.id, '')
+    while (pending.length) {
+      const current = pending.pop()
+      if (!current) continue
+      component.push(current)
+      adjacency.get(current)?.forEach((neighbor) => {
+        if (componentByNode.has(neighbor)) return
+        componentByNode.set(neighbor, '')
+        pending.push(neighbor)
+      })
+    }
+    components.push(component)
+  })
+  components.sort((left, right) => right.length - left.length || left[0].localeCompare(right[0]))
+  components.forEach((component, index) => {
+    const id = `component:${index}`
+    component.forEach((nodeId) => componentByNode.set(nodeId, id))
+  })
+
+  const topSectionId = (node: KnowledgeGraphNode) => {
+    let section = node.type === 'section'
+      ? node
+      : sectionMap.get(node.section_id || node.section_ids?.[0] || '')
+    const visited = new Set<string>()
+    while (section?.parent && !visited.has(section.id)) {
+      if ((section.level || 0) <= 1) break
+      visited.add(section.id)
+      section = sectionMap.get(section.parent)
+    }
+    return section?.id || 'section:unassigned'
+  }
+
+  const groupByNode = new Map<string, string>()
+  nodes.forEach((node) => {
+    groupByNode.set(node.id, completeGraph ? topSectionId(node) : (componentByNode.get(node.id) || node.id))
+  })
+  const groupSizes = new Map<string, number>()
+  groupByNode.forEach((group) => groupSizes.set(group, (groupSizes.get(group) || 0) + 1))
+  const groups = [...groupSizes.keys()].sort((left, right) => (
+    (groupSizes.get(right) || 0) - (groupSizes.get(left) || 0) || left.localeCompare(right)
+  ))
+  const groupCenters = new Map<string, { x: number; y: number }>()
+  groups.forEach((group, index) => {
+    if (index === 0) {
+      groupCenters.set(group, { x: 0, y: 0 })
+      return
+    }
+    const angle = index * 2.399963229728653
+    const rawRadius = (completeGraph ? 115 : 82) + Math.sqrt(index) * (completeGraph ? 74 : 42)
+    const radiusLimit = completeGraph ? 390 : 440
+    const radius = radiusLimit * Math.tanh(rawRadius / radiusLimit)
+    groupCenters.set(group, {
+      x: Math.cos(angle) * radius * 1.45,
+      y: Math.sin(angle) * radius,
+    })
+  })
+
+  const membersSeen = new Map<string, number>()
+  const forceNodes: Neo4jForceNode[] = nodes.map((graphNode) => {
+    const group = groupByNode.get(graphNode.id) || graphNode.id
+    const localIndex = membersSeen.get(group) || 0
+    membersSeen.set(group, localIndex + 1)
+    const center = groupCenters.get(group) || { x: 0, y: 0 }
+    const hash = stableGraphHash(graphNode.id)
+    const angle = (hash % 6283) / 1000 + localIndex * 2.399963229728653
+    const radius = 4 + Math.sqrt(localIndex) * (completeGraph ? 5.1 : 4.5)
+    return {
+      id: graphNode.id,
+      graphNode,
+      group,
+      x: center.x + Math.cos(angle) * radius,
+      y: center.y + Math.sin(angle) * radius,
+    }
+  })
+  const forceLinks: Neo4jForceLink[] = edges.map((graphEdge) => ({
+    source: graphEdge.source,
+    target: graphEdge.target,
+    graphEdge,
+  }))
+  const simulation = forceSimulation<Neo4jForceNode>(forceNodes)
+    .alpha(1)
+    .alphaDecay(0.026)
+    .velocityDecay(0.36)
+    .force('link', forceLink<Neo4jForceNode, Neo4jForceLink>(forceLinks)
+      .id((node) => node.id)
+      .distance((link) => link.graphEdge.type === 'concept_relation' ? 12 : 8)
+      .strength((link) => link.graphEdge.type === 'parent_child' ? 0.9 : 0.55))
+    .force('charge', forceManyBody<Neo4jForceNode>()
+      .strength(completeGraph ? -8 : -10)
+      .distanceMax(completeGraph ? 86 : 72))
+    .force('collision', forceCollide<Neo4jForceNode>()
+      .radius((node) => neo4jNodeRadius(node.graphNode, nodes.length) + 1.5)
+      .strength(0.9))
+    .force('group-x', forceX<Neo4jForceNode>((node) => groupCenters.get(node.group)?.x || 0)
+      .strength(completeGraph ? 0.025 : 0.045))
+    .force('group-y', forceY<Neo4jForceNode>((node) => groupCenters.get(node.group)?.y || 0)
+      .strength(completeGraph ? 0.025 : 0.045))
+    .stop()
+  for (let index = 0; index < 160; index += 1) simulation.tick()
+  forceNodes.forEach((node) => {
+    const center = groupCenters.get(node.group) || { x: 0, y: 0 }
+    const size = groupSizes.get(node.group) || 1
+    const localScale = 1 + Math.min(
+      completeGraph ? 0.75 : 1.6,
+      Math.sqrt(size) / (completeGraph ? 34 : 18),
+    )
+    node.x = center.x + (node.x - center.x) * localScale
+    node.y = center.y + (node.y - center.y) * localScale
+  })
+
+  const xs = forceNodes.map((node) => node.x)
+  const ys = forceNodes.map((node) => node.y)
+  const minX = Math.min(...xs, 0)
+  const maxX = Math.max(...xs, 1)
+  const minY = Math.min(...ys, 0)
+  const maxY = Math.max(...ys, 1)
+  const scale = Math.min(
+    (NEO4J_VIEWBOX_WIDTH - 66) / Math.max(1, maxX - minX),
+    (NEO4J_VIEWBOX_HEIGHT - 66) / Math.max(1, maxY - minY),
+  )
+  const offsetX = (NEO4J_VIEWBOX_WIDTH - (maxX - minX) * scale) / 2 - minX * scale
+  const offsetY = (NEO4J_VIEWBOX_HEIGHT - (maxY - minY) * scale) / 2 - minY * scale
+  const positions = new Map(forceNodes.map((node) => [node.id, {
+    x: node.x * scale + offsetX,
+    y: node.y * scale + offsetY,
+  }]))
+  return {
+    positions,
+    degrees,
+    componentCount: components.length,
+    groupCount: groups.length,
+  }
+}
 
 function HierarchicalKnowledgeGraphView({
   graph,
@@ -2227,10 +2436,9 @@ function HierarchicalKnowledgeGraphView({
   displayName: string
 }) {
   const [view, setView] = useState<'sections' | 'entities'>('entities')
-  const [coreOnly, setCoreOnly] = useState(true)
+  const [coreOnly, setCoreOnly] = useState(false)
   const [selectedId, setSelectedId] = useState('')
   const [selectedEdgeKey, setSelectedEdgeKey] = useState('')
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [entityQuery, setEntityQuery] = useState('')
   const [entityType, setEntityType] = useState('all')
   const [graphZoom, setGraphZoom] = useState(1)
@@ -2253,6 +2461,10 @@ function HierarchicalKnowledgeGraphView({
     () => new Map(allEntities.map((node) => [node.id, node])),
     [allEntities],
   )
+  const graphNodeMap = useMemo(
+    () => new Map(graph.nodes.map((node) => [node.id, node])),
+    [graph.nodes],
+  )
   const conceptEdges = useMemo(
     () => graph.edges.filter((edge) => edge.type === 'concept_relation'),
     [graph],
@@ -2265,56 +2477,62 @@ function HierarchicalKnowledgeGraphView({
     })
     return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-CN'))
   }, [allEntities])
-  const visibleEntities = useMemo(() => {
-    const normalizedQuery = entityQuery.trim().toLocaleLowerCase('zh-CN')
-    const values = allEntities.filter((node) => {
+  const graphNodes = useMemo(() => {
+    if (view === 'sections') return graph.nodes
+    return allEntities.filter((node) => {
       if (coreOnly && !node.is_core) return false
       if (entityType !== 'all' && node.entity_type !== entityType) return false
-      if (!normalizedQuery) return true
-      return [graphNodeName(node), node.name, node.entity_type, ...(node.aliases || [])]
-        .some((value) => String(value || '').toLocaleLowerCase('zh-CN').includes(normalizedQuery))
+      return true
     })
-    const degree = new Map<string, number>()
-    conceptEdges.forEach((edge) => {
-      degree.set(edge.source, (degree.get(edge.source) || 0) + 1)
-      degree.set(edge.target, (degree.get(edge.target) || 0) + 1)
-    })
-    return [...values].sort((a, b) => (
-      (b.core_score || 0) - (a.core_score || 0)
-      || (degree.get(b.id) || 0) - (degree.get(a.id) || 0)
-      || graphNodeName(a).localeCompare(graphNodeName(b), 'zh-CN')
-    )).slice(0, coreOnly ? 44 : 66)
-  }, [allEntities, conceptEdges, coreOnly, entityQuery, entityType])
-  const visibleEntityIds = useMemo(
-    () => new Set(visibleEntities.map((node) => node.id)),
-    [visibleEntities],
+  }, [allEntities, coreOnly, entityType, graph.nodes, view])
+  const graphNodeIds = useMemo(
+    () => new Set(graphNodes.map((node) => node.id)),
+    [graphNodes],
   )
-  const visibleEdges = useMemo(
-    () => conceptEdges
-      .filter((edge) => visibleEntityIds.has(edge.source) && visibleEntityIds.has(edge.target))
-      .sort((a, b) => (b.strength || b.weight || 0) - (a.strength || a.weight || 0))
-      .slice(0, 180),
-    [conceptEdges, visibleEntityIds],
+  const graphEdges = useMemo(
+    () => (view === 'sections' ? graph.edges : conceptEdges)
+      .filter((edge) => graphNodeIds.has(edge.source) && graphNodeIds.has(edge.target)),
+    [conceptEdges, graph.edges, graphNodeIds, view],
   )
-  const positions = useMemo(() => {
-    const result = new Map<string, { x: number; y: number }>()
-    visibleEntities.forEach((node, index) => {
-      const ring = Math.floor(index / 22)
-      const start = ring * 22
-      const size = Math.min(22, visibleEntities.length - start)
-      const angle = Math.PI * 2 * (index - start) / Math.max(1, size) - Math.PI / 2
-      const radius = visibleEntities.length === 1 ? 0 : 112 + ring * 88
-      result.set(node.id, { x: 400 + Math.cos(angle) * radius, y: 310 + Math.sin(angle) * radius })
-    })
+  const layout = useMemo(
+    () => buildNeo4jForceLayout(graphNodes, graphEdges, view === 'sections', sectionMap),
+    [graphEdges, graphNodes, sectionMap, view],
+  )
+  const normalizedEntityQuery = entityQuery.trim().toLocaleLowerCase('zh-CN')
+  const matchedNodeIds = useMemo(() => {
+    if (!normalizedEntityQuery) return new Set<string>()
+    return new Set(graphNodes.filter((node) => (
+      node.type === 'entity'
+      && [graphNodeName(node), node.name, node.entity_type, ...(node.aliases || [])]
+        .some((value) => String(value || '').toLocaleLowerCase('zh-CN').includes(normalizedEntityQuery))
+    )).map((node) => node.id))
+  }, [graphNodes, normalizedEntityQuery])
+  const labelNodeIds = useMemo(() => {
+    const result = new Set<string>(matchedNodeIds)
+    if (selectedId) result.add(selectedId)
+    if (view === 'sections' && graphZoom >= 1.35) {
+      graphNodes.filter((node) => node.type === 'section' && (node.level || 0) <= 1)
+        .forEach((node) => result.add(node.id))
+    }
+    const labelLimit = graphZoom >= 2.2 ? 150 : graphZoom >= 1.65 ? 72 : graphZoom >= 1.25 ? 28 : 0
+    if (labelLimit) {
+      ;[...graphNodes]
+        .sort((left, right) => (
+          (layout.degrees.get(right.id) || 0) - (layout.degrees.get(left.id) || 0)
+          || Number(Boolean(right.is_core)) - Number(Boolean(left.is_core))
+          || graphNodeName(left).localeCompare(graphNodeName(right), 'zh-CN')
+        ))
+        .slice(0, labelLimit)
+        .forEach((node) => result.add(node.id))
+    }
     return result
-  }, [visibleEntities])
+  }, [graphNodes, graphZoom, layout.degrees, matchedNodeIds, selectedId, view])
   const selected = graph.nodes.find((node) => node.id === selectedId)
   const edgeKey = (edge: KnowledgeGraphEdge) => `${edge.source}\u0000${edge.relation || edge.type}\u0000${edge.target}`
-  const selectedEdge = visibleEdges.find((edge) => edgeKey(edge) === selectedEdgeKey)
+  const selectedEdge = graphEdges.find((edge) => edgeKey(edge) === selectedEdgeKey)
 
   useEffect(() => {
     const roots = sections.filter((node) => !node.parent)
-    setExpanded(new Set(roots.map((node) => node.id)))
     const initialEntity = [...allEntities].sort((a, b) => (
       Number(Boolean(b.is_core)) - Number(Boolean(a.is_core))
       || (b.core_score || 0) - (a.core_score || 0)
@@ -2339,24 +2557,6 @@ function HierarchicalKnowledgeGraphView({
     return () => { active = false }
   }, [graph.knowledge_base, selectedId, selectedEdgeKey])
 
-  const toggleSection = (id: string) => {
-    setExpanded((current) => {
-      const next = new Set(current)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-  const sectionRows: KnowledgeGraphNode[] = []
-  const visit = (node: KnowledgeGraphNode) => {
-    sectionRows.push(node)
-    if (!expanded.has(node.id)) return
-    ;(node.children || []).forEach((id) => {
-      const child = sectionMap.get(id)
-      if (child) visit(child)
-    })
-  }
-  sections.filter((node) => !node.parent).forEach(visit)
   const selectedSectionEntities = selected?.type === 'section'
     ? (selected.entities || []).map((id) => entityMap.get(id)).filter(Boolean) as KnowledgeGraphNode[]
     : []
@@ -2419,8 +2619,8 @@ function HierarchicalKnowledgeGraphView({
   const completeNodeCount = graph.stats.nodes
   const completeEdgeCount = graph.stats.edges
   const scopedQuery = view === 'entities'
-    ? `MATCH (n:KnowledgeEntity {knowledge_base: '${graph.knowledge_base}', type: 'entity'})-[r:CONCEPT_RELATION]-(m:KnowledgeEntity {knowledge_base: '${graph.knowledge_base}', type: 'entity'}) RETURN n, r, m LIMIT 500`
-    : `MATCH (n:KnowledgeEntity {knowledge_base: '${graph.knowledge_base}'})-[r]-(m:KnowledgeEntity {knowledge_base: '${graph.knowledge_base}'}) RETURN n, r, m LIMIT 500`
+    ? `MATCH (n:KnowledgeEntity {knowledge_base: '${graph.knowledge_base}', type: 'entity'})-[r:CONCEPT_RELATION]-(m:KnowledgeEntity {knowledge_base: '${graph.knowledge_base}', type: 'entity'}) RETURN n, r, m`
+    : `MATCH (n:KnowledgeEntity {knowledge_base: '${graph.knowledge_base}'})-[r]-(m:KnowledgeEntity {knowledge_base: '${graph.knowledge_base}'}) RETURN n, r, m`
 
   return (
     <section className="feature-view neo4j-graph-view">
@@ -2435,7 +2635,7 @@ function HierarchicalKnowledgeGraphView({
         <div className="neo4j-workbench-body">
           <aside className="neo4j-database-panel">
             <div className="neo4j-panel-title"><Database size={17} /><div><strong>Database information</strong><span>neo4j · connected</span></div></div>
-            <section><h2>Nodes <small>{graph.stats.nodes}</small></h2><button type="button" className="active"><i style={{ background: '#8fa7ad' }} />KnowledgeEntity <b>{graph.stats.entities || allEntities.length}</b></button><button type="button"><i style={{ background: '#b9c3c7' }} />SECTION <b>{graph.stats.sections || sections.length}</b></button></section>
+            <section><h2>Nodes <small>{graph.stats.nodes}</small></h2><button type="button" className="active"><i style={{ background: '#68BDF6' }} />KnowledgeEntity <b>{graph.stats.entities || allEntities.length}</b></button><button type="button"><i style={{ background: '#A5ABB6' }} />SECTION <b>{graph.stats.sections || sections.length}</b></button></section>
             <section className="neo4j-label-list"><h2>Node labels</h2>{entityTypeCounts.map(([label, count]) => <button type="button" className={entityType === label ? 'active' : ''} key={label} onClick={() => { setEntityType(entityType === label ? 'all' : label); setView('entities') }}><i style={{ background: neo4jEntityColor(label) }} />{label}<b>{count}</b></button>)}</section>
             <section><h2>Relationships</h2><button type="button"><span className="neo4j-rel-chip">CONCEPT_RELATION</span><b>{conceptEdges.length}</b></button><button type="button"><span className="neo4j-rel-chip">ENTITY_SECTION</span><b>{graph.edges.filter((edge) => edge.type === 'entity_section').length}</b></button><button type="button"><span className="neo4j-rel-chip">PARENT_CHILD</span><b>{graph.edges.filter((edge) => edge.type === 'parent_child').length}</b></button></section>
           </aside>
@@ -2451,44 +2651,34 @@ function HierarchicalKnowledgeGraphView({
               />
               {view === 'entities' && <><Input allowClear value={entityQuery} onChange={(event) => setEntityQuery(event.target.value)} prefix={<Search size={14} />} placeholder="搜索实体或别名" /><Select value={entityType} onChange={setEntityType} options={[{ value: 'all', label: '全部类型' }, ...entityTypeCounts.map(([label, count]) => ({ value: label, label: `${label} (${count})` }))]} /><Segmented value={coreOnly ? 'core' : 'all'} onChange={(value) => setCoreOnly(value === 'core')} options={[{ label: '核心', value: 'core' }, { label: '全部', value: 'all' }]} /></>}
             </div>
-            {view === 'sections' ? (
-              <div className="neo4j-section-tree" role="tree" aria-label="教材章节树">
-                <header><Layers3 size={17} /><div><strong>完整知识图谱 · {completeNodeCount} 个节点 / {completeEdgeCount} 条边</strong><span>{sections.length} 个章节节点 · {allEntities.length} 个唯一实体 · 章节树和实体归属均已纳入统计</span></div></header>
-                {sectionRows.map((section) => {
-                  const hasChildren = Boolean(section.children?.length)
-                  return <div className={`neo4j-section-row ${selectedId === section.id ? 'selected' : ''}`} key={section.id} style={{ paddingLeft: `${14 + (section.level || 0) * 22}px` }}>
-                    <button type="button" className="neo4j-section-toggle" disabled={!hasChildren} onClick={() => toggleSection(section.id)}>{hasChildren ? (expanded.has(section.id) ? '−' : '+') : '·'}</button>
-                    <button type="button" onClick={() => { setSelectedId(section.id); setSelectedEdgeKey('') }}><strong>{section.title || section.name}</strong><span>{section.page_start ? `第 ${section.page_start}${section.page_end && section.page_end !== section.page_start ? `–${section.page_end}` : ''} 页` : '结构节点'} · {section.entities?.length || 0} 个直接实体</span></button>
-                  </div>
-                })}
-              </div>
-            ) : (
-              <div className="neo4j-graph-stage">
-                <div className="neo4j-canvas-toolbar"><button type="button" aria-label="放大图谱" disabled={graphZoom >= 1.8} onClick={() => setGraphZoom((value) => Math.min(1.8, value + .15))}><ZoomIn size={16} /></button><button type="button" aria-label="缩小图谱" disabled={graphZoom <= .65} onClick={() => setGraphZoom((value) => Math.max(.65, value - .15))}><ZoomOut size={16} /></button><button type="button" aria-label="重置缩放" onClick={() => setGraphZoom(1)}><RotateCcw size={15} /></button><span>{Math.round(graphZoom * 100)}%</span></div>
-                {visibleEntities.length ? <svg viewBox="0 0 800 620" role="img" aria-label={`${displayName}实体关系图`}>
-                  <defs><marker id="neo4j-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>
-                  <g transform={`translate(400 310) scale(${graphZoom}) translate(-400 -310)`}>
-                    <g className="neo4j-edges">{visibleEdges.map((edge) => {
-                      const from = positions.get(edge.source)
-                      const to = positions.get(edge.target)
-                      if (!from || !to) return null
-                      const key = edgeKey(edge)
-                      return <g key={key} className={selectedEdgeKey === key ? 'selected' : ''} role="button" tabIndex={0} onClick={() => { setSelectedEdgeKey(key); setSelectedId('') }} onKeyDown={(event) => { if (event.key === 'Enter') { setSelectedEdgeKey(key); setSelectedId('') } }}><line className="hit" x1={from.x} y1={from.y} x2={to.x} y2={to.y} /><line className="line" x1={from.x} y1={from.y} x2={to.x} y2={to.y} markerEnd="url(#neo4j-arrow)" /><text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 5}>{(edge.relation || '关联').slice(0, 9)}</text></g>
-                    })}</g>
-                    <g className="neo4j-nodes">{visibleEntities.map((entity) => {
-                      const position = positions.get(entity.id) || { x: 400, y: 310 }
-                      const radius = entity.is_core ? 23 : 18
-                      return <g key={entity.id} className={`${entity.is_core ? 'core' : ''} ${selectedId === entity.id ? 'selected' : ''}`} transform={`translate(${position.x} ${position.y})`} role="button" tabIndex={0} onClick={() => { setSelectedId(entity.id); setSelectedEdgeKey('') }} onKeyDown={(event) => { if (event.key === 'Enter') { setSelectedId(entity.id); setSelectedEdgeKey('') } }}><circle r={radius} style={{ fill: neo4jEntityColor(entity.entity_type) }} /><text y={radius + 15}>{graphNodeName(entity).slice(0, 12)}</text></g>
-                    })}</g>
-                  </g>
-                </svg> : <div className="neo4j-empty"><Search size={26} /><strong>没有符合筛选条件的实体</strong><span>尝试清除搜索词、类型或核心实体筛选。</span></div>}
-                <div className="neo4j-stage-status"><span>实体关系模式</span><span>Nodes ({entityNodeCount})</span><span>Relationships ({entityEdgeCount})</span><small>画布显示筛选后的 {visibleEntities.length} 个节点和 {visibleEdges.length} 条关系</small></div>
-              </div>
-            )}
+            <div className="neo4j-graph-stage" data-mode={view}>
+              <div className="neo4j-canvas-toolbar"><button type="button" aria-label="放大图谱" disabled={graphZoom >= 2.6} onClick={() => setGraphZoom((value) => Math.min(2.6, value + .2))}><ZoomIn size={16} /></button><button type="button" aria-label="缩小图谱" disabled={graphZoom <= .55} onClick={() => setGraphZoom((value) => Math.max(.55, value - .2))}><ZoomOut size={16} /></button><button type="button" aria-label="重置缩放" onClick={() => setGraphZoom(1)}><RotateCcw size={15} /></button><span>{Math.round(graphZoom * 100)}%</span></div>
+              {graphNodes.length ? <svg viewBox={`0 0 ${NEO4J_VIEWBOX_WIDTH} ${NEO4J_VIEWBOX_HEIGHT}`} role="img" aria-label={`${displayName}${view === 'sections' ? '完整' : '实体关系'}知识图谱`}>
+                <defs><marker id="neo4j-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>
+                <g transform={`translate(${NEO4J_VIEWBOX_WIDTH / 2} ${NEO4J_VIEWBOX_HEIGHT / 2}) scale(${graphZoom}) translate(${-NEO4J_VIEWBOX_WIDTH / 2} ${-NEO4J_VIEWBOX_HEIGHT / 2})`}>
+                  <g className="neo4j-edges">{graphEdges.map((edge, index) => {
+                    const from = layout.positions.get(edge.source)
+                    const to = layout.positions.get(edge.target)
+                    if (!from || !to) return null
+                    const key = edgeKey(edge)
+                    const isSelected = selectedEdgeKey === key
+                    return <g key={`${key}\u0000${index}`} className={`${edge.type} ${isSelected ? 'selected' : ''}`} role="button" onClick={() => { setSelectedEdgeKey(key); setSelectedId('') }}><line className="hit" x1={from.x} y1={from.y} x2={to.x} y2={to.y} /><line className="line" x1={from.x} y1={from.y} x2={to.x} y2={to.y} markerEnd={isSelected ? 'url(#neo4j-arrow)' : undefined} />{isSelected && <text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 5}>{(edge.relation || edge.type || '关联').slice(0, 12)}</text>}</g>
+                  })}</g>
+                  <g className="neo4j-nodes">{graphNodes.map((node) => {
+                    const position = layout.positions.get(node.id) || { x: NEO4J_VIEWBOX_WIDTH / 2, y: NEO4J_VIEWBOX_HEIGHT / 2 }
+                    const radius = neo4jNodeRadius(node, graphNodes.length)
+                    const queryMatch = matchedNodeIds.has(node.id)
+                    const queryDim = Boolean(normalizedEntityQuery) && node.type === 'entity' && !queryMatch
+                    return <g key={node.id} className={`${node.type === 'section' ? 'section' : 'entity'} ${node.is_core ? 'core' : ''} ${selectedId === node.id ? 'selected' : ''} ${queryMatch ? 'query-match' : ''} ${queryDim ? 'query-dim' : ''}`} transform={`translate(${position.x} ${position.y})`} role="button" tabIndex={0} onClick={() => { setSelectedId(node.id); setSelectedEdgeKey('') }} onKeyDown={(event) => { if (event.key === 'Enter') { setSelectedId(node.id); setSelectedEdgeKey('') } }}><title>{graphNodeName(node)}{node.type === 'entity' && node.entity_type ? ` · ${node.entity_type}` : ''}</title><circle r={radius} style={{ fill: neo4jNodeColor(node) }} />{labelNodeIds.has(node.id) && <text y={radius + 11}>{graphNodeName(node).slice(0, node.type === 'section' ? 18 : 14)}</text>}</g>
+                  })}</g>
+                </g>
+              </svg> : <div className="neo4j-empty"><Search size={26} /><strong>没有符合筛选条件的实体</strong><span>尝试切换实体类型或显示全部实体。</span></div>}
+              <div className="neo4j-stage-status"><span>{view === 'sections' ? '完整图谱模式' : '实体关系模式'}</span><span>Nodes ({graphNodes.length})</span><span>Relationships ({graphEdges.length})</span><small>{normalizedEntityQuery ? `搜索匹配 ${matchedNodeIds.size} 个实体 · ` : ''}画布已加载全部当前范围数据，无节点或关系截断</small></div>
+            </div>
           </main>
           <aside className="neo4j-inspector">
             <div className="neo4j-inspector-heading"><strong>Properties</strong><span>{selectedEdge ? 'Relationship' : selected ? 'Node' : 'Selection'}</span></div>
-            {selectedEdge ? <div className="neo4j-property-content"><span className="neo4j-object-type">CONCEPT_RELATION</span><h2>{selectedEdge.relation || '关联'}</h2><dl><dt>source</dt><dd><InlineMath content={graphNodeName(entityMap.get(selectedEdge.source)) || selectedEdge.source} /></dd><dt>target</dt><dd><InlineMath content={graphNodeName(entityMap.get(selectedEdge.target)) || selectedEdge.target} /></dd><dt>strength</dt><dd>{selectedEdge.strength?.toFixed(1) || '—'}</dd><dt>confidence</dt><dd>{selectedEdge.confidence ? `${Math.round(selectedEdge.confidence * 100)}%` : '—'}</dd></dl>{selectedEdge.description && <p>{selectedEdge.description}</p>}</div> : selected?.type === 'section' ? <div className="neo4j-property-content"><span className="neo4j-object-type section">SECTION · LEVEL {selected.level || 0}</span><h2><InlineMath content={selected.title || selected.name} /></h2><p>{selected.summary || '该节点仅用于补全目录结构，没有可摘要的直接正文。'}</p>{selectedSectionEntities.length > 0 && <div className="hierarchical-chip-list">{selectedSectionEntities.slice(0, 24).map((entity) => <button type="button" key={entity.id} className={entity.is_core ? 'core' : ''} onClick={() => { setView('entities'); setSelectedId(entity.id) }}>{entity.name}</button>)}</div>}</div> : selected?.type === 'entity' ? <div className="neo4j-property-content"><span className="neo4j-object-type" style={{ borderColor: neo4jEntityColor(selected.entity_type), color: neo4jEntityColor(selected.entity_type) }}>{selected.entity_type}{selected.is_core ? ' · CORE' : ''}</span><h2><InlineMath content={graphNodeName(selected)} /></h2><dl><dt>core_score</dt><dd>{selected.core_score?.toFixed(2) || '—'}</dd><dt>relations</dt><dd>{selectedNeighbors}</dd><dt>sections</dt><dd>{selectedEntitySections.length}</dd></dl>{selected.aliases?.length ? <p><strong>别名：</strong>{selected.aliases.join('、')}</p> : null}{selected.raw_description && <><h3>原始描述</h3><p>{selected.raw_description}</p></>}{selected.description && <><h3>邻域增强描述</h3><p>{selected.description}</p></>}{selectedEntitySections.length > 0 && <p><strong>所属章节：</strong>{selectedEntitySections.map((section) => section.title || section.name).join('、')}</p>}</div> : <div className="neo4j-inspector-empty"><Network size={30} /><strong>选择图谱对象</strong><span>点击节点、关系或章节，查看属性和块级证据。</span></div>}
+            {selectedEdge ? <div className="neo4j-property-content"><span className="neo4j-object-type">{selectedEdge.type.toUpperCase()}</span><h2>{selectedEdge.relation || '关联'}</h2><dl><dt>source</dt><dd><InlineMath content={graphNodeName(graphNodeMap.get(selectedEdge.source)) || selectedEdge.source} /></dd><dt>target</dt><dd><InlineMath content={graphNodeName(graphNodeMap.get(selectedEdge.target)) || selectedEdge.target} /></dd><dt>strength</dt><dd>{selectedEdge.strength?.toFixed(1) || '—'}</dd><dt>confidence</dt><dd>{selectedEdge.confidence ? `${Math.round(selectedEdge.confidence * 100)}%` : '—'}</dd></dl>{selectedEdge.description && <p>{selectedEdge.description}</p>}</div> : selected?.type === 'section' ? <div className="neo4j-property-content"><span className="neo4j-object-type section">SECTION · LEVEL {selected.level || 0}</span><h2><InlineMath content={selected.title || selected.name} /></h2><p>{selected.summary || '该节点仅用于补全目录结构，没有可摘要的直接正文。'}</p>{selectedSectionEntities.length > 0 && <div className="hierarchical-chip-list">{selectedSectionEntities.slice(0, 24).map((entity) => <button type="button" key={entity.id} className={entity.is_core ? 'core' : ''} onClick={() => { setView('entities'); setSelectedId(entity.id) }}>{entity.name}</button>)}</div>}</div> : selected?.type === 'entity' ? <div className="neo4j-property-content"><span className="neo4j-object-type" style={{ borderColor: neo4jEntityColor(selected.entity_type), color: neo4jEntityColor(selected.entity_type) }}>{selected.entity_type}{selected.is_core ? ' · CORE' : ''}</span><h2><InlineMath content={graphNodeName(selected)} /></h2><dl><dt>core_score</dt><dd>{selected.core_score?.toFixed(2) || '—'}</dd><dt>relations</dt><dd>{selectedNeighbors}</dd><dt>sections</dt><dd>{selectedEntitySections.length}</dd></dl>{selected.aliases?.length ? <p><strong>别名：</strong>{selected.aliases.join('、')}</p> : null}{selected.raw_description && <><h3>原始描述</h3><p>{selected.raw_description}</p></>}{selected.description && <><h3>邻域增强描述</h3><p>{selected.description}</p></>}{selectedEntitySections.length > 0 && <p><strong>所属章节：</strong>{selectedEntitySections.map((section) => section.title || section.name).join('、')}</p>}</div> : <div className="neo4j-inspector-empty"><Network size={30} /><strong>选择图谱对象</strong><span>点击节点、关系或章节，查看属性和块级证据。</span></div>}
             {(selected || selectedEdge) && <><div className="graph-evidence-title">Evidence blocks</div>{evidenceLoading && <div className="graph-evidence-state"><LoaderCircle className="spin" size={15} /> 正在读取证据…</div>}{!evidenceLoading && evidence.length > 0 && <div className="graph-evidence-list">{evidence.slice(0, 10).map((item) => <article key={item.id}><span>{item.modality} {item.page ? `· 第 ${item.page} 页` : ''}</span><p>{item.text || item.caption || item.description}</p><small>{item.id}</small></article>)}</div>}{!evidenceLoading && !evidence.length && <div className="graph-evidence-state">当前选择没有可展示的证据块。</div>}</>}
           </aside>
         </div>
