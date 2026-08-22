@@ -176,10 +176,11 @@ def test_invalid_claim_references_fall_back_to_block_grounded_summary(tmp_path):
         _page(1, "1.1 PN结", "PN结具有单向导电性。"),
     ], [])
 
+    cache_path = tmp_path / "section_summaries.jsonl"
     summarized = summarize_sections(
         units,
         _InvalidClaimReferenceClient(),
-        tmp_path / "section_summaries.jsonl",
+        cache_path,
         None,
     )
 
@@ -189,6 +190,16 @@ def test_invalid_claim_references_fall_back_to_block_grounded_summary(tmp_path):
     assert result.summary_claims[0]["text"] in result.summary
     assert result.summary_claims[0]["evidence_ids"] == ["ocr:book.pdf:p1:b1"]
     assert "确定性重建" in result.short_summary_reason
+
+    class NoCallClient:
+        config = SimpleNamespace(model="qwen3.7-flash", enabled=True)
+
+        def complete_json(self, _prompt):
+            raise AssertionError("a valid summary checkpoint must not call the API")
+
+    replayed = summarize_sections(units, NoCallClient(), cache_path, None)
+    assert replayed[0].summary == result.summary
+    assert replayed[0].summary_claims == result.summary_claims
 
 
 class _SpaceTokenizer:

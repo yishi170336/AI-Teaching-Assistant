@@ -738,19 +738,50 @@ def summarize_sections(
     cache = _load_cache(cache_path)
     for index, unit in enumerate(values):
         key = _cache_key("summary", unit, model)
-        payload = cache.get(key, {}).get("result")
-        if isinstance(payload, dict) and (
-            not _compact(payload.get("summary"))
-            or not isinstance(payload.get("claims"), list)
-            or not payload.get("claims")
-        ):
-            payload = None
+        evidence_ids = set(unit.evidence_ids)
+        cached_payload = cache.get(key, {}).get("result")
+        if isinstance(cached_payload, dict):
+            cached_summary = _compact(cached_payload.get("summary"))
+            cached_claims: list[dict[str, Any]] = []
+            for claim_index, raw in enumerate(cached_payload.get("claims", []), 1):
+                if not isinstance(raw, dict):
+                    continue
+                text = _compact(raw.get("text"))
+                refs = list(dict.fromkeys(
+                    str(value)
+                    for value in raw.get("evidence_ids", [])
+                    if str(value) in evidence_ids
+                ))
+                if text and text in cached_summary and refs:
+                    cached_claims.append({
+                        "id": f"claim_{claim_index}",
+                        "text": text,
+                        "evidence_ids": refs,
+                    })
+            cached_count = _token_count(cached_summary, tokenizer)
+            if cached_summary and cached_claims and cached_count <= 400:
+                values[index] = replace(
+                    unit,
+                    summary=cached_summary,
+                    summary_claims=cached_claims,
+                    summary_confidence=max(
+                        0.0,
+                        min(
+                            1.0,
+                            float(cached_payload.get("confidence", 0.0) or 0.0),
+                        ),
+                    ),
+                    short_summary_reason=_compact(
+                        cached_payload.get("short_summary_reason")
+                    ),
+                )
+                continue
+        payload: dict[str, Any] | None = None
         if not isinstance(payload, dict):
             payload = _request_section_summary(client, unit) if client is not None else {}
             if client is not None and not payload:
                 raise RuntimeError(f"章节摘要阶段连续两次返回无效 JSON：{unit.section_id}")
             payload = payload or _offline_summary(unit)
-        evidence_ids = set(unit.evidence_ids)
         summary = _compact(payload.get("summary"))
         claims: list[dict[str, Any]] = []
         for claim_index, raw in enumerate(payload.get("claims", []), 1):
