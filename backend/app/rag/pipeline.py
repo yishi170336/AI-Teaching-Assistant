@@ -18,7 +18,7 @@ from openpyxl import load_workbook
 
 from backend.app.config import settings
 from backend.app.rag.models import PageDocument, TextChunk
-from backend.app.rag.embedding_runtime import encode_texts
+from backend.app.rag.embedding_runtime import encode_texts, release_embedding_model
 from backend.app.rag.hierarchical_graph import (
     SCHEMA_VERSION as HIERARCHICAL_GRAPH_SCHEMA_VERSION,
     build_hierarchical_summary_entity_graph,
@@ -973,6 +973,84 @@ def _formula_pipeline_stats(output_dir: Path, elements: list[LayoutElement]) -> 
     }
 
 
+def _encode_build_embeddings(
+    model_path: Path,
+    texts: Iterable[str],
+    *,
+    encoder: Callable[..., np.ndarray] = encode_texts,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Encode ingestion vectors on the GPU, with an explicit audited fallback."""
+
+    values = list(texts)
+    audit: dict[str, Any] = {
+        "requested_device": "cuda:0",
+        "device": "cuda:0",
+        "fp16": True,
+        "batch_size": 4,
+    }
+    torch_module: Any | None = None
+    try:
+        import torch
+
+        torch_module = torch
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+    except Exception:
+        torch_module = None
+    try:
+        embeddings = encoder(
+            model_path,
+            values,
+            batch_size=4,
+            show_progress_bar=True,
+            device="cuda:0",
+            use_half=True,
+        )
+        if torch_module is not None and torch_module.cuda.is_available():
+            peak_allocated = round(
+                torch_module.cuda.max_memory_allocated() / 1024**2, 2
+            )
+            peak_reserved = round(
+                torch_module.cuda.max_memory_reserved() / 1024**2, 2
+            )
+            audit.update({
+                "peak_allocated_mib": peak_allocated,
+                "peak_reserved_mib": peak_reserved,
+            })
+            if peak_reserved > 3072:
+                raise RuntimeError(
+                    "Qwen3-Embedding GPU 峰值保留显存 "
+                    f"{peak_reserved} MiB 超过 3072 MiB"
+                )
+    except Exception as exc:
+        if torch_module is not None and torch_module.cuda.is_available():
+            audit.update({
+                "gpu_peak_allocated_mib": round(
+                    torch_module.cuda.max_memory_allocated() / 1024**2, 2
+                ),
+                "gpu_peak_reserved_mib": round(
+                    torch_module.cuda.max_memory_reserved() / 1024**2, 2
+                ),
+            })
+        release_embedding_model(model_path, device="cuda:0")
+        logger.warning("构建期内容嵌入 GPU 不可用或 OOM，显式降级 CPU：%s", exc)
+        audit.update({
+            "device": "cpu",
+            "fp16": False,
+            "fallback_reason": str(exc),
+        })
+        embeddings = encoder(
+            model_path,
+            values,
+            batch_size=4,
+            show_progress_bar=True,
+            device="cpu",
+        )
+    else:
+        release_embedding_model(model_path, device="cuda:0")
+    return embeddings.astype(np.float32), audit
+
+
 def build_knowledge_base(
     resources_dir: Path,
     output_dir: Path,
@@ -1258,11 +1336,10 @@ def build_knowledge_base(
         for chunk in chunks
     ]
     report(68, "embedding", f"正在生成 {len(chunks)} 个内容向量")
-    embeddings = encode_texts(
+    embeddings, chunk_embedding_runtime = _encode_build_embeddings(
         embedding_model_path,
         embedding_texts,
-        batch_size=32,
-        show_progress_bar=True,
+        encoder=encode_texts,
     )
     report(82, "validation", "正在校验向量与图谱完整性")
     validation = validate_build_artifacts(chunks, embeddings, legacy_graph)
@@ -1293,6 +1370,7 @@ def build_knowledge_base(
         "schema_version": HIERARCHICAL_GRAPH_SCHEMA_VERSION,
         "resource_dir": str(resources_dir),
         "embedding_model": str(embedding_model_path),
+        "chunk_embedding_runtime": chunk_embedding_runtime,
         "dimension": int(embeddings.shape[1]),
         "documents": len(source_files),
         "text_pages": len(documents),

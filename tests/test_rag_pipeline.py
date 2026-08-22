@@ -8,6 +8,7 @@ from backend.app.rag.models import PageDocument
 from backend.app.rag.multimodal import LayoutElement
 from backend.app.rag.multimodal import SCANNED_PAGE_PLACEHOLDER
 from backend.app.rag.pipeline import (
+    _encode_build_embeddings,
     _formula_pipeline_stats,
     build_knowledge_base,
     chunk_documents,
@@ -16,6 +17,58 @@ from backend.app.rag.pipeline import (
     validate_extracted_content,
     validate_section_semantics,
 )
+
+
+def test_build_embeddings_prefer_cuda_fp16_and_record_runtime(tmp_path):
+    calls = []
+
+    def encoder(_path, texts, **kwargs):
+        calls.append(kwargs)
+        values = list(texts)
+        result = np.zeros((len(values), 8), dtype=np.float32)
+        result[:, 0] = 1.0
+        return result
+
+    embeddings, runtime = _encode_build_embeddings(
+        tmp_path / "Qwen3-Embedding-0.6B",
+        ["教材正文"],
+        encoder=encoder,
+    )
+
+    assert embeddings.shape == (1, 8)
+    assert calls == [{
+        "batch_size": 4,
+        "show_progress_bar": True,
+        "device": "cuda:0",
+        "use_half": True,
+    }]
+    assert runtime["device"] == "cuda:0"
+    assert runtime["fp16"] is True
+
+
+def test_build_embeddings_explicitly_fall_back_to_cpu(tmp_path):
+    calls = []
+
+    def encoder(_path, texts, **kwargs):
+        calls.append(kwargs)
+        if kwargs["device"] == "cuda:0":
+            raise RuntimeError("synthetic CUDA OOM")
+        values = list(texts)
+        result = np.zeros((len(values), 8), dtype=np.float32)
+        result[:, 0] = 1.0
+        return result
+
+    embeddings, runtime = _encode_build_embeddings(
+        tmp_path / "Qwen3-Embedding-0.6B",
+        ["教材正文"],
+        encoder=encoder,
+    )
+
+    assert embeddings.shape == (1, 8)
+    assert [item["device"] for item in calls] == ["cuda:0", "cpu"]
+    assert runtime["device"] == "cpu"
+    assert runtime["fp16"] is False
+    assert "synthetic CUDA OOM" in runtime["fallback_reason"]
 
 
 def test_clean_page_text_removes_noise_and_page_number():
