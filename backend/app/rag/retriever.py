@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -16,6 +17,13 @@ from backend.app.rag.models import RetrievalHit, TextChunk
 
 SCHEMA4_PREFIX = "4."
 QWEN3_EMBEDDING_DIMENSION = 1024
+STRUCTURED_EVIDENCE_TYPES = {
+    "atomic_statement",
+    "formula_knowledge",
+    "section_summary",
+    "graph_entity",
+    "graph_relation",
+}
 SUPPORTED_FEATURES = {
     "course_qa",
     "photo_qa",
@@ -124,6 +132,19 @@ class Schema4Retriever:
         self.facts = self._load_jsonl(index_dir / "attribute_facts.jsonl")
         self._tokenized = [tokenize(self._search_text(chunk)) for chunk in self.chunks]
         self._bm25 = BM25Okapi(self._tokenized)
+        self._evidence_lookup = {
+            str(item.get("id")): item
+            for item in self._load_jsonl(index_dir / "evidence_store.jsonl")
+            if item.get("id")
+        }
+        self._unit_chunks = self._knowledge_unit_chunks()
+        self.structured_chunks = self._load_structured_chunks()
+        self._structured_tokenized = [
+            tokenize(self._search_text(chunk)) for chunk in self.structured_chunks
+        ]
+        self._structured_bm25 = (
+            BM25Okapi(self._structured_tokenized) if self._structured_tokenized else None
+        )
 
     @staticmethod
     def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -206,6 +227,179 @@ class Schema4Retriever:
                 metadata["section_path"] = list(section.get("title_path") or [])
             chunk.multimodal = metadata
 
+    def _knowledge_unit_chunks(self) -> dict[str, TextChunk]:
+        values: dict[str, TextChunk] = {}
+        for chunk in self.chunks:
+            metadata = chunk.multimodal or {}
+            unit_id = str(metadata.get("knowledge_unit_id") or chunk.parent_id or "")
+            if unit_id and unit_id not in values:
+                values[unit_id] = chunk
+        return values
+
+    @staticmethod
+    def _statement_text(statement: dict[str, Any]) -> str:
+        subject = _compact(statement.get("subject"))
+        predicate = _compact(
+            statement.get("predicate_original") or statement.get("predicate_normalized")
+        )
+        target = _compact(statement.get("object") or statement.get("value"))
+        main = " ".join(filter(None, (subject, predicate, target)))
+        qualifiers = "；".join(
+            _compact(value) for value in statement.get("qualifiers", []) if _compact(value)
+        )
+        evidence = _compact(statement.get("evidence_text"))
+        parts = [main]
+        if qualifiers:
+            parts.append(f"限定条件：{qualifiers}")
+        if evidence and evidence not in main:
+            parts.append(f"证据陈述：{evidence}")
+        return "\n".join(part for part in parts if part)
+
+    def _structured_chunk(
+        self,
+        *,
+        record_id: str,
+        text: str,
+        element_type: str,
+        evidence_ids: list[str],
+        section_id: str = "",
+        knowledge_unit_id: str = "",
+        knowledge_tags: list[str] | None = None,
+    ) -> TextChunk | None:
+        text = _compact(text)
+        if not text:
+            return None
+        evidence_ids = list(dict.fromkeys(str(value) for value in evidence_ids if str(value)))
+        evidence = next(
+            (self._evidence_lookup[value] for value in evidence_ids if value in self._evidence_lookup),
+            {},
+        )
+        unit_chunk = self._unit_chunks.get(knowledge_unit_id)
+        if not section_id and unit_chunk is not None:
+            section_id = str((unit_chunk.multimodal or {}).get("section_id", ""))
+        if not section_id:
+            section_id = str(evidence.get("section_id", ""))
+        section = self.sections.get(section_id, {})
+        source = _compact(evidence.get("source")) or (unit_chunk.source if unit_chunk else "")
+        chapter = _compact(evidence.get("chapter")) or (unit_chunk.chapter if unit_chunk else "")
+        section_title = (
+            _compact(evidence.get("section"))
+            or _compact(section.get("title") or section.get("name"))
+            or (unit_chunk.section if unit_chunk else "")
+        )
+        page = int(evidence.get("page") or 0) or None
+        page_start = page or (unit_chunk.page_start if unit_chunk else None) or section.get("page_start")
+        page_end = page or (unit_chunk.page_end if unit_chunk else None) or section.get("page_end")
+        stable_id = hashlib.sha1(
+            f"{element_type}|{record_id}|{text}".encode("utf-8")
+        ).hexdigest()[:20]
+        return TextChunk(
+            id=f"structured-{stable_id}",
+            text=text,
+            source=source or "Schema 4课程知识库",
+            chapter=chapter,
+            section=section_title,
+            page_start=int(page_start) if page_start else None,
+            page_end=int(page_end) if page_end else None,
+            doc_type="structured_knowledge",
+            knowledge_tags=list(dict.fromkeys(knowledge_tags or []))[:12],
+            element_type=element_type,
+            bbox=evidence.get("bbox"),
+            parent_id=knowledge_unit_id or None,
+            content_hash=stable_id,
+            multimodal={
+                "section_id": section_id,
+                "section_path": list(
+                    evidence.get("section_path") or section.get("title_path") or []
+                ),
+                "evidence_ids": evidence_ids,
+                "structured_source": element_type,
+            },
+        )
+
+    def _load_structured_chunks(self) -> list[TextChunk]:
+        """Load existing formula, statement and section-summary artifacts for retrieval.
+
+        These records remain derived text evidence. No new persistent vector index is
+        created, so rebuilding the knowledge base or rerunning OCR is unnecessary.
+        """
+
+        chunks: list[TextChunk] = []
+        enrichment_path = self.index_dir / "knowledge_document_enrichment.jsonl"
+        for row in self._load_jsonl(enrichment_path):
+            unit_id = str(row.get("knowledge_unit_id", ""))
+            for formula in row.get("formulas", []):
+                if not isinstance(formula, dict):
+                    continue
+                evidence_id = str(formula.get("id", ""))
+                chunk = self._structured_chunk(
+                    record_id=evidence_id or str(row.get("content_hash", "")),
+                    text=_compact(formula.get("knowledge")),
+                    element_type="formula_knowledge",
+                    evidence_ids=[evidence_id] if evidence_id else [],
+                    knowledge_unit_id=unit_id,
+                )
+                if chunk is not None:
+                    chunks.append(chunk)
+
+        statements_path = self.index_dir / "knowledge_statements.jsonl"
+        for row in self._load_jsonl(statements_path):
+            unit_id = str(row.get("knowledge_unit_id", ""))
+            for position, statement in enumerate(row.get("statements", []), 1):
+                if not isinstance(statement, dict):
+                    continue
+                evidence_text = _compact(statement.get("evidence_text"))
+                if (
+                    "？" in evidence_text
+                    or "?" in evidence_text
+                    or re.search(r"(?:试求|请选择|哪些|下列|判断正误|计算下列)", evidence_text)
+                ):
+                    continue
+                evidence_id = str(
+                    statement.get("evidence_source_id")
+                    or statement.get("evidence_id")
+                    or ""
+                )
+                tags = [
+                    _compact(statement.get("subject")),
+                    _compact(statement.get("object")),
+                ]
+                chunk = self._structured_chunk(
+                    record_id=f"{unit_id}:{position}:{evidence_id}",
+                    text=self._statement_text(statement),
+                    element_type="atomic_statement",
+                    evidence_ids=[evidence_id] if evidence_id else [],
+                    knowledge_unit_id=unit_id,
+                    knowledge_tags=[value for value in tags if value],
+                )
+                if chunk is not None:
+                    chunks.append(chunk)
+
+        for section_id, section in self.sections.items():
+            summary = _compact(section.get("summary"))
+            if not summary:
+                continue
+            claims = [
+                item for item in section.get("summary_claims", []) if isinstance(item, dict)
+            ]
+            evidence_ids = [
+                str(evidence_id)
+                for claim in claims
+                for evidence_id in claim.get("evidence_ids", [])
+                if str(evidence_id)
+            ]
+            chunk = self._structured_chunk(
+                record_id=section_id,
+                text=f"章节概要：{section.get('title') or section.get('name', '')}\n{summary}",
+                element_type="section_summary",
+                evidence_ids=evidence_ids,
+                section_id=section_id,
+                knowledge_tags=[_compact(section.get("title") or section.get("name"))],
+            )
+            if chunk is not None:
+                chunks.append(chunk)
+        return chunks
+
     @staticmethod
     def _search_text(chunk: TextChunk) -> str:
         return " ".join(filter(None, (
@@ -231,14 +425,27 @@ class Schema4Retriever:
             query_embedding.astype(np.float32), min(24, len(self.entity_items))
         )
         values: dict[str, float] = {entity_id: 1.0 for entity_id in exact}
+        semantic_values: dict[str, float] = {}
         for score, row in zip(scores[0], rows[0]):
             if row < 0 or row >= len(self.entity_items):
                 continue
             entity_id = str(self.entity_items[int(row)].get("entity_id", ""))
+            semantic_values[entity_id] = max(
+                semantic_values.get(entity_id, -1.0), float(score)
+            )
             if entity_id in self.entities and (float(score) >= 0.55 or entity_id in exact):
                 values[entity_id] = max(values.get(entity_id, 0.0), float(score))
-        ranked = sorted(values.items(), key=lambda item: item[1], reverse=True)[:limit]
-        return [{**self.entities[entity_id], "retrieval_score": score, "exact_match": entity_id in exact} for entity_id, score in ranked]
+        ranked = sorted(
+            values.items(),
+            key=lambda item: (item[1], semantic_values.get(item[0], -1.0)),
+            reverse=True,
+        )[:limit]
+        return [{
+            **self.entities[entity_id],
+            "retrieval_score": score,
+            "semantic_score": semantic_values.get(entity_id, 0.0),
+            "exact_match": entity_id in exact,
+        } for entity_id, score in ranked]
 
     def _chunk_candidates(
         self,
@@ -247,11 +454,37 @@ class Schema4Retriever:
         entity_values: list[dict[str, Any]],
         count: int = 30,
     ) -> list[tuple[int, RetrievalHit]]:
+        query_lower = query.casefold()
+        table_requested = any(marker in query_lower for marker in ("表格", "表中", "参数表", "对照表"))
+        formula_requested = any(
+            marker in query_lower
+            for marker in ("公式", "方程", "表达式", "怎么算", "计算", "推导")
+        ) or any(symbol in query for symbol in ("=", "≈", "≤", "≥"))
+        visual_requested = any(
+            marker in query_lower
+            for marker in ("图片", "图中", "示意图", "结构图", "电路图", "波形图")
+        )
         vector_scores, vector_rows = self.index.search(query_embedding, min(count, len(self.chunks)))
         vector_map = {int(row): float(score) for score, row in zip(vector_scores[0], vector_rows[0]) if row >= 0}
         bm25_values = self._bm25.get_scores(tokenize(query))
         bm25_rows = np.argsort(bm25_values)[::-1][: min(count, len(self.chunks))]
         bm25_map = {int(row): float(bm25_values[row]) for row in bm25_rows}
+        requested_element_types: set[str] = set()
+        if table_requested:
+            requested_element_types.add("table")
+        if formula_requested:
+            requested_element_types.add("formula")
+        if visual_requested:
+            requested_element_types.update({"image", "circuit"})
+        for element_type in requested_element_types:
+            type_rows = [
+                index for index, chunk in enumerate(self.chunks)
+                if chunk.element_type == element_type
+            ]
+            for row in sorted(
+                type_rows, key=lambda index: float(bm25_values[index]), reverse=True
+            )[: min(12, len(type_rows))]:
+                bm25_map[int(row)] = float(bm25_values[row])
         vector_norm = _normalize_scores(vector_map)
         bm25_norm = _normalize_scores(bm25_map)
         section_scores: dict[str, float] = {}
@@ -269,7 +502,17 @@ class Schema4Retriever:
             chunk = self.chunks[index]
             section_id = str((chunk.multimodal or {}).get("section_id", ""))
             graph_score = section_scores.get(section_id, 0.0)
-            score = 0.65 * vector_norm.get(index, 0.0) + 0.20 * bm25_norm.get(index, 0.0) + 0.15 * graph_score
+            evidence_type_boost = 0.12 * float(
+                (table_requested and chunk.element_type == "table")
+                or (formula_requested and chunk.element_type == "formula")
+                or (visual_requested and chunk.element_type in {"image", "circuit"})
+            )
+            score = (
+                0.65 * vector_norm.get(index, 0.0)
+                + 0.20 * bm25_norm.get(index, 0.0)
+                + 0.15 * graph_score
+                + evidence_type_boost
+            )
             evidence_ids = [str(value) for value in (chunk.multimodal or {}).get("evidence_ids", []) if str(value)]
             hits.append((index, RetrievalHit(
                 chunk=chunk,
@@ -282,6 +525,234 @@ class Schema4Retriever:
                 evidence_ids=evidence_ids,
                 matched_entity_ids=list(dict.fromkeys(section_entities.get(section_id, []))),
             )))
+        hits.sort(key=lambda item: item[1].score, reverse=True)
+        return hits
+
+    def _structured_candidates(
+        self,
+        query: str,
+        entity_values: list[dict[str, Any]],
+        content_section_scores: dict[str, float] | None = None,
+        count: int = 50,
+    ) -> list[tuple[int, RetrievalHit]]:
+        if not self.structured_chunks or self._structured_bm25 is None:
+            return []
+        expanded_query_tokens = tokenize(query)
+        for entity in entity_values[:8]:
+            expanded_query_tokens.extend(tokenize(" ".join(
+                str(value) for value in [entity.get("name"), *entity.get("aliases", [])]
+                if str(value).strip()
+            )))
+        expanded_query_tokens = list(dict.fromkeys(expanded_query_tokens))
+        raw_scores = self._structured_bm25.get_scores(expanded_query_tokens)
+        rows_by_type: dict[str, list[int]] = {}
+        for index, chunk in enumerate(self.structured_chunks):
+            rows_by_type.setdefault(chunk.element_type, []).append(index)
+        candidate_rows: set[int] = set()
+        for type_rows in rows_by_type.values():
+            ranked_type_rows = sorted(
+                type_rows, key=lambda index: float(raw_scores[index]), reverse=True
+            )
+            candidate_rows.update(ranked_type_rows[: min(count, len(ranked_type_rows))])
+        rows = sorted(
+            candidate_rows, key=lambda index: float(raw_scores[index]), reverse=True
+        )
+        bm25_map = {int(row): float(raw_scores[row]) for row in rows if raw_scores[row] > 0}
+        bm25_norm = _normalize_scores(bm25_map)
+        query_formula = _normalized_formula(query)
+        content_section_scores = content_section_scores or {}
+        formula_requested = any(
+            marker in query.casefold()
+            for marker in ("公式", "方程", "表达式", "怎么算", "计算", "推导", "等于")
+        ) or any(symbol in query for symbol in ("=", "≈", "≤", "≥"))
+        section_scores: dict[str, float] = {}
+        entity_terms: list[tuple[str, list[str], float]] = []
+        for entity in entity_values:
+            entity_score = float(entity.get("retrieval_score", 0.0))
+            names = [entity.get("name"), *entity.get("aliases", [])]
+            normalized_names = [
+                _compact(name).casefold() for name in names if _compact(name)
+            ]
+            if normalized_names:
+                entity_terms.append((str(entity.get("id", "")), normalized_names, entity_score))
+            for section_id in entity.get("section_ids", []):
+                section_scores[str(section_id)] = max(
+                    section_scores.get(str(section_id), 0.0), entity_score
+                )
+        result: list[tuple[int, RetrievalHit]] = []
+        for row in rows:
+            index = int(row)
+            chunk = self.structured_chunks[index]
+            metadata = chunk.multimodal or {}
+            section_id = str(metadata.get("section_id", ""))
+            text_lower = self._search_text(chunk).casefold()
+            matched_entities = [
+                (entity_id, entity_score)
+                for entity_id, names, entity_score in entity_terms
+                if any(name in text_lower for name in names)
+            ]
+            entity_score = max((score for _entity_id, score in matched_entities), default=0.0)
+            total_entity_weight = sum(score for _entity_id, _names, score in entity_terms)
+            entity_coverage = (
+                sum(score for _entity_id, score in matched_entities) / total_entity_weight
+                if total_entity_weight > 0
+                else 0.0
+            )
+            content_section_score = content_section_scores.get(section_id, 0.0)
+            graph_score = min(
+                1.0,
+                0.60 * entity_coverage
+                + 0.15 * section_scores.get(section_id, 0.0)
+                + 0.25 * content_section_score,
+            )
+            normalized_text = _normalized_formula(chunk.text)
+            formula_match = bool(
+                chunk.element_type == "formula_knowledge"
+                and len(query_formula) >= 4
+                and (
+                    query_formula in normalized_text
+                    or normalized_text in query_formula
+                )
+            )
+            exact_match = formula_match or entity_coverage >= 0.50
+            type_boost = (
+                0.16
+                if formula_requested and chunk.element_type == "formula_knowledge"
+                else 0.0
+            )
+            score = (
+                0.55 * bm25_norm.get(index, 0.0)
+                + 0.25 * float(exact_match)
+                + 0.20 * graph_score
+                + 0.18 * content_section_score
+                + type_boost
+            )
+            if score < 0.12:
+                continue
+            evidence_ids = [
+                str(value) for value in metadata.get("evidence_ids", []) if str(value)
+            ]
+            result.append((-(index + 1), RetrievalHit(
+                chunk=chunk,
+                score=score,
+                vector_score=entity_score,
+                bm25_score=bm25_map.get(index, 0.0),
+                rerank_score=score,
+                graph_score=graph_score,
+                section_id=section_id,
+                evidence_ids=evidence_ids,
+                matched_entity_ids=[entity_id for entity_id, _score in matched_entities],
+            )))
+        result.sort(key=lambda item: item[1].score, reverse=True)
+        return result
+
+    def _graph_candidates(
+        self,
+        entities: list[dict[str, Any]],
+        relationships: list[dict[str, Any]],
+    ) -> list[tuple[int, RetrievalHit]]:
+        hits: list[tuple[int, RetrievalHit]] = []
+        position = len(self.structured_chunks) + 1
+        for entity in entities[:8]:
+            evidence_ids = [str(value) for value in entity.get("evidence_ids", []) if str(value)]
+            if not evidence_ids:
+                continue
+            aliases = "、".join(str(value) for value in entity.get("aliases", []) if str(value))
+            text = "\n".join(filter(None, (
+                f"知识图谱实体：{entity.get('name', '')}",
+                f"别名：{aliases}" if aliases else "",
+                f"类型：{entity.get('entity_type', '')}" if entity.get("entity_type") else "",
+                _compact(entity.get("description") or entity.get("raw_description")),
+            )))
+            chunk = self._structured_chunk(
+                record_id=str(entity.get("id", "")),
+                text=text,
+                element_type="graph_entity",
+                evidence_ids=evidence_ids,
+                section_id=str(entity.get("section_id", "")),
+                knowledge_tags=[_compact(entity.get("name"))],
+            )
+            if chunk is None:
+                continue
+            score = (
+                0.50
+                + 0.25 * float(entity.get("retrieval_score", 0.0))
+                + 0.15 * max(0.0, float(entity.get("semantic_score", 0.0)))
+            )
+            hits.append((-(position), RetrievalHit(
+                chunk=chunk,
+                score=score,
+                vector_score=float(entity.get("retrieval_score", 0.0)),
+                bm25_score=0.0,
+                rerank_score=score,
+                graph_score=float(entity.get("retrieval_score", 0.0)),
+                section_id=str(entity.get("section_id", "")),
+                evidence_ids=evidence_ids,
+                matched_entity_ids=[str(entity.get("id", ""))],
+            )))
+            position += 1
+
+        for relation in relationships:
+            evidence_ids = [str(value) for value in relation.get("evidence_ids", []) if str(value)]
+            if not evidence_ids:
+                continue
+            source = self.entities.get(str(relation.get("source", "")), {})
+            target = self.entities.get(str(relation.get("target", "")), {})
+            text = " ".join(filter(None, (
+                _compact(source.get("name")),
+                _compact(relation.get("relation")),
+                _compact(target.get("name")),
+                _compact(relation.get("description")),
+            )))
+            chunk = self._structured_chunk(
+                record_id=str(relation.get("id", "")),
+                text=f"知识图谱关系：{text}",
+                element_type="graph_relation",
+                evidence_ids=evidence_ids,
+                section_id=str(source.get("section_id", "")),
+                knowledge_tags=[
+                    _compact(source.get("name")), _compact(target.get("name")),
+                ],
+            )
+            if chunk is None:
+                continue
+            score = max(0.35, float(relation.get("retrieval_score", 0.0)))
+            hits.append((-(position), RetrievalHit(
+                chunk=chunk,
+                score=score,
+                vector_score=0.0,
+                bm25_score=0.0,
+                rerank_score=score,
+                graph_score=score,
+                section_id=str(source.get("section_id", "")),
+                evidence_ids=evidence_ids,
+                matched_entity_ids=[
+                    str(relation.get("source", "")), str(relation.get("target", "")),
+                ],
+            )))
+            position += 1
+        hits.sort(key=lambda item: item[1].score, reverse=True)
+        return hits
+
+    def _combined_candidates(
+        self,
+        query: str,
+        query_embedding: np.ndarray,
+        entities: list[dict[str, Any]],
+        relationships: list[dict[str, Any]],
+    ) -> list[tuple[int, RetrievalHit]]:
+        chunk_hits = self._chunk_candidates(query, query_embedding, entities)
+        content_section_scores: dict[str, float] = {}
+        for _row, hit in chunk_hits[:20]:
+            if hit.section_id:
+                content_section_scores[hit.section_id] = max(
+                    content_section_scores.get(hit.section_id, 0.0), hit.score
+                )
+        hits = [
+            *chunk_hits,
+            *self._structured_candidates(query, entities, content_section_scores),
+            *self._graph_candidates(entities, relationships),
+        ]
         hits.sort(key=lambda item: item[1].score, reverse=True)
         return hits
 
@@ -323,12 +794,19 @@ class Schema4Retriever:
         return result
 
     def _relationship_candidates(
-        self, entities: list[dict[str, Any]], limit: int
+        self, entities: list[dict[str, Any]], limit: int, query: str = ""
     ) -> list[dict[str, Any]]:
         if limit <= 0:
             return []
         scores = {str(item["id"]): float(item.get("retrieval_score", 0.0)) for item in entities}
         matched_ids = set(scores)
+        query_tokens = tokenize(query)
+        for entity in entities[:8]:
+            query_tokens.extend(tokenize(" ".join(
+                str(value) for value in [entity.get("name"), *entity.get("aliases", [])]
+                if str(value).strip()
+            )))
+        query_token_set = set(query_tokens)
         ranked: list[tuple[float, dict[str, Any]]] = []
         for relation in self.relationships:
             source, target = str(relation.get("source", "")), str(relation.get("target", ""))
@@ -336,11 +814,26 @@ class Schema4Retriever:
             one = source in matched_ids or target in matched_ids
             if not one or (str(relation.get("relation", "")) == "关联" and not both):
                 continue
+            source_name = _compact(self.entities.get(source, {}).get("name"))
+            target_name = _compact(self.entities.get(target, {}).get("name"))
+            relation_tokens = set(tokenize(" ".join(filter(None, (
+                source_name,
+                _compact(relation.get("relation")),
+                target_name,
+                _compact(relation.get("description")),
+            )))))
+            lexical_relevance = (
+                len(query_token_set & relation_tokens) / max(1, len(query_token_set))
+                if query_token_set
+                else 0.0
+            )
+            query_relevance = 0.65 + 0.35 * lexical_relevance if query else 1.0
             score = (
                 (1.0 if both else 0.6)
                 * float(relation.get("strength", 0.0) or 0.0) / 10
                 * float(relation.get("confidence", 0.0) or 0.0)
                 * max(scores.get(source, 0.55), scores.get(target, 0.55))
+                * query_relevance
             )
             ranked.append((score, {**relation, "retrieval_score": round(score, 4)}))
         ranked.sort(key=lambda item: item[0], reverse=True)
@@ -382,7 +875,11 @@ class Schema4Retriever:
         for _index, hit in hits:
             chunk = hit.chunk
             evidence_key = "|".join(sorted(hit.evidence_ids or []))
-            key = evidence_key or str(chunk.content_hash or chunk.id)
+            key = (
+                f"{chunk.element_type}|{evidence_key}"
+                if evidence_key and chunk.element_type in STRUCTURED_EVIDENCE_TYPES
+                else evidence_key or str(chunk.content_hash or chunk.id)
+            )
             if key in seen:
                 continue
             seen.add(key)
@@ -390,6 +887,150 @@ class Schema4Retriever:
             if len(result) >= limit:
                 break
         return result
+
+    @classmethod
+    def _select_evidence_hits(
+        cls, hits: list[tuple[int, RetrievalHit]], limit: int, query: str = ""
+    ) -> list[RetrievalHit]:
+        if limit <= 0:
+            return []
+        deduplicated = cls._deduplicate_hits(hits, max(1, len(hits)))
+        structured = [
+            hit for hit in deduplicated if hit.chunk.element_type in STRUCTURED_EVIDENCE_TYPES
+        ]
+        content = [
+            hit for hit in deduplicated if hit.chunk.element_type not in STRUCTURED_EVIDENCE_TYPES
+        ]
+        structured_limit = min(len(structured), max(1, limit // 2))
+        content_limit = min(len(content), limit - structured_limit)
+        structured_groups: dict[str, list[RetrievalHit]] = {}
+        for hit in structured:
+            group = (
+                "knowledge_graph"
+                if hit.chunk.element_type in {"graph_entity", "graph_relation"}
+                else hit.chunk.element_type
+            )
+            structured_groups.setdefault(group, []).append(hit)
+        formula_requested = any(
+            marker in query.casefold()
+            for marker in ("公式", "方程", "表达式", "怎么算", "计算", "推导")
+        ) or any(symbol in query for symbol in ("=", "≈", "≤", "≥"))
+        section_summary_requested = any(
+            marker in query.casefold()
+            for marker in ("章节", "概要", "总结", "学习路线", "学习规划", "全书")
+        )
+        group_priority = {
+            "knowledge_graph": 0.08,
+            "atomic_statement": 0.12,
+            "formula_knowledge": 0.20 if formula_requested else 0.0,
+            "section_summary": 0.05 if section_summary_requested else -0.20,
+        }
+        group_heads = sorted(
+            (
+                (group, values[0])
+                for group, values in structured_groups.items()
+                if values
+            ),
+            key=lambda item: item[1].score + group_priority.get(item[0], 0.0),
+            reverse=True,
+        )
+        selected_structured = [hit for _group, hit in group_heads[:structured_limit]]
+        if (
+            formula_requested
+            and structured_limit
+            and not any(hit.chunk.element_type == "formula_knowledge" for hit in selected_structured)
+        ):
+            formula_hit = next(
+                (hit for hit in structured if hit.chunk.element_type == "formula_knowledge"),
+                None,
+            )
+            if formula_hit is not None:
+                if len(selected_structured) >= structured_limit:
+                    selected_structured[-1] = formula_hit
+                else:
+                    selected_structured.append(formula_hit)
+        if len(selected_structured) < structured_limit:
+            selected_structured_ids = {id(hit) for hit in selected_structured}
+            selected_structured.extend(
+                hit for hit in structured
+                if id(hit) not in selected_structured_ids
+            )
+            selected_structured = selected_structured[:structured_limit]
+        selected_content = content[:content_limit]
+
+        def ensure_content_type(requested: bool, element_types: set[str]) -> None:
+            nonlocal selected_content
+            if not requested or not content_limit or any(
+                hit.chunk.element_type in element_types for hit in selected_content
+            ):
+                return
+            candidate = next(
+                (hit for hit in content if hit.chunk.element_type in element_types),
+                None,
+            )
+            if candidate is None:
+                return
+            if len(selected_content) >= content_limit:
+                selected_content[-1] = candidate
+            else:
+                selected_content.append(candidate)
+
+        query_lower = query.casefold()
+        ensure_content_type(
+            any(marker in query_lower for marker in ("表格", "表中", "参数表", "对照表")),
+            {"table"},
+        )
+        ensure_content_type(formula_requested, {"formula"})
+        ensure_content_type(
+            any(marker in query_lower for marker in ("图片", "图中", "示意图", "结构图", "电路图", "波形图")),
+            {"image", "circuit"},
+        )
+        if formula_requested:
+            formula_evidence_ids = {
+                str(hit.chunk.parent_id or "")
+                for hit in selected_content
+                if hit.chunk.element_type == "formula" and str(hit.chunk.parent_id or "")
+            }
+            matching_formula_knowledge = next(
+                (
+                    hit for hit in structured
+                    if hit.chunk.element_type == "formula_knowledge"
+                    and formula_evidence_ids & set(hit.evidence_ids or [])
+                ),
+                None,
+            )
+            if matching_formula_knowledge is not None:
+                existing_formula_index = next(
+                    (
+                        index for index, hit in enumerate(selected_structured)
+                        if hit.chunk.element_type == "formula_knowledge"
+                    ),
+                    None,
+                )
+                if existing_formula_index is not None:
+                    selected_structured[existing_formula_index] = matching_formula_knowledge
+        selected = [*selected_structured, *selected_content]
+        selected_ids = {id(hit) for hit in selected}
+        for hit in deduplicated:
+            if len(selected) >= limit:
+                break
+            if id(hit) not in selected_ids:
+                selected.append(hit)
+                selected_ids.add(id(hit))
+        selected.sort(key=lambda item: item.score, reverse=True)
+        return selected[:limit]
+
+    def _encode_query(self, query: str) -> np.ndarray:
+        """Encode online retrieval queries on the local RTX GPU."""
+
+        return encode_texts(
+            self.embedding_model_path,
+            [query],
+            batch_size=1,
+            purpose="query",
+            device="cuda:0",
+            use_half=True,
+        )
 
     def retrieve(
         self,
@@ -410,17 +1051,18 @@ class Schema4Retriever:
         limits = dict(FEATURE_LIMITS[feature])
         if limit is not None and limits["sources"]:
             limits["sources"] = max(1, int(limit))
-        query_embedding = encode_texts(
-            self.embedding_model_path, [query], batch_size=1, purpose="query", device="cpu"
-        )
+        query_embedding = self._encode_query(query)
         entities = self._entity_candidates(query, query_embedding, max(12, limits["entities"]))
-        hits = self._chunk_candidates(query, query_embedding, entities)
+        relationships = self._relationship_candidates(
+            entities, max(8, limits["relationships"]), query
+        )
+        hits = self._combined_candidates(query, query_embedding, entities, relationships)
         sections = self._section_candidates(hits, entities, feature, limits["sections"])
         section_ids = {str(item.get("id", "")) for item in sections}
         entity_ids = {str(item.get("id", "")) for item in entities}
         facts = self._fact_candidates(query, section_ids, entity_ids, limits["facts"])
-        relationships = self._relationship_candidates(entities, limits["relationships"])
-        sources = self._deduplicate_hits(hits, limits["sources"])
+        relationships = relationships[: limits["relationships"]]
+        sources = self._select_evidence_hits(hits, limits["sources"], query)
         selected_entities = entities[: limits["entities"]]
         alignment_candidates: list[dict[str, Any]] = []
         if feature in {"mistake_alignment", "homework_alignment"}:
@@ -454,10 +1096,9 @@ class Schema4Retriever:
         query = _compact(query)
         if not query:
             return []
-        query_embedding = encode_texts(
-            self.embedding_model_path, [query], batch_size=1, purpose="query", device="cpu"
-        )
+        query_embedding = self._encode_query(query)
         entities = self._entity_candidates(query, query_embedding)
-        return self._deduplicate_hits(
-            self._chunk_candidates(query, query_embedding, entities), k
+        relationships = self._relationship_candidates(entities, 8, query)
+        return self._select_evidence_hits(
+            self._combined_candidates(query, query_embedding, entities, relationships), k, query
         )

@@ -474,6 +474,27 @@ def test_grounding_filter_keeps_direct_textbook_support_and_reports_partial_cove
     assert "积分器" in scope["missing_concepts"]
 
 
+def test_grounding_filter_accepts_grounded_structured_knowledge():
+    statement = _retrieval_hit(1)
+    statement.chunk.element_type = "atomic_statement"
+    statement.chunk.text = "负反馈 提高 增益稳定性"
+    statement.evidence_ids = ["ocr:book:p270:b13"]
+    statement.vector_score = 0.0
+    statement.bm25_score = 0.0
+    statement.rerank_score = 0.72
+    statement.graph_score = 0.8
+
+    hits, scope = _filter_grounding_hits(
+        "怎样改善放大电路性能",
+        [statement],
+        {},
+    )
+
+    assert hits == [statement]
+    assert scope["quality"] == "sufficient"
+    assert scope["graph_role"] == "grounded_structured_evidence"
+
+
 def test_streaming_suppresses_model_reference_list_and_emits_backend_list_once():
     class FakeCitationModel:
         model = "fake-citation-model"

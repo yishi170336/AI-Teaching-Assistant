@@ -611,7 +611,18 @@ def _filter_grounding_hits(
             and hit.vector_score > 0
             and hit.bm25_score > 0
         )
-        if direct_support or semantic_support or multi_signal_fallback:
+        structured_support = bool(
+            hit.chunk.element_type in {
+                "atomic_statement",
+                "formula_knowledge",
+                "section_summary",
+                "graph_entity",
+                "graph_relation",
+            }
+            and hit.evidence_ids
+            and hit.rerank_score >= 0.35
+        )
+        if direct_support or semantic_support or multi_signal_fallback or structured_support:
             approved.append(hit)
         elif hit.graph_score > 0:
             graph_only_rejected += 1
@@ -644,7 +655,7 @@ def _filter_grounding_hits(
         "accepted_count": len(approved),
         "rejected_count": max(0, len(hits) - len(approved)),
         "graph_only_rejected_count": graph_only_rejected,
-        "graph_role": "retrieval_expansion_only",
+        "graph_role": "grounded_structured_evidence",
     }
     return approved, scope
 
@@ -910,6 +921,18 @@ def _practice_circuit_diagram(state: AgentState) -> dict[str, Any] | None:
 
 
 def _source_context(hits: list[RetrievalHit]) -> str:
+    evidence_labels = {
+        "knowledge_unit": "章节正文Chunk",
+        "image": "课程图片总结",
+        "circuit": "课程图片总结",
+        "table": "表格内容与总结",
+        "formula": "Paddle公式文本",
+        "formula_knowledge": "公式知识整理",
+        "atomic_statement": "原子知识陈述",
+        "section_summary": "章节概要",
+        "graph_entity": "知识图谱实体",
+        "graph_relation": "知识图谱关系",
+    }
     blocks = []
     for index, hit in enumerate(hits, 1):
         chunk = hit.chunk
@@ -919,7 +942,8 @@ def _source_context(hits: list[RetrievalHit]) -> str:
             else f"第 {chunk.page_start}-{chunk.page_end} 页"
         ) if chunk.page_start else "题库"
         blocks.append(
-            f"[资料{index}] 来源={chunk.source}；{chunk.chapter}；{hit.display_section}；{page}\n{chunk.text}"
+            f"[资料{index}] 类型={evidence_labels.get(chunk.element_type, chunk.element_type or '课程内容')}；"
+            f"来源={chunk.source}；{chunk.chapter}；{hit.display_section}；{page}\n{chunk.text}"
         )
     return "\n\n".join(blocks)
 
@@ -3270,8 +3294,9 @@ class CircuitTutorEngine:
             "使用周期公式前必须区分线性积分斜坡与RC指数充放电；最后独立复算阈值、半周期、周期和频率是否采用同一参数比。"
             "数学公式只使用标准 LaTeX：行内 $...$，独立公式 $$...$$；不要混用 \\(...\\) 或裸反斜杠公式。"
             "不要展示思维链或内部推理，只给适合学生阅读的精炼解题过程。"
-            "知识图谱只用于概念对齐和扩展召回，不能单独证明任何课程结论；"
-            "每个[资料n]必须由对应教材正文直接支持，不能因为图谱命中或主题相近就引用。"
+            "课程资料由章节正文Chunk、图片/表格总结、公式知识整理、原子知识陈述和知识图谱共同组成。"
+            "知识图谱实体或关系只有绑定有效块级证据时才能支持结论；无证据的图谱命中不能引用。"
+            "每个[资料n]必须由对应结构化记录或课程内容Chunk直接支持，不能只因主题相近就引用。"
             "证据准入报告中的 missing_concepts 表示知识库尚未覆盖的部分，这些部分只能标为模型通用知识或题目条件推导。"
             "证据准入报告是内部控制信息，不得向学生复述字段名、JSON、计数或英文质量标签；"
             "只需用自然语言说明哪些知识点有教材依据、哪些没有。"
@@ -3780,7 +3805,8 @@ class CircuitTutorEngine:
                 if state.get("answer_task") == "explain_bound_answer" else ""
             )
             +
-            "还要逐项检查每个[资料n]所在结论是否被对应教材正文直接支持。知识图谱命中只表示概念对齐，不能替代正文证据。"
+            "还要逐项检查每个[资料n]所在结论是否被对应结构化记录或课程内容Chunk直接支持。"
+            "知识图谱实体或关系只有绑定有效块级证据时才能作为依据。"
             "只输出合法 JSON：passed(boolean)、issues(字符串数组)、independent_errors(字符串数组)、"
             "corrected_answer(字符串)、reference_check(consistent|conflict|unavailable)、"
             "reference_issues(字符串数组)、"
