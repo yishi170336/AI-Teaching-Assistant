@@ -2551,6 +2551,8 @@ function HierarchicalKnowledgeGraphView({
   }
   const handleNeo4jPointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (event.button !== 0) return
+    const target = event.target
+    if (target instanceof Element && target.closest('.neo4j-nodes > g, .neo4j-edges > g')) return
     graphDragRef.current = {
       pointerId: event.pointerId,
       clientX: event.clientX,
@@ -2601,7 +2603,9 @@ function HierarchicalKnowledgeGraphView({
     resetNeo4jViewport()
   }, [graph.knowledge_base])
 
-  const evidenceIds = selectedEdge?.evidence_ids || selected?.evidence_ids || []
+  const evidenceIds = selectedEdge?.evidence_ids
+    || (selected?.type === 'section' ? selected.evidence_ids : [])
+    || []
   useEffect(() => {
     let active = true
     setEvidence([])
@@ -2620,12 +2624,31 @@ function HierarchicalKnowledgeGraphView({
   const selectedSectionEntities = selected?.type === 'section'
     ? (selected.entities || []).map((id) => entityMap.get(id)).filter(Boolean) as KnowledgeGraphNode[]
     : []
-  const selectedEntitySections = selected?.type === 'entity'
-    ? (selected.section_ids || []).map((id) => sectionMap.get(id)).filter(Boolean) as KnowledgeGraphNode[]
-    : []
   const selectedNeighbors = selected?.type === 'entity'
     ? conceptEdges.filter((edge) => edge.source === selected.id || edge.target === selected.id).length
     : 0
+  const selectedEntityRelationships = selected?.type === 'entity'
+    ? conceptEdges
+      .filter((edge) => edge.source === selected.id || edge.target === selected.id)
+      .map((edge) => {
+        const outgoing = edge.source === selected.id
+        const neighborId = outgoing ? edge.target : edge.source
+        return {
+          edge,
+          outgoing,
+          neighbor: graphNodeMap.get(neighborId),
+          neighborId,
+        }
+      })
+      .sort((left, right) => (
+        (right.edge.strength || 0) - (left.edge.strength || 0)
+        || (right.edge.confidence || 0) - (left.edge.confidence || 0)
+        || String(left.edge.relation || '').localeCompare(String(right.edge.relation || ''), 'zh-CN')
+      ))
+    : []
+  const selectedEntityDescription = selected?.type === 'entity'
+    ? selected.description || selected.raw_description || '暂无描述。'
+    : ''
   const chapterOverviews = useMemo(() => {
     const chapterMetadata = new Map((graph.chapters || []).map((item) => [item.id, item as ChapterKnowledgeSummary & {
       summary?: string
@@ -2722,7 +2745,7 @@ function HierarchicalKnowledgeGraphView({
                     const radius = neo4jNodeRadius(node, graphNodes.length)
                     const queryMatch = matchedNodeIds.has(node.id)
                     const queryDim = Boolean(normalizedEntityQuery) && node.type === 'entity' && !queryMatch
-                    return <g key={node.id} className={`${node.type === 'section' ? 'section' : 'entity'} ${node.is_core ? 'core' : ''} ${selectedId === node.id ? 'selected' : ''} ${queryMatch ? 'query-match' : ''} ${queryDim ? 'query-dim' : ''}`} transform={`translate(${position.x} ${position.y})`} role="button" tabIndex={0} aria-pressed={selectedId === node.id} onClick={(event) => { event.stopPropagation(); if (suppressGraphClickRef.current) return; setSelectedId((current) => current === node.id ? '' : node.id); setSelectedEdgeKey('') }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedId((current) => current === node.id ? '' : node.id); setSelectedEdgeKey('') } }}><title>{graphNodeName(node)}{node.type === 'entity' && node.entity_type ? ` · ${node.entity_type}` : ''}</title><circle r={radius} style={{ fill: neo4jNodeColor(node) }} />{labelNodeIds.has(node.id) && <text y={radius + 11}>{graphNodeName(node).slice(0, node.type === 'section' ? 18 : 14)}</text>}</g>
+                    return <g key={node.id} className={`${node.type === 'section' ? 'section' : 'entity'} ${node.is_core ? 'core' : ''} ${selectedId === node.id ? 'selected' : ''} ${queryMatch ? 'query-match' : ''} ${queryDim ? 'query-dim' : ''}`} transform={`translate(${position.x} ${position.y})`} role="button" tabIndex={0} aria-pressed={selectedId === node.id} onClick={(event) => { event.stopPropagation(); if (suppressGraphClickRef.current) return; setSelectedId((current) => current === node.id ? '' : node.id); setSelectedEdgeKey('') }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedId((current) => current === node.id ? '' : node.id); setSelectedEdgeKey('') } }}><title>{graphNodeName(node)}{node.type === 'entity' && node.entity_type ? ` · ${node.entity_type}` : ''}</title><circle className="hit" r={Math.max(6, radius + 3.5)} /><circle className="node" r={radius} style={{ fill: neo4jNodeColor(node) }} />{labelNodeIds.has(node.id) && <text y={radius + 11}>{graphNodeName(node).slice(0, node.type === 'section' ? 18 : 14)}</text>}</g>
                   })}</g>
                 </g>
               </svg> : <div className="neo4j-empty"><Search size={26} /><strong>没有符合筛选条件的实体</strong><span>尝试切换实体类型或显示全部实体。</span></div>}
@@ -2731,8 +2754,8 @@ function HierarchicalKnowledgeGraphView({
           </main>
           <aside className="neo4j-inspector">
             <div className="neo4j-inspector-heading"><strong>属性</strong><span>{selectedEdge ? '关系' : selected ? '节点' : '选择项'}</span></div>
-            {selectedEdge ? <div className="neo4j-property-content"><span className="neo4j-object-type">{neo4jEdgeTypeLabel(selectedEdge.type)}</span><h2>{selectedEdge.relation || '关联'}</h2><dl><dt>起点</dt><dd><InlineMath content={graphNodeName(graphNodeMap.get(selectedEdge.source)) || selectedEdge.source} /></dd><dt>终点</dt><dd><InlineMath content={graphNodeName(graphNodeMap.get(selectedEdge.target)) || selectedEdge.target} /></dd><dt>强度</dt><dd>{selectedEdge.strength?.toFixed(1) || '—'}</dd><dt>置信度</dt><dd>{selectedEdge.confidence ? `${Math.round(selectedEdge.confidence * 100)}%` : '—'}</dd></dl>{selectedEdge.description && <p>{selectedEdge.description}</p>}</div> : selected?.type === 'section' ? <div className="neo4j-property-content"><span className="neo4j-object-type section">章节 · 第 {selected.level || 0} 级</span><h2><InlineMath content={selected.title || selected.name} /></h2><p>{selected.summary || '该节点仅用于补全目录结构，没有可摘要的直接正文。'}</p>{selectedSectionEntities.length > 0 && <div className="hierarchical-chip-list">{selectedSectionEntities.slice(0, 24).map((entity) => <button type="button" key={entity.id} className={entity.is_core ? 'core' : ''} onClick={() => { setView('entities'); setSelectedId(entity.id) }}>{entity.name}</button>)}</div>}</div> : selected?.type === 'entity' ? <div className="neo4j-property-content"><span className="neo4j-object-type" style={{ borderColor: neo4jEntityColor(selected.entity_type), color: neo4jEntityColor(selected.entity_type) }}>{selected.entity_type}{selected.is_core ? ' · 核心' : ''}</span><h2><InlineMath content={graphNodeName(selected)} /></h2><dl><dt>核心评分</dt><dd>{selected.core_score?.toFixed(2) || '—'}</dd><dt>关系数量</dt><dd>{selectedNeighbors}</dd><dt>章节数量</dt><dd>{selectedEntitySections.length}</dd></dl>{selected.aliases?.length ? <p><strong>别名：</strong>{selected.aliases.join('、')}</p> : null}{selected.raw_description && <><h3>原始描述</h3><p>{selected.raw_description}</p></>}{selected.description && <><h3>邻域增强描述</h3><p>{selected.description}</p></>}{selectedEntitySections.length > 0 && <p><strong>所属章节：</strong>{selectedEntitySections.map((section) => section.title || section.name).join('、')}</p>}</div> : <div className="neo4j-inspector-empty"><Network size={30} /><strong>选择图谱对象</strong><span>点击节点、关系或章节，查看属性和块级证据。</span></div>}
-            {(selected || selectedEdge) && <><div className="graph-evidence-title">证据块</div>{evidenceLoading && <div className="graph-evidence-state"><LoaderCircle className="spin" size={15} /> 正在读取证据…</div>}{!evidenceLoading && evidence.length > 0 && <div className="graph-evidence-list">{evidence.slice(0, 10).map((item) => <article key={item.id}><span>{item.modality} {item.page ? `· 第 ${item.page} 页` : ''}</span><p>{item.text || item.caption || item.description}</p><small>{item.id}</small></article>)}</div>}{!evidenceLoading && !evidence.length && <div className="graph-evidence-state">当前选择没有可展示的证据块。</div>}</>}
+            {selectedEdge ? <div className="neo4j-property-content"><span className="neo4j-object-type">{neo4jEdgeTypeLabel(selectedEdge.type)}</span><h2>{selectedEdge.relation || '关联'}</h2><dl><dt>起点</dt><dd><InlineMath content={graphNodeName(graphNodeMap.get(selectedEdge.source)) || selectedEdge.source} /></dd><dt>终点</dt><dd><InlineMath content={graphNodeName(graphNodeMap.get(selectedEdge.target)) || selectedEdge.target} /></dd><dt>强度</dt><dd>{selectedEdge.strength?.toFixed(1) || '—'}</dd><dt>置信度</dt><dd>{selectedEdge.confidence ? `${Math.round(selectedEdge.confidence * 100)}%` : '—'}</dd></dl>{selectedEdge.description && <p>{selectedEdge.description}</p>}</div> : selected?.type === 'section' ? <div className="neo4j-property-content"><span className="neo4j-object-type section">章节 · 第 {selected.level || 0} 级</span><h2><InlineMath content={selected.title || selected.name} /></h2><p>{selected.summary || '该节点仅用于补全目录结构，没有可摘要的直接正文。'}</p>{selectedSectionEntities.length > 0 && <div className="hierarchical-chip-list">{selectedSectionEntities.slice(0, 24).map((entity) => <button type="button" key={entity.id} className={entity.is_core ? 'core' : ''} onClick={() => { setView('entities'); setSelectedId(entity.id) }}>{entity.name}</button>)}</div>}</div> : selected?.type === 'entity' ? <div className="neo4j-property-content neo4j-entity-property-content"><h2><InlineMath content={graphNodeName(selected)} /></h2><section><h3>关系数量</h3><strong className="neo4j-relationship-count">{selectedNeighbors}</strong></section><section><h3>描述</h3><p>{selectedEntityDescription}</p></section><section><h3>关联关系</h3>{selectedEntityRelationships.length > 0 ? <div className="neo4j-related-list">{selectedEntityRelationships.map(({ edge, outgoing, neighbor, neighborId }, index) => <article key={`${edgeKey(edge)}\u0000${index}`}><div><span>{edge.relation || '关联'}</span><strong>{outgoing ? '→' : '←'} <InlineMath content={graphNodeName(neighbor) || neighborId} /></strong></div>{edge.description && <p>{edge.description}</p>}</article>)}</div> : <p>暂无关联关系。</p>}</section></div> : <div className="neo4j-inspector-empty"><Network size={30} /><strong>选择图谱对象</strong><span>点击节点、关系或章节，查看属性和块级证据。</span></div>}
+            {(selectedEdge || selected?.type === 'section') && <><div className="graph-evidence-title">证据块</div>{evidenceLoading && <div className="graph-evidence-state"><LoaderCircle className="spin" size={15} /> 正在读取证据…</div>}{!evidenceLoading && evidence.length > 0 && <div className="graph-evidence-list">{evidence.slice(0, 10).map((item) => <article key={item.id}><span>{item.modality} {item.page ? `· 第 ${item.page} 页` : ''}</span><p>{item.text || item.caption || item.description}</p><small>{item.id}</small></article>)}</div>}{!evidenceLoading && !evidence.length && <div className="graph-evidence-state">当前选择没有可展示的证据块。</div>}</>}
           </aside>
         </div>
       </div>
