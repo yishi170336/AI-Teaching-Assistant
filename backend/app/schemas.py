@@ -41,7 +41,7 @@ class ChatRequest(BaseModel):
     expected_context_revision: int | None = Field(default=None, ge=0)
     practice_session_id: str = Field(default="", max_length=96)
     model_provider: Literal["ollama", "deepseek", "qwen", "custom"] = "qwen"
-    model: str = Field(default="qwen3.7-plus", min_length=1, max_length=128)
+    model: str = Field(default="qwen3.7-flash", min_length=1, max_length=128)
     api_key: str = Field(default="", max_length=512)
     base_url: str = Field(default="", max_length=512)
 

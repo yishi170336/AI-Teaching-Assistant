@@ -16,7 +16,7 @@ QWEN_TEXT_MODELS = [
 
 QWEN_CHAT_DISABLED_REASONS: dict[str, str] = {}
 
-QWEN_TEXT_FALLBACK_MODEL = "qwen3.7-plus"
+QWEN_TEXT_FALLBACK_MODEL = "qwen3.7-flash"
 QWEN_VISUAL_TASK_MODEL = "qwen3.7-flash"
 LEGACY_VISION_MODEL_ALIASES = {
     "qwen3-vl-flash",

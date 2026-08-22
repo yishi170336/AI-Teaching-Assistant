@@ -40,7 +40,7 @@ class Settings:
     qwen_base_url: str = os.getenv(
         "QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
     )
-    qwen_chat_model: str = os.getenv("QWEN_CHAT_MODEL", "qwen3.7-plus")
+    qwen_chat_model: str = os.getenv("QWEN_CHAT_MODEL", "qwen3.7-flash")
     qwen_graph_model: str = os.getenv("QWEN_GRAPH_MODEL", "qwen3.7-flash")
     # Visual understanding is a server-owned capability.  It is deliberately
     # not user-selectable so chat, textbook enrichment and homework grading use

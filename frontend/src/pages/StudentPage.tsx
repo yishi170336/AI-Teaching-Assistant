@@ -274,7 +274,7 @@ const fallbackModelCatalog: ModelCatalog = {
         { value: 'qwen3.7-plus', label: 'Qwen3.7-Plus' },
         { value: 'qwen3.7-max', label: 'Qwen3.7-Max' },
       ],
-      default_model: 'qwen3.7-plus',
+      default_model: 'qwen3.7-flash',
       base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       requires_api_key: true,
       configured: false,
@@ -572,7 +572,7 @@ function Welcome({
           <span className="circuit-chip"><BrainCircuit size={28} /></span>
         </div>
         <div className="hero-copy">
-          <h1>你好，今天想弄懂哪一道电路题？</h1>
+          <h1>多智能体电路助教平台</h1>
         </div>
       </div>
       <TodayAgenda items={todaySchedule} onOpen={onOpenSchedule} onToggle={onToggleSchedule} />
@@ -588,12 +588,6 @@ function Welcome({
             <ArrowUp className="quick-arrow" size={16} />
           </button>
         ))}
-      </div>
-      <div className="ability-row">
-        <span><Search size={15} /> 混合检索</span>
-        <span><Bot size={15} /> 模型推理解答</span>
-        <span><Check size={15} /> 答案自动验算</span>
-        <span><FileText size={15} /> 来源可追溯</span>
       </div>
     </div>
   )
@@ -729,7 +723,6 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
   const activeCitedSources = useChatStore((state) => state.activeCitedSources)
   const activeMessageId = useChatStore((state) => state.activeMessageId)
   const knowledgeBase = useChatStore((state) => state.knowledgeBase)
-  const modelProvider = useChatStore((state) => state.modelConfig.provider)
   const messages = useChatStore((state) => state.messages)
   const activeAssistant = messages.find((item) => item.id === activeMessageId)
     || [...messages].reverse().find((item) => item.role === 'assistant')
@@ -829,10 +822,6 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
           <span>添加教材 / 新建知识库</span>
           <ChevronRight size={15} />
         </button>
-        <div className="privacy-note">
-          <span className={`privacy-dot ${modelProvider === 'ollama' ? '' : 'cloud'}`} />
-          {modelProvider === 'ollama' ? '资料与模型推理均保留在本机' : '提问内容将发送至通义千问 API'}
-        </div>
       </div>
     </aside>
   )
@@ -2700,7 +2689,7 @@ function HierarchicalKnowledgeGraphView({
           <aside className="neo4j-database-panel">
             <div className="neo4j-panel-title"><Database size={17} /><div><strong>课程知识图谱</strong><span>已连接</span></div></div>
             <section><h2>节点 <small>{graph.stats.nodes}</small></h2><button type="button" className="active"><i style={{ background: '#68BDF6' }} />知识实体 <b>{graph.stats.entities || allEntities.length}</b></button><button type="button"><i style={{ background: '#A5ABB6' }} />章节 <b>{graph.stats.sections || sections.length}</b></button></section>
-            <section className="neo4j-label-list"><h2>节点类型</h2>{entityTypeCounts.map(([label, count]) => <button type="button" className={entityType === label ? 'active' : ''} key={label} onClick={() => { setEntityType(entityType === label ? 'all' : label); setView('entities'); resetNeo4jViewport() }}><i style={{ background: neo4jEntityColor(label) }} />{label}<b>{count}</b></button>)}</section>
+            <section className="neo4j-label-list"><h2>节点类型</h2><button type="button" className={entityType === 'all' ? 'active' : ''} aria-pressed={entityType === 'all'} onClick={() => { setEntityType('all'); setView('entities'); resetNeo4jViewport() }}><i style={{ background: '#4C8EDA' }} />全部类型<b>{allEntities.length}</b></button>{entityTypeCounts.map(([label, count]) => <button type="button" className={entityType === label ? 'active' : ''} aria-pressed={entityType === label} key={label} onClick={() => { setEntityType(entityType === label ? 'all' : label); setView('entities'); resetNeo4jViewport() }}><i style={{ background: neo4jEntityColor(label) }} />{label}<b>{count}</b></button>)}</section>
             <section><h2>关系</h2><button type="button"><span className="neo4j-rel-chip">概念关系</span><b>{conceptEdges.length}</b></button><button type="button"><span className="neo4j-rel-chip">实体归属</span><b>{graph.edges.filter((edge) => edge.type === 'entity_section').length}</b></button><button type="button"><span className="neo4j-rel-chip">章节层级</span><b>{graph.edges.filter((edge) => edge.type === 'parent_child').length}</b></button></section>
           </aside>
           <main className="neo4j-result-panel">
@@ -2733,7 +2722,7 @@ function HierarchicalKnowledgeGraphView({
                     const radius = neo4jNodeRadius(node, graphNodes.length)
                     const queryMatch = matchedNodeIds.has(node.id)
                     const queryDim = Boolean(normalizedEntityQuery) && node.type === 'entity' && !queryMatch
-                    return <g key={node.id} className={`${node.type === 'section' ? 'section' : 'entity'} ${node.is_core ? 'core' : ''} ${selectedId === node.id ? 'selected' : ''} ${queryMatch ? 'query-match' : ''} ${queryDim ? 'query-dim' : ''}`} transform={`translate(${position.x} ${position.y})`} role="button" tabIndex={0} onClick={(event) => { event.stopPropagation(); if (suppressGraphClickRef.current) return; setSelectedId(node.id); setSelectedEdgeKey('') }} onKeyDown={(event) => { if (event.key === 'Enter') { setSelectedId(node.id); setSelectedEdgeKey('') } }}><title>{graphNodeName(node)}{node.type === 'entity' && node.entity_type ? ` · ${node.entity_type}` : ''}</title><circle r={radius} style={{ fill: neo4jNodeColor(node) }} />{labelNodeIds.has(node.id) && <text y={radius + 11}>{graphNodeName(node).slice(0, node.type === 'section' ? 18 : 14)}</text>}</g>
+                    return <g key={node.id} className={`${node.type === 'section' ? 'section' : 'entity'} ${node.is_core ? 'core' : ''} ${selectedId === node.id ? 'selected' : ''} ${queryMatch ? 'query-match' : ''} ${queryDim ? 'query-dim' : ''}`} transform={`translate(${position.x} ${position.y})`} role="button" tabIndex={0} aria-pressed={selectedId === node.id} onClick={(event) => { event.stopPropagation(); if (suppressGraphClickRef.current) return; setSelectedId((current) => current === node.id ? '' : node.id); setSelectedEdgeKey('') }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedId((current) => current === node.id ? '' : node.id); setSelectedEdgeKey('') } }}><title>{graphNodeName(node)}{node.type === 'entity' && node.entity_type ? ` · ${node.entity_type}` : ''}</title><circle r={radius} style={{ fill: neo4jNodeColor(node) }} />{labelNodeIds.has(node.id) && <text y={radius + 11}>{graphNodeName(node).slice(0, node.type === 'section' ? 18 : 14)}</text>}</g>
                   })}</g>
                 </g>
               </svg> : <div className="neo4j-empty"><Search size={26} /><strong>没有符合筛选条件的实体</strong><span>尝试切换实体类型或显示全部实体。</span></div>}
@@ -4053,15 +4042,6 @@ function QuestionBankView({
             {selectedBank.processing_error ? (
               <div className="homework-detail-error"><AlertTriangle size={18} /><div><strong>题库识别未完成</strong><span>{selectedBank.processing_error}</span></div></div>
             ) : null}
-            {selectedBank.processing_warnings?.length ? (
-              <div className="homework-detail-error">
-                <AlertTriangle size={18} />
-                <div>
-                  <strong>已保留可用题目，部分内容需要核对</strong>
-                  <span>{selectedBank.processing_warnings.slice(0, 4).join('；')}</span>
-                </div>
-              </div>
-            ) : null}
             {detailLoading && !selectedBankDetail ? (
               <div className="student-bank-detail-loading">
                 <LoaderCircle className="spin" size={24} />
@@ -4544,13 +4524,13 @@ function ScheduleView({
   return (
     <section className="feature-view schedule-view">
       <div className="feature-heading schedule-feature-heading">
-        <div><span>STUDY PLANNER</span><h1>学习日历</h1><p>把考试、复习和校园活动放进日历，让每一天都心中有数。</p></div>
+        <div><span>STUDY PLANNER</span><h1>学习日历</h1></div>
         <Button type="primary" icon={<Plus size={16} />} onClick={() => openAdd()}>添加安排</Button>
       </div>
       <div className="schedule-overview">
         <div className="schedule-overview-copy">
           <span className="schedule-overview-icon"><CalendarCheck2 size={24} /></span>
-          <div><small>本月计划</small><strong>{monthItems.length ? `已经安排 ${monthItems.length} 件事` : '从一个小目标开始'}</strong><p>{monthPending ? `还有 ${monthPending} 项等待完成，按自己的节奏一步步来。` : monthItems.length ? '本月安排已全部完成，做得很好。' : '点击任意日期，即可添加考试、活动或学习任务。'}</p></div>
+          <div><strong>本月计划</strong></div>
         </div>
         <div className="schedule-overview-progress">
           <strong>{monthItems.length ? Math.round(((monthItems.length - monthPending) / monthItems.length) * 100) : 0}<small>%</small></strong>

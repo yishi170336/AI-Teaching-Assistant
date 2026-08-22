@@ -24,7 +24,7 @@ from backend.app.services.model_catalog import (
 def test_chat_request_defaults_to_qwen():
     request = ChatRequest(session_id="student-demo", message="测试")
     assert request.model_provider == "qwen"
-    assert request.model == "qwen3.7-plus"
+    assert request.model == "qwen3.7-flash"
 
 
 def test_question_summary_keeps_question_figure_urls_for_chat_rendering():
@@ -242,7 +242,7 @@ def test_models_endpoint_does_not_expose_visual_model_options(monkeypatch):
 
     assert [item["value"] for item in qwen["text_model_options"]] == QWEN_TEXT_MODELS
     assert "vision_model_options" not in qwen
-    assert qwen["default_model"] == "qwen3.7-plus"
+    assert qwen["default_model"] == "qwen3.7-flash"
     assert "default_vision_model" not in qwen
     assert catalog["ocr"]["default_provider"] == "local"
     assert catalog["ocr"]["model"] == "PaddleOCR-VL-1.6"

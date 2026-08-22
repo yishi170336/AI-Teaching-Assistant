@@ -49,7 +49,7 @@ const modelConfigKey = 'circuitmind-model-config'
 const ocrModelConfigKey = 'circuitmind-ocr-model-config'
 const defaultKnowledgeBaseKey = 'circuitmind-default-knowledge-base'
 export const CHAT_MODEL_PROVIDER: ModelProviderId = 'qwen'
-export const CHAT_MODEL = 'qwen3.7-plus'
+export const CHAT_MODEL = 'qwen3.7-flash'
 const QWEN_TEXT_MODELS = ['qwen3.7-flash', 'qwen3.7-plus', 'qwen3.7-max'] as const
 
 const defaultModelConfig: ModelConfig = {
@@ -115,7 +115,14 @@ function getStudentId() {
 function getModelConfig(): ModelConfig {
   try {
     const stored = JSON.parse(localStorage.getItem(modelConfigKey) || '{}')
-    const config = normalizedModelConfig(stored)
+    const previous = normalizedModelConfig(stored)
+    const config = {
+      ...defaultModelConfig,
+      apiKey: previous.provider === 'qwen' ? previous.apiKey : '',
+      baseUrl: previous.provider === 'qwen' && previous.baseUrl
+        ? previous.baseUrl
+        : defaultModelConfig.baseUrl,
+    }
     localStorage.setItem(modelConfigKey, JSON.stringify(config))
     return config
   } catch {

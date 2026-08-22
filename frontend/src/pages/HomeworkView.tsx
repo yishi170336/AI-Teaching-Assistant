@@ -437,7 +437,6 @@ export default function HomeworkView({
         <div className="student-homework-hero-copy">
           <span><Sparkles size={14} /> ASSIGNMENTS</span>
           <h1>我的作业</h1>
-          <p>查看老师发送的结构化作业内容，完成后拍照提交答案。</p>
         </div>
         <div className="student-homework-progress">
           <div><strong>{progress.completed}</strong><small> / {progress.total}</small></div>
