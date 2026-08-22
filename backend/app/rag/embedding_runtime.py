@@ -15,6 +15,25 @@ QWEN3_QUERY_PROMPT = (
     "Instruct: Given a Chinese analog-electronics question, retrieve relevant "
     "textbook passages that answer the question\nQuery:"
 )
+DEFAULT_BUILD_GPU_MEMORY_LIMIT_MIB = 5120
+
+
+def get_build_gpu_memory_limit_mib(torch_module: Any | None = None) -> int:
+    """Reserve roughly 1 GiB of VRAM for the OS and display workloads."""
+
+    try:
+        if torch_module is None:
+            import torch
+
+            torch_module = torch
+        if not torch_module.cuda.is_available():
+            return DEFAULT_BUILD_GPU_MEMORY_LIMIT_MIB
+        total_mib = int(
+            torch_module.cuda.get_device_properties("cuda:0").total_memory / 1024**2
+        )
+        return max(1024, total_mib - 1024)
+    except Exception:
+        return DEFAULT_BUILD_GPU_MEMORY_LIMIT_MIB
 
 
 def _key(model_path: Path, device: str = "cpu") -> str:

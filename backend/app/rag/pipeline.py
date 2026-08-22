@@ -18,7 +18,11 @@ from openpyxl import load_workbook
 
 from backend.app.config import settings
 from backend.app.rag.models import PageDocument, TextChunk
-from backend.app.rag.embedding_runtime import encode_texts, release_embedding_model
+from backend.app.rag.embedding_runtime import (
+    encode_texts,
+    get_build_gpu_memory_limit_mib,
+    release_embedding_model,
+)
 from backend.app.rag.hierarchical_graph import (
     SCHEMA_VERSION as HIERARCHICAL_GRAPH_SCHEMA_VERSION,
     build_hierarchical_summary_entity_graph,
@@ -982,11 +986,13 @@ def _encode_build_embeddings(
     """Encode ingestion vectors on the GPU, with an explicit audited fallback."""
 
     values = list(texts)
+    memory_limit_mib = get_build_gpu_memory_limit_mib()
     audit: dict[str, Any] = {
         "requested_device": "cuda:0",
         "device": "cuda:0",
         "fp16": True,
         "batch_size": 4,
+        "memory_limit_mib": memory_limit_mib,
     }
     torch_module: Any | None = None
     try:
@@ -994,6 +1000,8 @@ def _encode_build_embeddings(
 
         torch_module = torch
         if torch.cuda.is_available():
+            memory_limit_mib = get_build_gpu_memory_limit_mib(torch)
+            audit["memory_limit_mib"] = memory_limit_mib
             torch.cuda.reset_peak_memory_stats()
     except Exception:
         torch_module = None
@@ -1017,10 +1025,10 @@ def _encode_build_embeddings(
                 "peak_allocated_mib": peak_allocated,
                 "peak_reserved_mib": peak_reserved,
             })
-            if peak_reserved > 3072:
+            if peak_reserved > memory_limit_mib:
                 raise RuntimeError(
                     "Qwen3-Embedding GPU 峰值保留显存 "
-                    f"{peak_reserved} MiB 超过 3072 MiB"
+                    f"{peak_reserved} MiB 超过 {memory_limit_mib} MiB"
                 )
     except Exception as exc:
         if torch_module is not None and torch_module.cuda.is_available():

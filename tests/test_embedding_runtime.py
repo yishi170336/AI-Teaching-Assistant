@@ -9,8 +9,24 @@ import numpy as np
 
 from backend.app.rag.embedding_runtime import (
     encode_texts,
+    get_build_gpu_memory_limit_mib,
     reset_embedding_runtime_for_tests,
 )
+
+
+def test_build_gpu_memory_limit_reserves_one_gib_on_six_gib_card():
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def get_device_properties(_device):
+            return types.SimpleNamespace(total_memory=6 * 1024**3)
+
+    fake_torch = types.SimpleNamespace(cuda=FakeCuda())
+
+    assert get_build_gpu_memory_limit_mib(fake_torch) == 5120
 
 
 def test_embedding_checkpoint_is_initialized_once_across_concurrent_retrievers(tmp_path, monkeypatch):

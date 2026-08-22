@@ -12,7 +12,11 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from backend.app.rag.embedding_runtime import encode_texts, release_embedding_model
+from backend.app.rag.embedding_runtime import (
+    encode_texts,
+    get_build_gpu_memory_limit_mib,
+    release_embedding_model,
+)
 from backend.app.rag.knowledge_document import (
     KnowledgeUnit,
     compile_knowledge_document,
@@ -1474,13 +1478,19 @@ def embed_entities(
             "device": "none", "fallback_reason": "没有实体"
         }
     texts = [entity_embedding_text(item) for item in entities]
-    audit: dict[str, Any] = {"requested_device": "cuda:0", "device": "cuda:0", "fp16": True}
+    audit: dict[str, Any] = {
+        "requested_device": "cuda:0",
+        "device": "cuda:0",
+        "fp16": True,
+        "memory_limit_mib": get_build_gpu_memory_limit_mib(),
+    }
     torch_module: Any | None = None
     try:
         import torch
 
         torch_module = torch
         if torch.cuda.is_available():
+            audit["memory_limit_mib"] = get_build_gpu_memory_limit_mib(torch)
             torch.cuda.reset_peak_memory_stats()
     except Exception:
         torch_module = None
@@ -2448,11 +2458,13 @@ def build_hierarchical_summary_entity_graph(
         for runtime in (initial_runtime, final_runtime):
             if (
                 str(runtime.get("device", "")).startswith("cuda")
-                and float(runtime.get("peak_reserved_mib", 0.0) or 0.0) > 3072
+                and float(runtime.get("peak_reserved_mib", 0.0) or 0.0)
+                > float(runtime.get("memory_limit_mib", 5120) or 5120)
             ):
                 raise RuntimeError(
                     "Qwen3-Embedding GPU 显存质量门禁失败：进程峰值保留显存 "
-                    f"{runtime['peak_reserved_mib']} MiB 超过 3072 MiB"
+                    f"{runtime['peak_reserved_mib']} MiB 超过 "
+                    f"{runtime['memory_limit_mib']} MiB"
                 )
     finally:
         # Paddle was already closed before graph construction. Release the Qwen
