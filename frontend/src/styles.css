@@ -356,6 +356,44 @@ button { color: inherit; }
 .source-usage-summary strong { color: #18766d; font-size: 9px; }
 .source-usage-summary.uncited strong { color: #a45b2c; }
 .source-list { flex: 1; min-height: 0; margin-top: 15px; padding-right: 3px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #d0dcd9 transparent; }
+.retrieval-result-list { display: flex; flex-direction: column; gap: 13px; }
+.retrieval-result-group { display: grid; gap: 7px; }
+.retrieval-result-group > h3 { display: flex; align-items: center; gap: 5px; margin: 0 2px 2px; color: #476d69; font-size: 9px; font-weight: 800; }
+.retrieval-result-group > h3 span { margin-left: auto; padding: 1px 5px; color: #6f8885; background: #edf4f2; border-radius: 8px; font-size: 8px; }
+.retrieval-loading { display: flex; align-items: center; gap: 6px; padding: 11px; color: #81928f; background: #f6f9f8; border: 1px dashed #dbe5e2; border-radius: 9px; font-size: 9px; }
+.retrieval-result-card, .retrieval-entity-card { overflow: hidden; background: #fff; border: 1px solid #dfe8e5; border-radius: 10px; box-shadow: 0 3px 12px rgba(33,64,61,.025); }
+.retrieval-result-card { padding: 10px; }
+.retrieval-result-card > header { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
+.retrieval-result-card > header > span { display: inline-flex; align-items: center; gap: 4px; color: #2f8078; font-size: 8px; font-weight: 800; }
+.retrieval-result-card > header > div { display: inline-flex; align-items: center; gap: 5px; }
+.retrieval-result-card > header b { padding: 2px 5px; color: #fff; background: #19786f; border-radius: 8px; font-size: 7px; }
+.retrieval-result-card > header strong { color: #6a8e89; font-size: 8px; }
+.retrieval-result-content { margin-top: 8px; color: #526d6a; font-size: 9px; line-height: 1.6; overflow-wrap: anywhere; }
+.retrieval-result-content .math-markdown, .retrieval-result-content .math-markdown p { margin: 0; font-size: inherit; line-height: inherit; }
+.retrieval-result-card > footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; padding-top: 7px; color: #8a9c99; border-top: 1px dashed #e2e9e7; font-size: 8px; }
+.retrieval-result-card > footer > :first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.retrieval-result-card > footer small { max-width: 118px; overflow: hidden; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.retrieval-entity-card > button { display: grid; width: 100%; grid-template-columns: 27px minmax(0, 1fr) auto 14px; align-items: center; gap: 7px; padding: 9px; color: #41625f; cursor: pointer; background: transparent; border: 0; text-align: left; }
+.retrieval-entity-card > button:hover { background: #f3f8f6; }
+.retrieval-entity-card > button > span { display: grid; width: 27px; height: 27px; place-items: center; color: #fff; border-radius: 50%; }
+.retrieval-entity-card > button > div { min-width: 0; display: flex; flex-direction: column; }
+.retrieval-entity-card > button strong { overflow: hidden; color: #294b49; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.retrieval-entity-card > button small { margin-top: 2px; color: #829693; font-size: 8px; }
+.retrieval-entity-card > button > b { color: #5d8983; font-size: 8px; }
+.retrieval-entity-card > button > svg { color: #79918e; transition: transform .16s ease; }
+.retrieval-entity-card.expanded > button > svg { transform: rotate(180deg); }
+.retrieval-entity-detail { padding: 0 10px 10px; border-top: 1px solid #e7eeec; }
+.retrieval-entity-detail > h4 { margin: 10px 0 5px; color: #5d7774; font-size: 8px; }
+.retrieval-entity-detail > .math-markdown { color: #536d6a; font-size: 9px; line-height: 1.6; }
+.retrieval-entity-detail > .math-markdown p { margin: 0; }
+.retrieval-relationship-list { display: grid; gap: 5px; }
+.retrieval-relationship-list > article { padding: 7px; background: #f6f9f8; border-radius: 6px; }
+.retrieval-relationship-list article > div { display: flex; align-items: center; gap: 5px; }
+.retrieval-relationship-list article > div span { padding: 2px 4px; color: #0b788c; background: #e0f1f4; border-radius: 3px; font-size: 7px; font-weight: 800; }
+.retrieval-relationship-list article > div strong { color: #405c59; font-size: 8px; }
+.retrieval-relationship-list .math-markdown { margin-top: 4px; color: #718581; font-size: 8px; line-height: 1.5; }
+.retrieval-relationship-list .math-markdown p { margin: 0; }
+.paddle-evidence-card > header > span { color: #4d7f9a; }
 .source-card { padding: 12px; margin-bottom: 9px; background: #fff; border: 1px solid #e0e8e5; border-radius: 11px; box-shadow: 0 3px 12px rgba(33,64,61,.025); }
 .source-card-openable { cursor: pointer; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
 .source-card-openable:hover, .source-card-openable:focus-visible { border-color: #79bbb2; outline: none; box-shadow: 0 8px 22px rgba(18,100,95,.1); transform: translateY(-1px); }

@@ -62,7 +62,6 @@ import {
   Download,
   FileText,
   Eye,
-  ExternalLink,
   FileCheck2,
   GraduationCap,
   HelpCircle,
@@ -135,7 +134,6 @@ import {
   fetchSessions,
   HomeworkQuestion,
   KBStatus,
-  knowledgeBaseSourceUrl,
   KnowledgeExplanation,
   KnowledgeGraph,
   KnowledgeGraphEdge,
@@ -593,127 +591,86 @@ function Welcome({
   )
 }
 
-function SourceCard({
+function retrievalPageLabel(source: SourceInfo) {
+  if (!source.page_start) return '结构化知识'
+  return source.page_start === source.page_end
+    ? `第 ${source.page_start} 页`
+    : `第 ${source.page_start}–${source.page_end} 页`
+}
+
+function StructuredRetrievalCard({
   source,
-  index,
-  isCited,
-  fallbackKnowledgeBase,
+  label,
+  cited,
 }: {
   source: SourceInfo
-  index: number
-  isCited: boolean
-  fallbackKnowledgeBase: string
+  label: string
+  cited: boolean
 }) {
-  const [excerptExpanded, setExcerptExpanded] = useState(false)
-  const [tagsExpanded, setTagsExpanded] = useState(false)
-  const page = source.page_start
-    ? source.page_start === source.page_end
-      ? `第 ${source.page_start} 页`
-      : `第 ${source.page_start}–${source.page_end} 页`
-    : '结构化题库'
-  const sourceTitle = source.section || source.chapter || source.source
-  const allTags = source.knowledge_tags || []
-  const visibleTags = tagsExpanded ? allTags : allTags.slice(0, 4)
-  const hiddenTagCount = Math.max(0, allTags.length - visibleTags.length)
-  const openSource = () => {
-    const knowledgeBase = source.knowledge_base || fallbackKnowledgeBase
-    if (!knowledgeBase) return
-    window.open(
-      knowledgeBaseSourceUrl(knowledgeBase, source.source, source.page_start),
-      '_blank',
-      'noopener,noreferrer',
-    )
-  }
   return (
-    <article
-      className="source-card source-card-openable"
-      role="link"
-      tabIndex={0}
-      aria-label={`查看完整资料 ${source.source}`}
-      onClick={openSource}
-      onKeyDown={(event) => {
-        if (event.target !== event.currentTarget) return
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault()
-          openSource()
-        }
-      }}
-    >
-      <div className="source-card-top">
-        <div className="source-labels">
-          <span className={`source-type ${source.doc_type === 'question' ? 'question' : ''}`}>
-            {source.doc_type === 'question' ? <WandSparkles size={13} /> : <FileText size={13} />}
-            资料 {index + 1}
-          </span>
-          {isCited && <span className="source-cited-badge">已引用</span>}
-        </div>
-        <span className="source-score">
-          {source.historical ? '历史记录' : `${Math.round(source.score * 100)}%`}
-        </span>
+    <article className="retrieval-result-card">
+      <header>
+        <span><FileText size={12} />{label}</span>
+        <div>{cited && <b>已引用</b>}<strong>{Math.round(source.score * 100)}%</strong></div>
+      </header>
+      <div className="retrieval-result-content">
+        <MathMarkdown content={source.excerpt || '暂无内容。'} />
       </div>
-      <strong title={sourceTitle}><InlineMath content={sourceTitle} /></strong>
-      <p className="source-name" title={source.source}>{source.source}</p>
-      {source.excerpt && (
-        <>
-          <div
-            className={`source-excerpt ${excerptExpanded ? 'is-expanded' : ''}`}
-            title={excerptExpanded ? undefined : source.excerpt}
-          >
-            <MathMarkdown content={source.excerpt} />
-          </div>
-          {source.excerpt.length > 120 && (
-            <button
-              type="button"
-              className="source-content-toggle"
-              aria-expanded={excerptExpanded}
-              onClick={(event) => {
-                event.stopPropagation()
-                setExcerptExpanded((expanded) => !expanded)
-              }}
-              onKeyDown={(event) => event.stopPropagation()}
-            >
-              {excerptExpanded ? '收起摘要' : '展开摘要'}
-              <ChevronDown size={11} />
-            </button>
-          )}
-        </>
-      )}
-      {allTags.length ? (
-        <div className="source-tags">
-          {visibleTags.map((tag) => <span key={tag} title={tag}><InlineMath content={tag} /></span>)}
-          {(hiddenTagCount > 0 || tagsExpanded) && (
-            <button
-              type="button"
-              aria-expanded={tagsExpanded}
-              onClick={(event) => {
-                event.stopPropagation()
-                setTagsExpanded((expanded) => !expanded)
-              }}
-              onKeyDown={(event) => event.stopPropagation()}
-            >
-              {tagsExpanded ? '收起' : `+${hiddenTagCount}`}
-            </button>
-          )}
-        </div>
-      ) : null}
-      {!source.historical && (
-        <div className="source-score-grid" aria-label="检索评分组成">
-          {[
-            ['向量', source.vector_score],
-            ['关键词', source.bm25_score],
-            ['图谱', source.graph_score],
-          ].map(([label, score]) => (
-            <div key={String(label)}>
-              <span>{label}</span>
-              <i><b style={{ width: `${Math.max(0, Math.min(100, Number(score || 0) * 100))}%` }} /></i>
-            </div>
-          ))}
-        </div>
-      )}
-      <div className="source-meta">
-        <span>{page}</span>
-        <span className="source-open-label"><ExternalLink size={12} /> 查看全文</span>
-      </div>
+      <footer><InlineMath content={source.section || source.chapter || '未标注章节'} /><span>{retrievalPageLabel(source)}</span></footer>
+    </article>
+  )
+}
+
+function RetrievalGraphNodeCard({
+  node,
+  graph,
+  score,
+}: {
+  node: KnowledgeGraphNode
+  graph: KnowledgeGraph
+  score: number
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const graphNodeMap = useMemo(
+    () => new Map(graph.nodes.map((item) => [item.id, item])),
+    [graph.nodes],
+  )
+  const relationships = useMemo(() => graph.edges
+    .filter((edge) => edge.type === 'concept_relation' && (edge.source === node.id || edge.target === node.id))
+    .sort((left, right) => (
+      (right.strength || 0) - (left.strength || 0)
+      || (right.confidence || 0) - (left.confidence || 0)
+    )), [graph.edges, node.id])
+  const description = node.description || node.raw_description || '暂无描述。'
+  return (
+    <article className={`retrieval-entity-card ${expanded ? 'expanded' : ''}`}>
+      <button type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+        <span style={{ background: neo4jEntityColor(node.entity_type) }}><Network size={13} /></span>
+        <div><strong><InlineMath content={graphNodeName(node)} /></strong><small>{node.entity_type || '知识实体'} · {relationships.length} 条关系</small></div>
+        <b>{Math.round(score * 100)}%</b>
+        <ChevronDown size={14} />
+      </button>
+      {expanded && <div className="retrieval-entity-detail"><h4>描述</h4><MathMarkdown content={description} /><h4>关联关系</h4>{relationships.length > 0 ? <div className="retrieval-relationship-list">{relationships.slice(0, 12).map((edge, index) => {
+        const outgoing = edge.source === node.id
+        const neighborId = outgoing ? edge.target : edge.source
+        const neighbor = graphNodeMap.get(neighborId)
+        return <article key={`${edge.source}-${edge.target}-${edge.relation}-${index}`}><div><span>{edge.relation || '关联'}</span><strong>{outgoing ? '→' : '←'} <InlineMath content={graphNodeName(neighbor) || neighborId} /></strong></div>{edge.description && <MathMarkdown content={edge.description} />}</article>
+      })}</div> : <p>暂无关联关系。</p>}</div>}
+    </article>
+  )
+}
+
+function PaddleEvidenceCard({ evidence }: { evidence: KnowledgeGraphEvidence }) {
+  const content = evidence.text || evidence.caption || evidence.description || '暂无可显示的块级内容。'
+  const modality = ({
+    text: '正文', formula: '公式', table: '表格', image: '图片', circuit: '课程图片',
+  } as Record<string, string>)[evidence.modality] || evidence.modality || '证据'
+  const page = evidence.page || evidence.page_start
+  return (
+    <article className="retrieval-result-card paddle-evidence-card">
+      <header><span><ScanLine size={12} />Paddle {modality}</span><strong>{page ? `第 ${page} 页` : ''}</strong></header>
+      <div className="retrieval-result-content"><MathMarkdown content={content} /></div>
+      <footer><span>{evidence.source || '课程教材'}</span><small>{evidence.id}</small></footer>
     </article>
   )
 }
@@ -730,88 +687,129 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
     || activeSources[0]?.knowledge_base
     || knowledgeBase
   const current = statuses.find((item) => item.id === activeKnowledgeBase)
-  const quizContext = activeAssistant?.agent === '出题 Agent'
   const noGroundedEvidence = activeAssistant?.evidenceMode === 'general_only'
+  const [retrievalGraph, setRetrievalGraph] = useState<KnowledgeGraph>()
+  const [retrievalGraphLoading, setRetrievalGraphLoading] = useState(false)
+  const [paddleEvidence, setPaddleEvidence] = useState<KnowledgeGraphEvidence[]>([])
+  const [paddleEvidenceLoading, setPaddleEvidenceLoading] = useState(false)
   const citedSourceIds = new Set(activeCitedSources.map((source) => source.id))
   const citedIndices = new Set(
     activeCitedSources
       .map((source) => source.citation_index)
       .filter((index): index is number => typeof index === 'number'),
   )
+  const isSourceCited = (source: SourceInfo) => {
+    const index = activeSources.findIndex((item) => item.id === source.id)
+    return citedSourceIds.has(source.id) || citedIndices.has(index + 1)
+  }
+  const atomicStatements = activeSources.filter((source) => source.element_type === 'atomic_statement')
+  const formulaKnowledge = activeSources.filter((source) => source.element_type === 'formula_knowledge')
+  const relatedEntityIds = useMemo(() => {
+    const prioritized = [
+      ...activeSources.filter((source) => source.element_type === 'graph_entity'),
+      ...activeSources.filter((source) => source.element_type !== 'graph_entity'),
+    ]
+    return [...new Set(prioritized.flatMap((source) => source.matched_entity_ids || []))].slice(0, 8)
+  }, [activeSources])
+  const relatedEntityKey = relatedEntityIds.join('\u0000')
+  const evidenceIds = useMemo(() => {
+    const prioritized = [...activeSources].sort((left, right) => {
+      const priority = (source: SourceInfo) => (
+        source.element_type === 'formula_knowledge' ? 2
+          : source.element_type === 'atomic_statement' ? 1
+            : 0
+      )
+      return priority(right) - priority(left)
+    })
+    return [...new Set(prioritized.flatMap((source) => (source.evidence_ids || []).slice(0, 2)))].slice(0, 10)
+  }, [activeSources])
+  const evidenceKey = evidenceIds.join('\u0000')
+
+  useEffect(() => {
+    let active = true
+    if (!activeKnowledgeBase || !relatedEntityIds.length) {
+      setRetrievalGraph(undefined)
+      setRetrievalGraphLoading(false)
+      return () => { active = false }
+    }
+    if (retrievalGraph?.knowledge_base === activeKnowledgeBase) return () => { active = false }
+    setRetrievalGraphLoading(true)
+    void fetchKnowledgeGraph(activeKnowledgeBase)
+      .then((result) => { if (active) setRetrievalGraph(result) })
+      .catch(() => { if (active) setRetrievalGraph(undefined) })
+      .finally(() => { if (active) setRetrievalGraphLoading(false) })
+    return () => { active = false }
+  }, [activeKnowledgeBase, relatedEntityKey, retrievalGraph?.knowledge_base])
+
+  useEffect(() => {
+    let active = true
+    setPaddleEvidence([])
+    if (!activeKnowledgeBase || !evidenceIds.length) {
+      setPaddleEvidenceLoading(false)
+      return () => { active = false }
+    }
+    setPaddleEvidenceLoading(true)
+    void fetchKnowledgeGraphEvidence(activeKnowledgeBase, evidenceIds)
+      .then((items) => { if (active) setPaddleEvidence(items) })
+      .catch(() => { if (active) setPaddleEvidence([]) })
+      .finally(() => { if (active) setPaddleEvidenceLoading(false) })
+    return () => { active = false }
+  }, [activeKnowledgeBase, evidenceKey])
+
+  const graphNodeMap = useMemo(
+    () => new Map((retrievalGraph?.nodes || []).map((node) => [node.id, node])),
+    [retrievalGraph],
+  )
+  const entityScores = useMemo(() => {
+    const scores = new Map<string, number>()
+    activeSources.forEach((source) => (source.matched_entity_ids || []).forEach((entityId) => {
+      scores.set(entityId, Math.max(scores.get(entityId) || 0, source.score || 0))
+    }))
+    return scores
+  }, [activeSources])
+  const relatedEntities = relatedEntityIds
+    .map((entityId) => graphNodeMap.get(entityId))
+    .filter((node): node is KnowledgeGraphNode => node?.type === 'entity')
+  const visibleResultCount = relatedEntities.length
+    + atomicStatements.length
+    + formulaKnowledge.length
+    + paddleEvidence.length
   return (
     <aside className="knowledge-panel">
       <div className="panel-heading">
         <div>
-          <span className="panel-kicker">{quizContext ? 'GROUNDED PRACTICE' : 'GROUNDED EVIDENCE'}</span>
-          <h2>{quizContext ? '命题依据' : '可用教材证据'}</h2>
+          <span className="panel-kicker">SCHEMA 4 RETRIEVAL</span>
+          <h2>检索结果</h2>
         </div>
-        <Tooltip title={quizContext ? '先锁定原题结构，再用课程知识库与知识图谱校准公式、适用条件和单位' : '这里只展示通过知识点与正文相关性校验的教材资料；仅靠图谱关联或主题相似的候选不会作为证据'}>
+        <Tooltip title="展示本轮命中的图谱节点、原子陈述、公式知识整理及其原始 Paddle 块级证据。">
           <HelpCircle size={17} />
         </Tooltip>
       </div>
-
-      <div className="kb-summary-card">
-        <span className="kb-icon">{quizContext ? <BrainCircuit size={18} /> : <Database size={18} />}</span>
-        <div>
-          <strong>{quizContext ? '原题结构 + 课程知识库' : knowledgeBaseDisplayName(current, activeKnowledgeBase)}</strong>
-          <span>
-            {quizContext
-              ? activeSources.length
-                ? `${activeSources.length} 条教材证据 · 图谱辅助对齐`
-                : '未命中教材 · 仅沿用原题结构'
-              : `${current?.chunks || 0} 个文本块 · ${current?.documents || 0} 份资料`}
-          </span>
-        </div>
-        <span className={`kb-state ${quizContext ? 'ready' : current?.state || 'missing'}`}>
-          {quizContext
-            ? activeSources.length ? '已校准' : '保守生成'
-            : current?.state === 'building'
-              ? '构建中'
-              : current?.state === 'cancelling'
-                ? '取消中'
-                : current?.state === 'cancelled'
-                  ? '已取消'
-                  : current?.validation?.status === 'passed'
-                    ? '已校验'
-                    : current?.state === 'ready' ? '就绪' : '待构建'}
-        </span>
-      </div>
-
       {activeSources.length > 0 && (
         <div className={`source-usage-summary ${activeCitedSources.length ? '' : 'uncited'}`}>
-          <span>本轮召回 {activeSources.length} 条</span>
-          <strong>{quizContext ? '用于命题校准' : `答案引用 ${activeCitedSources.length} 条`}</strong>
+          <span>{knowledgeBaseDisplayName(current, activeKnowledgeBase)} · 召回 {activeSources.length} 条</span>
+          <strong>{visibleResultCount} 项结果</strong>
         </div>
       )}
-
-      <div className="source-list">
+      <div className="source-list retrieval-result-list">
         {activeSources.length ? (
-          activeSources.map((source, index) => (
-            <SourceCard
-              key={`${source.id}-${index}`}
-              source={source}
-              index={index}
-              isCited={!quizContext && (citedSourceIds.has(source.id) || citedIndices.has(index + 1))}
-              fallbackKnowledgeBase={activeKnowledgeBase}
-            />
-          ))
-        ) : quizContext ? (
-          <div className="source-empty quiz-reference-empty">
-            <span><WandSparkles size={22} /></span>
-            <strong>保持原题结构</strong>
-            <p>未命中教材时仅沿用原题的公式结构和适用条件，不扩展未经资料支持的新定律。</p>
-          </div>
+          <>
+            {(relatedEntities.length > 0 || retrievalGraphLoading) && <section className="retrieval-result-group"><h3><Network size={13} />相关图谱节点 <span>{relatedEntities.length}</span></h3>{retrievalGraphLoading && !relatedEntities.length ? <div className="retrieval-loading"><LoaderCircle className="spin" size={14} /> 正在读取图谱节点…</div> : relatedEntities.map((node) => <RetrievalGraphNodeCard key={node.id} node={node} graph={retrievalGraph as KnowledgeGraph} score={entityScores.get(node.id) || 0} />)}</section>}
+            {atomicStatements.length > 0 && <section className="retrieval-result-group"><h3><ListTodo size={13} />原子陈述 <span>{atomicStatements.length}</span></h3>{atomicStatements.map((source) => <StructuredRetrievalCard key={source.id} source={source} label="原子陈述" cited={isSourceCited(source)} />)}</section>}
+            {formulaKnowledge.length > 0 && <section className="retrieval-result-group"><h3><Cpu size={13} />公式知识整理 <span>{formulaKnowledge.length}</span></h3>{formulaKnowledge.map((source) => <StructuredRetrievalCard key={source.id} source={source} label="公式知识" cited={isSourceCited(source)} />)}</section>}
+            {(paddleEvidence.length > 0 || paddleEvidenceLoading) && <section className="retrieval-result-group"><h3><ScanLine size={13} />原始 Paddle 证据 <span>{paddleEvidence.length}</span></h3>{paddleEvidenceLoading && !paddleEvidence.length ? <div className="retrieval-loading"><LoaderCircle className="spin" size={14} /> 正在读取块级证据…</div> : paddleEvidence.map((item) => <PaddleEvidenceCard key={item.id} evidence={item} />)}</section>}
+          </>
         ) : noGroundedEvidence ? (
           <div className="source-empty">
             <span><Search size={22} /></span>
-            <strong>未找到可引用的教材证据</strong>
-            <p>系统已剔除仅靠图谱关联或主题相似的候选；本轮只能使用明确标记的模型通用知识。</p>
+            <strong>未找到结构化检索结果</strong>
+            <p>本轮没有命中可验证的图谱节点、知识陈述、公式知识或 Paddle 证据。</p>
           </div>
         ) : (
           <div className="source-empty">
             <span><Search size={22} /></span>
             <strong>等待你的问题</strong>
-            <p>提问后，这里会展示命中的教材章节、页码与相关度。</p>
+            <p>提问后，这里会展示命中的图谱节点、原子陈述、公式知识和原始证据。</p>
           </div>
         )}
       </div>
@@ -2754,7 +2752,7 @@ function HierarchicalKnowledgeGraphView({
           </main>
           <aside className="neo4j-inspector">
             <div className="neo4j-inspector-heading"><strong>属性</strong><span>{selectedEdge ? '关系' : selected ? '节点' : '选择项'}</span></div>
-            {selectedEdge ? <div className="neo4j-property-content"><span className="neo4j-object-type">{neo4jEdgeTypeLabel(selectedEdge.type)}</span><h2>{selectedEdge.relation || '关联'}</h2><dl><dt>起点</dt><dd><InlineMath content={graphNodeName(graphNodeMap.get(selectedEdge.source)) || selectedEdge.source} /></dd><dt>终点</dt><dd><InlineMath content={graphNodeName(graphNodeMap.get(selectedEdge.target)) || selectedEdge.target} /></dd><dt>强度</dt><dd>{selectedEdge.strength?.toFixed(1) || '—'}</dd><dt>置信度</dt><dd>{selectedEdge.confidence ? `${Math.round(selectedEdge.confidence * 100)}%` : '—'}</dd></dl>{selectedEdge.description && <p>{selectedEdge.description}</p>}</div> : selected?.type === 'section' ? <div className="neo4j-property-content"><span className="neo4j-object-type section">章节 · 第 {selected.level || 0} 级</span><h2><InlineMath content={selected.title || selected.name} /></h2><p>{selected.summary || '该节点仅用于补全目录结构，没有可摘要的直接正文。'}</p>{selectedSectionEntities.length > 0 && <div className="hierarchical-chip-list">{selectedSectionEntities.slice(0, 24).map((entity) => <button type="button" key={entity.id} className={entity.is_core ? 'core' : ''} onClick={() => { setView('entities'); setSelectedId(entity.id) }}>{entity.name}</button>)}</div>}</div> : selected?.type === 'entity' ? <div className="neo4j-property-content neo4j-entity-property-content"><h2><InlineMath content={graphNodeName(selected)} /></h2><section><h3>关系数量</h3><strong className="neo4j-relationship-count">{selectedNeighbors}</strong></section><section><h3>描述</h3><p>{selectedEntityDescription}</p></section><section><h3>关联关系</h3>{selectedEntityRelationships.length > 0 ? <div className="neo4j-related-list">{selectedEntityRelationships.map(({ edge, outgoing, neighbor, neighborId }, index) => <article key={`${edgeKey(edge)}\u0000${index}`}><div><span>{edge.relation || '关联'}</span><strong>{outgoing ? '→' : '←'} <InlineMath content={graphNodeName(neighbor) || neighborId} /></strong></div>{edge.description && <p>{edge.description}</p>}</article>)}</div> : <p>暂无关联关系。</p>}</section></div> : <div className="neo4j-inspector-empty"><Network size={30} /><strong>选择图谱对象</strong><span>点击节点、关系或章节，查看属性和块级证据。</span></div>}
+            {selectedEdge ? <div className="neo4j-property-content"><span className="neo4j-object-type">{neo4jEdgeTypeLabel(selectedEdge.type)}</span><h2>{selectedEdge.relation || '关联'}</h2><dl><dt>起点</dt><dd><InlineMath content={graphNodeName(graphNodeMap.get(selectedEdge.source)) || selectedEdge.source} /></dd><dt>终点</dt><dd><InlineMath content={graphNodeName(graphNodeMap.get(selectedEdge.target)) || selectedEdge.target} /></dd><dt>强度</dt><dd>{selectedEdge.strength?.toFixed(1) || '—'}</dd><dt>置信度</dt><dd>{selectedEdge.confidence ? `${Math.round(selectedEdge.confidence * 100)}%` : '—'}</dd></dl>{selectedEdge.description && <MathMarkdown content={selectedEdge.description} />}</div> : selected?.type === 'section' ? <div className="neo4j-property-content"><span className="neo4j-object-type section">章节 · 第 {selected.level || 0} 级</span><h2><InlineMath content={selected.title || selected.name} /></h2><p>{selected.summary || '该节点仅用于补全目录结构，没有可摘要的直接正文。'}</p>{selectedSectionEntities.length > 0 && <div className="hierarchical-chip-list">{selectedSectionEntities.slice(0, 24).map((entity) => <button type="button" key={entity.id} className={entity.is_core ? 'core' : ''} onClick={() => { setView('entities'); setSelectedId(entity.id) }}>{entity.name}</button>)}</div>}</div> : selected?.type === 'entity' ? <div className="neo4j-property-content neo4j-entity-property-content"><h2><InlineMath content={graphNodeName(selected)} /></h2><section><h3>关系数量</h3><strong className="neo4j-relationship-count">{selectedNeighbors}</strong></section><section><h3>描述</h3><MathMarkdown content={selectedEntityDescription} /></section><section><h3>关联关系</h3>{selectedEntityRelationships.length > 0 ? <div className="neo4j-related-list">{selectedEntityRelationships.map(({ edge, outgoing, neighbor, neighborId }, index) => <article key={`${edgeKey(edge)}\u0000${index}`}><div><span>{edge.relation || '关联'}</span><strong>{outgoing ? '→' : '←'} <InlineMath content={graphNodeName(neighbor) || neighborId} /></strong></div>{edge.description && <MathMarkdown content={edge.description} />}</article>)}</div> : <p>暂无关联关系。</p>}</section></div> : <div className="neo4j-inspector-empty"><Network size={30} /><strong>选择图谱对象</strong><span>点击节点、关系或章节，查看属性和块级证据。</span></div>}
             {(selectedEdge || selected?.type === 'section') && <><div className="graph-evidence-title">证据块</div>{evidenceLoading && <div className="graph-evidence-state"><LoaderCircle className="spin" size={15} /> 正在读取证据…</div>}{!evidenceLoading && evidence.length > 0 && <div className="graph-evidence-list">{evidence.slice(0, 10).map((item) => <article key={item.id}><span>{item.modality} {item.page ? `· 第 ${item.page} 页` : ''}</span><p>{item.text || item.caption || item.description}</p><small>{item.id}</small></article>)}</div>}{!evidenceLoading && !evidence.length && <div className="graph-evidence-state">当前选择没有可展示的证据块。</div>}</>}
           </aside>
         </div>
