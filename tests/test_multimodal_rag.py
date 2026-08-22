@@ -5,6 +5,7 @@ import io
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import fitz
 import pytest
@@ -1308,6 +1309,42 @@ def test_knowledge_base_display_name_supports_chinese_and_infers_source_title():
         "Analog-Electronics---First-Two-Chapters",
         meta={"sources": ["模拟电子技术基础-前两章.pdf"]},
     ) == "模拟电子技术基础-前两章"
+
+
+def test_schema4_graph_api_skips_legacy_display_name_enrichment(tmp_path, monkeypatch):
+    index_dir = tmp_path / "course"
+    index_dir.mkdir()
+    (index_dir / "semantic_knowledge_graph.json").write_text(json.dumps({
+        "schema_version": "4.0-hierarchical-summary-entity-graph",
+        "nodes": [
+            {"id": "section:root", "type": "section", "name": "电子电路"},
+            {"id": "entity:pn", "type": "entity", "name": "PN结", "is_core": True},
+        ],
+        "edges": [{
+            "source": "entity:pn",
+            "target": "section:root",
+            "type": "entity_section",
+            "relation": "introduced_in",
+        }],
+        "chapters": [],
+        "communities": [],
+    }, ensure_ascii=False), encoding="utf-8")
+    manager = KnowledgeBaseManager()
+    manager._retrievers["course"] = SimpleNamespace(index_dir=index_dir)
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        manager_module,
+        "enrich_semantic_display_names",
+        lambda graph: calls.append(graph),
+    )
+
+    result = manager.semantic_graph("course")
+
+    assert calls == []
+    assert result["knowledge_base"] == "course"
+    assert result["stats"]["nodes"] == 2
+    assert result["stats"]["entities"] == 1
+    assert result["stats"]["sections"] == 1
 
 
 def test_delete_knowledge_base_removes_index_and_resources(tmp_path, monkeypatch):

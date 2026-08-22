@@ -342,9 +342,14 @@ class KnowledgeBaseManager:
                 },
             }
         graph = json.loads(path.read_text(encoding="utf-8"))
-        enrich_semantic_display_names(graph)
         schema_version = str(graph.get("schema_version", ""))
         schema4 = schema_version.startswith("4.")
+        # Schema 4 entities are already canonicalized during graph construction.
+        # The legacy display-name enrichment scans graph evidence and is both
+        # redundant and expensive for a full-book graph, so retain it only for
+        # older indexes whose symbolic labels still need presentation cleanup.
+        if not schema4:
+            enrich_semantic_display_names(graph)
         nodes = [
             node for node in graph.get("nodes", [])
             if isinstance(node, dict)
