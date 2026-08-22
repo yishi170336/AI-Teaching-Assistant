@@ -177,6 +177,7 @@ def _append_visual_element_checkpoint(
     *,
     source: str,
     page: int,
+    known_content_hashes: set[str] | None = None,
 ) -> int:
     records = [
         element.to_dict()
@@ -186,6 +187,10 @@ def _append_visual_element_checkpoint(
         and element.element_type in {"image", "circuit", "table"}
         and element.image_path
         and element.content_hash
+        and (
+            known_content_hashes is None
+            or element.content_hash not in known_content_hashes
+        )
     ]
     if not records:
         return 0
@@ -197,6 +202,8 @@ def _append_visual_element_checkpoint(
         handle.write(payload)
         handle.flush()
         os.fsync(handle.fileno())
+    if known_content_hashes is not None:
+        known_content_hashes.update(str(item["content_hash"]) for item in records)
     return len(records)
 
 
@@ -2526,9 +2533,12 @@ def enhance_pdf(
     analysis_page_set = set(analysis_pages)
     element_cache = output_dir / "multimodal_elements.jsonl"
     visual_checkpoint = output_dir / f"{path.stem}.visual_elements.checkpoint.jsonl"
-    cached_images = _load_visual_element_cache(
-        (element_cache, visual_checkpoint), path.name
+    checkpointed_images = _load_visual_element_cache(
+        (visual_checkpoint,), path.name
     )
+    checkpointed_image_hashes = set(checkpointed_images)
+    cached_images = _load_visual_element_cache((element_cache,), path.name)
+    cached_images.update(checkpointed_images)
 
     document = fitz.open(path)
     try:
@@ -3180,6 +3190,7 @@ def enhance_pdf(
                 elements,
                 source=path.name,
                 page=page_no,
+                known_content_hashes=checkpointed_image_hashes,
             )
     finally:
         document.close()

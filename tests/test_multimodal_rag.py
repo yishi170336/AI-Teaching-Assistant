@@ -1778,6 +1778,7 @@ def test_table_visual_summary_rejects_low_confidence_output():
 
 def test_visual_checkpoint_keeps_completed_pages_and_skips_partial_tail(tmp_path):
     checkpoint = tmp_path / "lesson.visual_elements.checkpoint.jsonl"
+    known_hashes: set[str] = set()
     first = LayoutElement(
         id="image-a",
         source="lesson.pdf",
@@ -1798,11 +1799,26 @@ def test_visual_checkpoint_keeps_completed_pages_and_skips_partial_tail(tmp_path
     )
 
     assert _append_visual_element_checkpoint(
-        checkpoint, [first], source="lesson.pdf", page=1
+        checkpoint,
+        [first],
+        source="lesson.pdf",
+        page=1,
+        known_content_hashes=known_hashes,
     ) == 1
     assert _append_visual_element_checkpoint(
-        checkpoint, [first, second], source="lesson.pdf", page=2
+        checkpoint,
+        [first, second],
+        source="lesson.pdf",
+        page=2,
+        known_content_hashes=known_hashes,
     ) == 1
+    assert _append_visual_element_checkpoint(
+        checkpoint,
+        [first, second],
+        source="lesson.pdf",
+        page=2,
+        known_content_hashes=known_hashes,
+    ) == 0
     with checkpoint.open("a", encoding="utf-8") as handle:
         handle.write('{"truncated":')
 
