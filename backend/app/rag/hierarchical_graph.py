@@ -1222,6 +1222,7 @@ def enhance_entity_descriptions(
             evidence_id for item in neighbors for evidence_id in item["evidence_ids"]
         )
         description = _compact(payload.get("description"))
+        fallback_reason = _compact(payload.get("fallback_reason"))
         allowed_text = " ".join([
             entity["raw_description"],
             *[
@@ -1243,7 +1244,16 @@ def enhance_entity_descriptions(
                 sorted(introduced_numbers),
             )
             description = ""
+            fallback_reason = (
+                "邻域增强引入无证据数值，已保留原始描述："
+                + ", ".join(sorted(introduced_numbers))
+            )
         entity["description"] = description or entity["raw_description"]
+        entity["description_enhancement_status"] = (
+            _compact(payload.get("enhancement_status"))
+            or ("fallback_raw_description" if fallback_reason else "enhanced")
+        )
+        entity["description_enhancement_fallback_reason"] = fallback_reason
         entity["evidence_ids"] = list(dict.fromkeys([
             *entity["evidence_ids"],
             *[
@@ -1283,6 +1293,7 @@ def enhance_entity_descriptions(
                 "entity_id": entity["id"],
                 "description": entity["raw_description"],
                 "evidence_ids": entity["evidence_ids"],
+                "enhancement_status": "not_required",
             })
             cache[key] = {
                 "cache_key": key,
@@ -1295,6 +1306,10 @@ def enhance_entity_descriptions(
                     "entity_id": entity["id"],
                     "description": entity["description"],
                     "evidence_ids": entity["evidence_ids"],
+                    "enhancement_status": entity["description_enhancement_status"],
+                    "fallback_reason": entity[
+                        "description_enhancement_fallback_reason"
+                    ],
                 },
             }
             continue
@@ -1350,11 +1365,66 @@ Batch: {json.dumps(retry_input, ensure_ascii=False)}
             missing_ids -= descriptions.keys()
             if not missing_ids:
                 break
-        if missing_ids:
-            raise RuntimeError(
-                "邻域增强阶段连续两次返回无效 JSON或缺失实体："
-                + ", ".join(sorted(missing_ids))
+        batch_by_id = {
+            str(item["entity"]["id"]): item for item in batch
+        }
+        for entity_id in sorted(missing_ids):
+            item = batch_by_id[entity_id]
+            single_input = {
+                "center": {
+                    key: item["entity"][key]
+                    for key in (
+                        "id", "name", "entity_type", "raw_description", "evidence_ids"
+                    )
+                },
+                "neighbors": item["neighbors"],
+            }
+            recovered: dict[str, Any] | None = None
+            for attempt in range(2):
+                prompt = f"""Role: 你是电子课程实体描述编辑专家。
+Task: 逐个恢复批处理中缺失实体的增强描述。
+Constraints:
+1. description 不得引入 raw_description 和 neighbors 之外的事实。
+2. entity_id 必须逐字复制输入，evidence_ids 只能来自输入。
+3. 输出有效 JSON，不输出思考过程。
+Output Template: {{"entity_id":"...","description":"...","evidence_ids":["..."]}}
+Item: {json.dumps(single_input, ensure_ascii=False)}
+{('上次输出缺失或结构无效，请严格按模板返回。' if attempt else '')}
+"""
+                payload = _call_json(client, prompt)
+                candidates = [payload]
+                if isinstance(payload.get("entities"), list):
+                    candidates.extend(payload["entities"])
+                recovered = next(
+                    (
+                        raw for raw in candidates
+                        if isinstance(raw, dict)
+                        and str(raw.get("entity_id", "")) == entity_id
+                        and _compact(raw.get("description"))
+                    ),
+                    None,
+                )
+                if recovered is not None:
+                    break
+            if recovered is not None:
+                descriptions[entity_id] = {
+                    **recovered,
+                    "enhancement_status": "single_recovery",
+                }
+                missing_ids.discard(entity_id)
+        for entity_id in sorted(missing_ids):
+            entity = batch_by_id[entity_id]["entity"]
+            logger.warning(
+                "邻域增强批量和单实体恢复均未返回 %s，已保留原始描述",
+                entity_id,
             )
+            descriptions[entity_id] = {
+                "entity_id": entity_id,
+                "description": entity["raw_description"],
+                "evidence_ids": entity["evidence_ids"],
+                "enhancement_status": "fallback_raw_description",
+                "fallback_reason": "批量及单实体结构化增强连续失败",
+            }
         for item in batch:
             entity = item["entity"]
             apply_payload(entity, item["neighbors"], descriptions[str(entity["id"])])
@@ -1369,6 +1439,10 @@ Batch: {json.dumps(retry_input, ensure_ascii=False)}
                     "entity_id": entity["id"],
                     "description": entity["description"],
                     "evidence_ids": entity["evidence_ids"],
+                    "enhancement_status": entity["description_enhancement_status"],
+                    "fallback_reason": entity[
+                        "description_enhancement_fallback_reason"
+                    ],
                 },
             }
         # Persist only completed batches so an interruption resumes at most one batch.

@@ -334,6 +334,85 @@ def test_neighborhood_enhancement_batches_calls_and_reuses_checkpoint(tmp_path):
     assert replay_client.calls == 0
 
 
+def _related_entity_pair():
+    entities = [
+        _entity("entity-a", "概念甲", "section:a:1"),
+        _entity("entity-b", "概念乙", "section:a:1"),
+    ]
+    relationships = [{
+        "source": "entity-a",
+        "target": "entity-b",
+        "relation": "影响",
+        "description": "概念甲影响概念乙",
+        "claim_ids": ["claim_1"],
+        "evidence_ids": ["evidence-relation"],
+    }]
+    return entities, relationships
+
+
+class _SingleRecoveryAggregationClient:
+    config = SimpleNamespace(model="qwen3.7-flash", enabled=True)
+
+    def complete_json(self, prompt):
+        if "Item: " not in prompt:
+            return {"entities": []}
+        item = json.loads(prompt.split("Item: ", 1)[1].split("\n", 1)[0])
+        center = item["center"]
+        return {
+            "entity_id": center["id"],
+            "description": center["raw_description"] + "，已逐个恢复",
+            "evidence_ids": center["evidence_ids"],
+        }
+
+
+def test_missing_batch_entities_are_recovered_individually(tmp_path):
+    entities, relationships = _related_entity_pair()
+
+    enhanced = enhance_entity_descriptions(
+        entities,
+        relationships,
+        _SingleRecoveryAggregationClient(),
+        tmp_path / "single-recovery.jsonl",
+    )
+
+    assert all("已逐个恢复" in item["description"] for item in enhanced)
+    assert all(
+        item["description_enhancement_status"] == "single_recovery"
+        for item in enhanced
+    )
+
+
+class _FailedRecoveryAggregationClient:
+    config = SimpleNamespace(model="qwen3.7-flash", enabled=True)
+
+    def complete_json(self, _prompt):
+        return {"entities": []}
+
+
+def test_failed_single_recovery_keeps_raw_description_with_audit(tmp_path):
+    entities, relationships = _related_entity_pair()
+    cache_path = tmp_path / "fallback-recovery.jsonl"
+
+    enhanced = enhance_entity_descriptions(
+        entities,
+        relationships,
+        _FailedRecoveryAggregationClient(),
+        cache_path,
+    )
+
+    assert all(item["description"] == item["raw_description"] for item in enhanced)
+    assert all(
+        item["description_enhancement_status"] == "fallback_raw_description"
+        for item in enhanced
+    )
+    assert all(
+        item["description_enhancement_fallback_reason"]
+        for item in enhanced
+    )
+    cached = [json.loads(line) for line in cache_path.read_text("utf-8").splitlines()]
+    assert all(row["result"]["fallback_reason"] for row in cached)
+
+
 @pytest.mark.parametrize(("duplicate", "expected"), [(True, 1), (False, 2)])
 def test_alias_first_dedup_respects_qwen_final_decision(tmp_path, duplicate, expected):
     entities = [_entity("local-a", "PN结", "section:a:1"), _entity("local-b", "PN结", "section:a:2")]
