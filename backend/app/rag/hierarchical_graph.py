@@ -268,6 +268,104 @@ def _fallback_summary_from_claims(
     return "；".join(pieces), retained
 
 
+def _grounded_summary_from_evidence(
+    unit: KnowledgeUnit,
+    tokenizer: Any | None,
+    *,
+    limit: int = 400,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Build a last-resort summary whose claims remain tied to source blocks."""
+
+    candidates: list[dict[str, Any]] = []
+    for source in _direct_evidence(unit):
+        evidence_id = str(source.get("id", "")).strip()
+        text = _compact(source.get("text"))
+        if not evidence_id or not text:
+            continue
+        pieces = [
+            _compact(piece)
+            for piece in re.split(r"(?<=[。！？；;])", text)
+            if _compact(piece)
+        ] or [text]
+        for piece in pieces:
+            if _token_count(piece, tokenizer) > 180:
+                piece = _truncate_summary_to_token_limit(
+                    piece,
+                    tokenizer,
+                    limit=180,
+                    preferred_minimum=0,
+                )
+            if len(piece) < 4:
+                continue
+            candidates.append({
+                "id": f"claim_{len(candidates) + 1}",
+                "text": piece,
+                "evidence_ids": [evidence_id],
+            })
+            if len(candidates) >= 24:
+                break
+        if len(candidates) >= 24:
+            break
+    summary, retained = _fallback_summary_from_claims(
+        candidates, tokenizer, limit=limit
+    )
+    normalized = [
+        {
+            **claim,
+            "id": f"claim_{index}",
+        }
+        for index, claim in enumerate(retained, 1)
+    ]
+    return summary, normalized
+
+
+def _repair_summary_claims(
+    client: Any,
+    unit: KnowledgeUnit,
+    summary: str,
+) -> list[dict[str, Any]]:
+    """Ask the graph model to repair claim references without rewriting a summary."""
+
+    evidence = [
+        {
+            "id": str(item.get("id", "")),
+            "text": _compact(item.get("text"))[:800],
+        }
+        for item in _direct_evidence(unit)
+        if item.get("id") and _compact(item.get("text"))
+    ]
+    prompt = f"""Role: 你是教材摘要证据校验专家。
+Task: 不改写给定 summary，只为其中可由 evidence 支持的连续原文片段重建 claims。
+Constraints:
+1. claim.text 必须是 summary 中的连续原文。
+2. evidence_ids 必须逐字复制 Evidence 中的 id，且对应文本能支持该 claim。
+3. 至少返回 1 条有效 claim；无法支持的摘要内容不要建立 claim。
+4. 仅输出有效 JSON，不输出思考过程。
+Output Template: {{"claims":[{{"id":"claim_1","text":"summary中的连续原文","evidence_ids":["原始证据ID"]}}]}}
+Summary: {summary}
+Evidence: {json.dumps(evidence, ensure_ascii=False)}
+"""
+    payload = _call_json(client, prompt)
+    evidence_ids = {item["id"] for item in evidence}
+    repaired: list[dict[str, Any]] = []
+    for raw in payload.get("claims", []) if isinstance(payload, dict) else []:
+        if not isinstance(raw, dict):
+            continue
+        text = _compact(raw.get("text"))
+        refs = list(dict.fromkeys(
+            str(value)
+            for value in raw.get("evidence_ids", [])
+            if str(value) in evidence_ids
+        ))
+        if text and text in summary and refs:
+            repaired.append({
+                "id": f"claim_{len(repaired) + 1}",
+                "text": text,
+                "evidence_ids": refs,
+            })
+    return repaired
+
+
 def _load_tokenizer(model_path: Path) -> Any | None:
     try:
         from transformers import AutoTokenizer
@@ -662,17 +760,30 @@ def summarize_sections(
             refs = list(dict.fromkeys(
                 str(value) for value in raw.get("evidence_ids", []) if str(value) in evidence_ids
             ))
-            if not text or not refs:
+            if not text or text not in summary or not refs:
                 continue
             claims.append({
                 "id": f"claim_{claim_index}",
                 "text": text,
                 "evidence_ids": refs,
             })
+        if summary and not claims and client is not None:
+            claims = _repair_summary_claims(client, unit, summary)
         if not summary or not claims:
-            payload = _offline_summary(unit) if client is None else {}
-            summary = _compact(payload.get("summary"))
-            claims = list(payload.get("claims", []))
+            summary, claims = _grounded_summary_from_evidence(unit, tokenizer)
+            payload = {
+                **(payload if isinstance(payload, dict) else {}),
+                "summary": summary,
+                "claims": claims,
+                "confidence": min(
+                    0.85,
+                    max(
+                        0.65,
+                        float((payload or {}).get("confidence", 0.0) or 0.0),
+                    ),
+                ),
+                "short_summary_reason": "模型 claim 引用无效，已从块级证据确定性重建",
+            }
         count = _token_count(summary, tokenizer)
         if count > 400 and client is not None:
             compressed_input = replace(unit, text=summary, summary_claims=claims)
@@ -733,6 +844,25 @@ def summarize_sections(
                 claims = candidate_claims
                 payload = expanded
                 count = candidate_count
+        claims = _claims_within_summary(claims, summary)
+        if summary and not claims and client is not None:
+            claims = _repair_summary_claims(client, unit, summary)
+        if not summary or not claims:
+            summary, claims = _grounded_summary_from_evidence(unit, tokenizer)
+            payload = {
+                **(payload if isinstance(payload, dict) else {}),
+                "summary": summary,
+                "claims": claims,
+                "confidence": min(
+                    0.85,
+                    max(
+                        0.65,
+                        float((payload or {}).get("confidence", 0.0) or 0.0),
+                    ),
+                ),
+                "short_summary_reason": "模型 claim 引用无效，已从块级证据确定性重建",
+            }
+            count = _token_count(summary, tokenizer)
         if count > 400:
             bounded = _truncate_summary_to_token_limit(summary, tokenizer)
             bounded_claims = _claims_within_summary(claims, bounded)
@@ -742,6 +872,10 @@ def summarize_sections(
                 )
                 if claim_summary and claim_values:
                     bounded, bounded_claims = claim_summary, claim_values
+            if not bounded_claims:
+                bounded, bounded_claims = _grounded_summary_from_evidence(
+                    unit, tokenizer
+                )
             summary = bounded
             claims = bounded_claims
             count = _token_count(summary, tokenizer)

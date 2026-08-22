@@ -147,6 +147,50 @@ def test_invalid_summary_json_fails_after_two_attempts(tmp_path):
         )
 
 
+class _InvalidClaimReferenceClient:
+    config = SimpleNamespace(model="qwen3.7-flash", enabled=True)
+
+    def complete_json(self, prompt):
+        if "摘要证据校验专家" in prompt:
+            return {
+                "claims": [{
+                    "id": "claim_1",
+                    "text": "PN结具有单向导电性",
+                    "evidence_ids": ["missing-evidence"],
+                }]
+            }
+        return {
+            "section_id": "section:test:1.1",
+            "summary": "PN结具有单向导电性。",
+            "claims": [{
+                "id": "claim_1",
+                "text": "PN结具有单向导电性",
+                "evidence_ids": ["missing-evidence"],
+            }],
+            "confidence": 0.9,
+        }
+
+
+def test_invalid_claim_references_fall_back_to_block_grounded_summary(tmp_path):
+    units, _sections = compile_hierarchical_knowledge_document([
+        _page(1, "1.1 PN结", "PN结具有单向导电性。"),
+    ], [])
+
+    summarized = summarize_sections(
+        units,
+        _InvalidClaimReferenceClient(),
+        tmp_path / "section_summaries.jsonl",
+        None,
+    )
+
+    result = summarized[0]
+    assert result.summary
+    assert result.summary_claims
+    assert result.summary_claims[0]["text"] in result.summary
+    assert result.summary_claims[0]["evidence_ids"] == ["ocr:book.pdf:p1:b1"]
+    assert "确定性重建" in result.short_summary_reason
+
+
 class _SpaceTokenizer:
     def encode(self, text, add_special_tokens=False):
         del add_special_tokens
