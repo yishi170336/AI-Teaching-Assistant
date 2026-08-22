@@ -295,8 +295,8 @@ function SubmissionPanel({
         {submission.status === 'grading' && (
           <div className="submission-processing">
             <LoaderCircle className="spin" size={24} />
-            <strong>qwen3-vl-flash 正在识别并逐题评分</strong>
-            <span>完成后由 qwen3-vl-8b-instruct 独立复核</span>
+            <strong>Qwen3.7-Flash 正在识别并逐题评分</strong>
+            <span>完成后由独立的 Qwen3.7-Flash 审查流程复核</span>
           </div>
         )}
         {submission.processing_error && (
@@ -1126,7 +1126,7 @@ export default function TeacherPage() {
       >
         <div className="homework-modal-heading">
           <span>{createMode === 'upload' ? <UploadCloud size={22} /> : <BookMarked size={22} />}</span>
-          <div><small>NEW ASSIGNMENT</small><h2>创建一份新作业</h2><p>{createMode === 'upload' ? '视觉模型将自动拆分题目、插图、答案与评分点。' : '从长期题库勾选题目，立即生成独立的结构化作业。'}</p></div>
+          <div><small>NEW ASSIGNMENT</small><h2>创建一份新作业</h2><p>{createMode === 'upload' ? 'Qwen3.7-Flash 将自动拆分题目、插图、答案与评分点。' : '从长期题库勾选题目，立即生成独立的结构化作业。'}</p></div>
         </div>
         <div className="homework-upload-form">
           <Segmented

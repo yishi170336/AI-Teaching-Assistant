@@ -543,7 +543,7 @@ def test_contextual_followup_reuses_latest_attachment_and_history_for_retrieval(
     assert "当前追问：上述电路属于什么类型" in rewritten["rewritten_query"]
 
 
-def test_answer_prompt_labels_student_and_retrieved_circuit_images(tmp_path):
+def test_answer_prompt_only_sends_user_image_not_retrieved_course_image(tmp_path):
     index_dir = tmp_path / "index"
     image_path = index_dir / "artifacts" / "reference.png"
     image_path.parent.mkdir(parents=True)
@@ -566,7 +566,6 @@ def test_answer_prompt_labels_student_and_retrieved_circuit_images(tmp_path):
         vector_score=0.2,
         bm25_score=0.1,
         rerank_score=0.8,
-        image_score=0.86,
     )
 
     class FakeRetriever:
@@ -579,7 +578,7 @@ def test_answer_prompt_labels_student_and_retrieved_circuit_images(tmp_path):
 
     class FakeVisionClient:
         provider = "qwen"
-        model = "qwen3-vl-flash"
+        model = "qwen3.7-flash"
 
     engine = object.__new__(CircuitTutorEngine)
     engine.knowledge_bases = FakeKnowledgeBases()
@@ -596,11 +595,9 @@ def test_answer_prompt_labels_student_and_retrieved_circuit_images(tmp_path):
     }))
 
     user_message = result["answer_messages"][1]
-    assert user_message["images"] == ["student-image", "cmVmZXJlbmNlLWltYWdl"]
+    assert user_message["images"] == ["student-image"]
     assert "图片1：学生上传" in user_message["content"]
-    assert "图片2：教材参考图片，对应[资料1]" in user_message["content"]
-    assert "第 72 页" in user_message["content"]
-    assert "图 2.2.1" in user_message["content"]
+    assert "教材参考图片" not in user_message["content"]
 
 
 def test_sympy_verification_rejects_identifiers():
@@ -812,18 +809,17 @@ def test_quiz_graph_retrieves_course_evidence_before_generation():
     assert "generate_quiz" in graph.nodes
 
 
-def test_quiz_retrieval_uses_knowledge_point_reference_and_images():
+def test_quiz_retrieval_uses_visual_understanding_text_not_image_vectors():
     captured = {}
     hits = [_retrieval_hit(1)]
     hits[0].chunk.text = "欧姆定律给出电阻元件两端电压与电流的关系。"
 
     class Retriever:
-        def search(self, query, k, prefer_questions, query_images):
+        def search(self, query, k, prefer_questions):
             captured.update({
                 "query": query,
                 "k": k,
                 "prefer_questions": prefer_questions,
-                "query_images": query_images,
             })
             return hits
 
@@ -839,12 +835,13 @@ def test_quiz_retrieval_uses_knowledge_point_reference_and_images():
         "knowledge_point": "欧姆定律",
         "reference_question": "已知 U=12V、R=6Ω，求电流 I。",
         "attachment_images": ["image-base64"],
+        "attachment_blueprint": {"knowledge_points": ["欧姆定律"], "knowns": ["U=12V", "R=6Ω"]},
     }))
 
     assert captured["knowledge_base"] == "course-a"
     assert "欧姆定律" in captured["query"]
     assert "U=12V" in captured["query"]
-    assert captured["query_images"] == ["image-base64"]
+    assert "query_images" not in captured
     assert result["hits"] == hits
     assert result["sources"][0]["source"] == "教材.pdf"
 
@@ -1256,7 +1253,7 @@ def test_answer_explanation_prompt_contains_bound_question_and_reference(tmp_pat
 
     class FakeVisionClient:
         provider = "qwen"
-        model = "qwen3-vl-flash"
+        model = "qwen3.7-flash"
 
     engine = object.__new__(CircuitTutorEngine)
     engine.knowledge_bases = FakeKnowledgeBases()
@@ -1304,7 +1301,7 @@ def test_question_knowledge_prompt_is_bounded_by_question_and_reference(tmp_path
 
     class FakeVisionClient:
         provider = "qwen"
-        model = "qwen3-vl-flash"
+        model = "qwen3.7-flash"
 
     engine = object.__new__(CircuitTutorEngine)
     engine.knowledge_bases = FakeKnowledgeBases()
@@ -1351,7 +1348,7 @@ def test_question_knowledge_named_concept_followup_does_not_repeat_overview(tmp_
 
     class FakeVisionClient:
         provider = "qwen"
-        model = "qwen3-vl-flash"
+        model = "qwen3.7-flash"
 
     engine = object.__new__(CircuitTutorEngine)
     engine.knowledge_bases = FakeKnowledgeBases()
@@ -1392,7 +1389,7 @@ def test_annotation_prompt_keeps_marked_scope_and_original_question(tmp_path):
 
     class FakeVisionClient:
         provider = "qwen"
-        model = "qwen3-vl-flash"
+        model = "qwen3.7-flash"
 
     message = (
         "【学习批注追问】\n标记来源：答疑 Agent\n来源消息：assistant-1\n\n"

@@ -1311,7 +1311,45 @@ def test_knowledge_base_display_name_supports_chinese_and_infers_source_title():
     ) == "模拟电子技术基础-前两章"
 
 
-def test_schema4_graph_api_skips_legacy_display_name_enrichment(tmp_path, monkeypatch):
+def test_load_existing_keeps_old_schema_on_disk_without_loading_it(tmp_path, monkeypatch):
+    resources_root = tmp_path / "resources"
+    indexes_root = tmp_path / "indexes"
+    legacy = indexes_root / "legacy-course"
+    resources_root.mkdir()
+    legacy.mkdir(parents=True)
+    (legacy / "index_meta.json").write_text(
+        json.dumps({"schema_version": "3.5-old", "documents": 1, "chunks": 8}),
+        encoding="utf-8",
+    )
+    (legacy / "semantic_knowledge_graph.json").write_text(
+        json.dumps({"schema_version": "3.5-old"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(manager_module, "settings", replace(
+        manager_module.settings,
+        resources_dir=resources_root,
+        vector_stores_dir=indexes_root,
+    ))
+
+    manager = KnowledgeBaseManager()
+    manager.load_existing()
+
+    state = manager.statuses()[0]
+    assert state["id"] == "legacy-course"
+    assert state["state"] == "unsupported"
+    assert state["runtime_supported"] is False
+    assert "legacy-course" not in manager._retrievers
+    assert legacy.is_dir()
+
+
+def test_old_knowledge_base_id_routes_to_active_schema4_runtime():
+    manager = KnowledgeBaseManager()
+    manager._retrievers["course-schema4"] = SimpleNamespace()
+    manager._active_schema4_id = "course-schema4"
+
+    assert manager.resolve_runtime_id("legacy-course") == "course-schema4"
+
+
+def test_schema4_graph_api_reads_authoritative_graph_without_legacy_enrichment(tmp_path):
     index_dir = tmp_path / "course"
     index_dir.mkdir()
     (index_dir / "semantic_knowledge_graph.json").write_text(json.dumps({
@@ -1331,16 +1369,8 @@ def test_schema4_graph_api_skips_legacy_display_name_enrichment(tmp_path, monkey
     }, ensure_ascii=False), encoding="utf-8")
     manager = KnowledgeBaseManager()
     manager._retrievers["course"] = SimpleNamespace(index_dir=index_dir)
-    calls: list[dict] = []
-    monkeypatch.setattr(
-        manager_module,
-        "enrich_semantic_display_names",
-        lambda graph: calls.append(graph),
-    )
-
     result = manager.semantic_graph("course")
 
-    assert calls == []
     assert result["knowledge_base"] == "course"
     assert result["stats"]["nodes"] == 2
     assert result["stats"]["entities"] == 1
@@ -1459,6 +1489,7 @@ def test_load_existing_keeps_default_when_source_files_remain(tmp_path, monkeypa
         "stage": "missing",
         "cancellable": False,
         "available": False,
+        "runtime_supported": False,
     }]
 
 

@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,17 @@ from backend.app.services.mistake_book import (
     resolve_mistake_source,
 )
 from backend.app.services.mistake_insights import MistakeKnowledgeService
+
+
+@pytest.fixture(autouse=True)
+def _schema4_runtime_id(monkeypatch):
+    from backend.app import main as main_module
+
+    monkeypatch.setattr(
+        main_module.knowledge_bases,
+        "resolve_runtime_id",
+        lambda _knowledge_base: "course-schema4",
+    )
 
 
 def _add(book: MistakeBook, **overrides):
@@ -253,10 +265,63 @@ class FakeKnowledgeBases:
         self._chunks = chunks or []
         self._error = error
 
-    def graph(self, _knowledge_base):
+    def semantic_graph(self, _knowledge_base):
         if self._error:
             raise RuntimeError("graph unavailable")
-        return self._graph
+        sections = []
+        for index, chunk in enumerate(self._chunks):
+            section_id = f"section:test:{index}"
+            sections.append({
+                "id": section_id,
+                "type": "section",
+                "title": chunk.section,
+                "title_path": [chunk.chapter, chunk.section],
+            })
+        nodes = [
+            {**node, "type": "entity" if node.get("type") == "concept" else node.get("type")}
+            for node in self._graph.get("nodes", [])
+        ]
+        edges = [
+            {
+                **edge,
+                "type": "concept_relation",
+                "relation": "前置" if edge.get("type") == "PREREQUISITE" else edge.get("relation", "关联"),
+            }
+            for edge in self._graph.get("edges", [])
+        ]
+        return {"nodes": [*sections, *nodes], "edges": edges, "chapters": []}
+
+    def retrieve(self, _knowledge_base, query, _feature, _limit):
+        if self._error:
+            raise RuntimeError("index unavailable")
+        normalized_query = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", query.casefold())
+        candidates = []
+        for node in self._graph.get("nodes", []):
+            name = str(node.get("name", ""))
+            normalized_name = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", name.casefold())
+            if normalized_name == normalized_query:
+                confidence = 1.0
+            elif normalized_name == normalized_query.replace("的", ""):
+                confidence = 0.88
+            else:
+                continue
+            section_index = next((
+                index for index, chunk in enumerate(self._chunks)
+                if name in getattr(chunk, "knowledge_tags", [])
+            ), 0)
+            candidates.append({
+                "entity_id": str(node.get("id")),
+                "name": name,
+                "aliases": node.get("aliases", []),
+                "section_id": f"section:test:{section_index}" if self._chunks else "",
+                "section_ids": [f"section:test:{section_index}"] if self._chunks else [],
+                "confidence": confidence,
+                "ambiguous": False,
+            })
+        return {
+            "entities": [{"name": item["name"]} for item in candidates],
+            "alignment_candidates": candidates,
+        }
 
     def get(self, _knowledge_base):
         if self._error:
@@ -305,7 +370,7 @@ def test_graph_alignment_exact_approximate_unmatched_location_and_prerequisite()
 
     assert [tag["match_type"] for tag in aligned["knowledge_tags"]] == [
         "exact",
-        "approximate",
+        "semantic",
         "unmatched",
     ]
     assert aligned["location"]["chapter"] == "第二章 二极管"
@@ -344,8 +409,13 @@ def test_semantic_mistake_fallback_uses_retrieval_tags_not_a_fixed_term_list():
             ]
 
     class SemanticKnowledgeBases:
-        def get(self, _knowledge_base):
-            return SemanticRetriever()
+        def retrieve(self, _knowledge_base, query, _feature, _limit):
+            assert "方波三角波发生器" in query
+            return {"entities": [
+                {"name": "滞回比较器"},
+                {"name": "积分器"},
+                {"name": "方波-三角波发生器"},
+            ]}
 
     inferred = MistakeKnowledgeService(SemanticKnowledgeBases()).infer_points(
         "default", "分析方波三角波发生器中滞回比较器的作用"

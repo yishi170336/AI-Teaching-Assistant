@@ -112,8 +112,7 @@ from backend.app.services.model_catalog import (
     QWEN_TEXT_MODELS,
     QWEN_TEXT_MODEL_OPTIONS,
     QWEN_TEXT_FALLBACK_MODEL,
-    QWEN_VISION_MODEL_OPTIONS,
-    QWEN_VL_FALLBACK_MODEL,
+    QWEN_VISUAL_TASK_MODEL,
     canonical_model_id,
     chat_model_unavailable_reason,
     choose_default_model,
@@ -943,9 +942,7 @@ async def available_models() -> dict[str, Any]:
                 "models": QWEN_TEXT_MODELS,
                 "model_options": QWEN_TEXT_MODEL_OPTIONS,
                 "text_model_options": QWEN_TEXT_MODEL_OPTIONS,
-                "vision_model_options": QWEN_VISION_MODEL_OPTIONS,
                 "default_model": qwen_default_model,
-                "default_vision_model": QWEN_VL_FALLBACK_MODEL,
                 "base_url": settings.qwen_base_url,
                 "requires_api_key": True,
                 "configured": bool(settings.qwen_api_key),
@@ -1163,6 +1160,12 @@ async def create_mistake_candidate(
     payload: MistakeCandidateCreateRequest,
 ) -> dict[str, Any]:
     try:
+        payload.knowledge_base = knowledge_bases.resolve_runtime_id(
+            payload.knowledge_base
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    try:
         question_bank_id, source_ref = _validated_candidate_source_context(payload)
         resolved_source = resolve_mistake_source(
             agent=payload.agent,
@@ -1356,6 +1359,12 @@ async def dismiss_mistake_candidate(candidate_id: str, student_id: str) -> dict[
 
 @app.post("/api/mistakes")
 async def add_mistake(payload: MistakeCreateRequest) -> dict[str, Any]:
+    try:
+        payload.knowledge_base = knowledge_bases.resolve_runtime_id(
+            payload.knowledge_base
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     (knowledge_points, summary), resolved = await asyncio.gather(
         _extract_mistake_metadata(payload),
         attachments.resolve(payload.session_id, payload.attachment_ids),
@@ -1636,33 +1645,17 @@ def select_model_client(payload: ChatRequest) -> tuple[Any, bool]:
 
 
 def select_vision_client(payload: ChatRequest, selected_client: Any) -> tuple[Any, bool]:
-    """Prefer the configured Qwen vision model without changing the answer model."""
-    qwen_api_key = (
-        payload.vision_api_key
-        or (payload.api_key if payload.model_provider == "qwen" else "")
-        or settings.qwen_api_key
-    )
-    if not qwen_api_key:
-        if payload.model_provider == "deepseek":
-            raise ValueError(
-                "拍照答题需要配置 Qwen 视觉模型 API Key；图片识别不能使用当前仅支持文本的 DeepSeek 模型，"
-                "请在“模型设置 → 图片识别”中完成配置。"
-            )
-        return selected_client, False
-    qwen_base_url = (
-        payload.vision_base_url
-        or (
-            payload.base_url
-            if payload.model_provider == "qwen" and payload.api_key and payload.base_url
-            else settings.qwen_base_url
-        )
-    )
+    """Return the fixed server-side Qwen3.7-Flash visual client."""
+    del payload, selected_client
+    if not settings.qwen_api_key:
+        raise ValueError("图片理解需要服务端配置 Qwen API Key")
     return (
         OpenAICompatibleClient(
             provider="qwen",
-            model=payload.vision_model or settings.qwen_vision_model,
-            api_key=qwen_api_key,
-            base_url=qwen_base_url,
+            model=QWEN_VISUAL_TASK_MODEL,
+            api_key=settings.qwen_api_key,
+            base_url=settings.qwen_base_url,
+            enable_thinking=False,
         ),
         True,
     )
@@ -1886,6 +1879,13 @@ async def _update_conversation_summary(
 
 @app.post("/api/chat")
 async def chat(payload: ChatRequest) -> StreamingResponse:
+    try:
+        payload.knowledge_base = knowledge_bases.resolve_runtime_id(
+            payload.knowledge_base
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     async def event_stream() -> AsyncIterator[str]:
         selected_client: Any | None = None
         close_selected_client = False
@@ -2706,7 +2706,7 @@ async def upload(
         "display_name": normalized_display_name,
         "indexing": bool(rebuild and indexable),
         "build": build_state,
-        "multimodal_model": f"qwen/{QWEN_VL_FALLBACK_MODEL}",
+        "multimodal_model": f"qwen/{QWEN_VISUAL_TASK_MODEL}",
         "message": "文件已保存，知识库正在后台更新" if rebuild and indexable else "文件已保存",
     }
 
@@ -2847,9 +2847,9 @@ async def create_question_bank(
             detail=f"不支持的题库附件类型：{suffix or '未知'}",
         )
     try:
-        knowledge_base = knowledge_bases.validate_id(knowledge_base)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        knowledge_base = knowledge_bases.resolve_runtime_id(knowledge_base)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     try:
         content = await _read_bounded_upload(
             file,
@@ -2987,6 +2987,12 @@ async def create_question_bank_mistake_candidate(
     question_id: str,
     payload: QuestionReferenceActionRequest,
 ) -> dict[str, Any]:
+    try:
+        payload.knowledge_base = knowledge_bases.resolve_runtime_id(
+            payload.knowledge_base
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     try:
         context = await asyncio.to_thread(
             homework_store.get_question_answer_context,

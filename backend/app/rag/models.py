@@ -54,7 +54,9 @@ class RetrievalHit:
     rerank_score: float
     graph_score: float = 0.0
     cross_encoder_score: float = 0.0
-    image_score: float = 0.0
+    section_id: str = ""
+    evidence_ids: list[str] | None = None
+    matched_entity_ids: list[str] | None = None
 
     @property
     def display_section(self) -> str:
@@ -83,7 +85,9 @@ class RetrievalHit:
             "vector_score": round(self.vector_score, 4),
             "bm25_score": round(self.bm25_score, 4),
             "graph_score": round(self.graph_score, 4),
-            "image_score": round(self.image_score, 4),
             "rerank_score": round(self.rerank_score, 4),
+            "section_id": self.section_id,
+            "evidence_ids": list(self.evidence_ids or []),
+            "matched_entity_ids": list(self.matched_entity_ids or []),
         }
 

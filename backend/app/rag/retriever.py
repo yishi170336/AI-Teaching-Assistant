@@ -2,638 +2,462 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
-import sys
-import threading
-import base64
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
-from urllib.request import Request, urlopen
 
 import jieba
 import numpy as np
 from rank_bm25 import BM25Okapi
 
-from backend.app.rag.models import RetrievalHit, TextChunk
-from backend.app.rag.section_titles import repair_legacy_chunk_sections
 from backend.app.rag.embedding_runtime import encode_texts
-from backend.app.config import settings
-from backend.app.services.qwen_multimodal_client import QwenMultimodalEmbeddingClient
+from backend.app.rag.models import RetrievalHit, TextChunk
+
+
+SCHEMA4_PREFIX = "4."
+QWEN3_EMBEDDING_DIMENSION = 1024
+SUPPORTED_FEATURES = {
+    "course_qa",
+    "photo_qa",
+    "similar_question",
+    "learning_plan",
+    "question_recommendation",
+    "mistake_alignment",
+    "homework_alignment",
+}
+FEATURE_LIMITS: dict[str, dict[str, int]] = {
+    "course_qa": {"sources": 6, "facts": 4, "entities": 8, "relationships": 4, "sections": 4},
+    "photo_qa": {"sources": 6, "facts": 4, "entities": 8, "relationships": 4, "sections": 4},
+    "similar_question": {"sources": 6, "facts": 4, "entities": 8, "relationships": 6, "sections": 4},
+    "learning_plan": {"sources": 4, "facts": 0, "entities": 18, "relationships": 6, "sections": 6},
+    "question_recommendation": {"sources": 0, "facts": 0, "entities": 8, "relationships": 0, "sections": 3},
+    "mistake_alignment": {"sources": 0, "facts": 0, "entities": 5, "relationships": 0, "sections": 5},
+    "homework_alignment": {"sources": 0, "facts": 0, "entities": 5, "relationships": 0, "sections": 5},
+}
 
 
 def tokenize(text: str) -> list[str]:
-    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", " ", text.lower())
+    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", " ", str(text).lower())
     return [token.strip() for token in jieba.lcut(normalized) if token.strip()]
 
 
-class HybridRetriever:
+def _normalize_scores(values: dict[int, float]) -> dict[int, float]:
+    if not values:
+        return {}
+    minimum, maximum = min(values.values()), max(values.values())
+    if math.isclose(minimum, maximum):
+        return {key: 1.0 if maximum > 0 else 0.0 for key in values}
+    return {key: (value - minimum) / (maximum - minimum) for key, value in values.items()}
+
+
+def _compact(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _normalized_title(value: Any) -> str:
+    return re.sub(r"[\s＊*，,。．:：()（）]+", "", str(value or "")).casefold()
+
+
+def _normalized_formula(value: Any) -> str:
+    text = str(value or "").casefold()
+    text = text.replace("（", "(").replace("）", ")").replace("＝", "=")
+    return re.sub(r"[\s$`\\{}\[\]]+", "", text)
+
+
+class Schema4Retriever:
+    """Single, evidence-first retriever for schema-4 course knowledge bases."""
+
     def __init__(self, index_dir: Path, embedding_model_path: Path) -> None:
         self.index_dir = index_dir
         self.embedding_model_path = embedding_model_path
+        self.meta = json.loads((index_dir / "index_meta.json").read_text(encoding="utf-8"))
+        graph_path = index_dir / "semantic_knowledge_graph.json"
+        if not graph_path.is_file():
+            raise ValueError("Schema 4知识库缺少semantic_knowledge_graph.json")
+        self.graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        schema_version = str(self.graph.get("schema_version") or self.meta.get("schema_version") or "")
+        if not schema_version.startswith(SCHEMA4_PREFIX):
+            raise ValueError(f"不支持旧知识库Schema：{schema_version or 'unknown'}")
+        if int(self.meta.get("dimension", 0) or 0) != QWEN3_EMBEDDING_DIMENSION:
+            raise ValueError("正文索引不是Qwen3-Embedding-0.6B的1024维向量")
+        model_name = str(self.meta.get("embedding_model", "")).casefold()
+        if "qwen3-embedding-0.6b" not in model_name:
+            raise ValueError("正文索引不是由Qwen3-Embedding-0.6B生成")
+
         self.chunks = [
             TextChunk(**json.loads(line))
             for line in (index_dir / "chunks.jsonl").read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
-        # Compatibility repair for old indexes; this changes memory only and never
-        # rewrites chunks.jsonl or triggers a knowledge-base rebuild.
-        repair_legacy_chunk_sections(self.chunks)
-        self.meta = json.loads((index_dir / "index_meta.json").read_text(encoding="utf-8"))
-        if sys.platform == "darwin" and embedding_model_path.exists():
-            # Loading FAISS before Torch can segfault the macOS process on the
-            # first query. Initialize the shared encoder before FAISS is opened.
-            from backend.app.rag.embedding_runtime import get_embedding_model
+        if any(chunk.doc_type == "question" for chunk in self.chunks):
+            raise ValueError("Schema 4课程知识库不得包含题库Chunk")
 
-            get_embedding_model(embedding_model_path)
-        self._qdrant_client = self._open_qdrant()
-        self._neo4j_driver = None
-        # Open Qdrant before FAISS/Torch native runtimes on Windows.
         import faiss
 
-        serialized_index = np.frombuffer(
+        self.index = faiss.deserialize_index(np.frombuffer(
             (index_dir / "vectors.faiss").read_bytes(), dtype=np.uint8
-        )
-        self.index = faiss.deserialize_index(serialized_index)
-        self._circuit_index, self._circuit_items = self._open_local_circuit_index(faiss)
-        (
-            self._entity_index,
-            self._entity_items,
-            self._entity_relations,
-        ) = self._open_entity_graph_index(faiss)
+        ))
+        if self.index.d != QWEN3_EMBEDDING_DIMENSION or self.index.ntotal != len(self.chunks):
+            raise ValueError("正文FAISS维度或向量数量与chunks.jsonl不一致")
+        self._validate_normalized_index(self.index, "正文")
+
+        self.sections = {
+            str(item["id"]): dict(item)
+            for item in self.graph.get("nodes", [])
+            if isinstance(item, dict) and item.get("type") == "section" and item.get("id")
+        }
+        self.entities = {
+            str(item["id"]): dict(item)
+            for item in self.graph.get("nodes", [])
+            if isinstance(item, dict) and item.get("type") == "entity" and item.get("id")
+        }
+        self.relationships = [
+            dict(item)
+            for item in self.graph.get("edges", [])
+            if isinstance(item, dict)
+            and item.get("type") == "concept_relation"
+            and float(item.get("strength", 0.0) or 0.0) >= 7.0
+            and float(item.get("confidence", 0.0) or 0.0) >= 0.70
+        ]
+        self._load_entity_index(faiss)
+        self._map_chunk_sections()
+        self.facts = self._load_jsonl(index_dir / "attribute_facts.jsonl")
         self._tokenized = [tokenize(self._search_text(chunk)) for chunk in self.chunks]
         self._bm25 = BM25Okapi(self._tokenized)
-        self._cross_encoder = None
-        self._cross_encoder_lock = threading.Lock()
-        self._qwen_multimodal_lock = threading.Lock()
-        self._qwen_multimodal_client = self._open_qwen_multimodal()
-        self._graph_chunks = self._load_graph_expansion()
 
-    def _open_entity_graph_index(
-        self, faiss_module: Any
-    ) -> tuple[Any | None, list[dict[str, Any]], list[dict[str, Any]]]:
-        graph_path = self.index_dir / "semantic_knowledge_graph.json"
+    @staticmethod
+    def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+        if not path.is_file():
+            return []
+        result: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                result.append(item)
+        return result
+
+    @staticmethod
+    def _validate_normalized_index(index: Any, label: str) -> None:
+        if not index.ntotal:
+            raise ValueError(f"{label}FAISS索引为空")
+        vectors = np.empty((int(index.ntotal), int(index.d)), dtype=np.float32)
+        index.reconstruct_n(0, int(index.ntotal), vectors)
+        norm_error = float(np.max(np.abs(np.linalg.norm(vectors, axis=1) - 1.0)))
+        if not math.isfinite(norm_error) or norm_error > 1e-3:
+            raise ValueError(f"{label}向量未按要求归一化：最大误差{norm_error:.6f}")
+
+    def _load_entity_index(self, faiss_module: Any) -> None:
         manifest_path = self.index_dir / "entity_embedding_manifest.json"
         index_path = self.index_dir / "entity_vectors.faiss"
-        if not (graph_path.is_file() and manifest_path.is_file() and index_path.is_file()):
-            return None, [], []
-        try:
-            graph = json.loads(graph_path.read_text(encoding="utf-8"))
-            if not str(graph.get("schema_version", "")).startswith("4."):
-                return None, [], []
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            items = list(manifest.get("entities", []))
-            serialized = np.frombuffer(index_path.read_bytes(), dtype=np.uint8)
-            index = faiss_module.deserialize_index(serialized)
-            if (
-                index.ntotal != len(items)
-                or int(manifest.get("dimension", 0)) != int(index.d)
-            ):
-                return None, [], []
-            relations = [
-                item for item in graph.get("edges", [])
-                if isinstance(item, dict)
-                and item.get("type") == "concept_relation"
-                and float(item.get("strength", 0.0) or 0.0) >= 7.0
-                and float(item.get("confidence", 0.0) or 0.0) >= 0.70
-            ]
-            return index, items, relations
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return None, [], []
-
-    def _open_qdrant(self) -> Any | None:
-        qdrant_meta = self.meta.get("qdrant", {})
-        if not qdrant_meta.get("enabled"):
-            return None
-        qdrant_url = settings.qdrant_url.strip()
-        if os.name == "nt":
-            # The Qdrant client and the Torch/FAISS native runtimes can
-            # terminate the Windows process when loaded together. Remote
-            # collections are queried through Qdrant's REST API instead;
-            # FAISS remains the fallback when no server URL is configured.
-            return None
-        try:
-            # Import/open before Torch is loaded. On Windows this also avoids a
-            # native runtime ordering conflict between embedded Qdrant and Torch.
-            from qdrant_client import QdrantClient
-
-            if qdrant_url:
-                return QdrantClient(
-                    url=qdrant_url,
-                    api_key=settings.qdrant_api_key or None,
-                    timeout=30,
-                )
-            return QdrantClient(path=str(self.index_dir / "qdrant"))
-        except Exception:
-            return None
-
-    def _qdrant_query(
-        self, collection_name: str, vector: list[float], count: int
-    ) -> list[dict[str, Any]]:
-        if self._qdrant_client is not None:
-            result = self._qdrant_client.query_points(
-                collection_name=collection_name,
-                query=vector,
-                limit=count,
-                with_payload=True,
-            )
-            return [
-                {"score": float(point.score), "payload": point.payload or {}}
-                for point in result.points
-            ]
-        qdrant_url = settings.qdrant_url.strip()
-        if not qdrant_url:
-            return []
-        payload = json.dumps(
-            {"query": vector, "limit": count, "with_payload": True}
-        ).encode("utf-8")
-        headers = {"Accept": "application/json", "Content-Type": "application/json"}
-        if settings.qdrant_api_key:
-            headers["api-key"] = settings.qdrant_api_key
-        endpoint = (
-            f"{qdrant_url.rstrip('/')}/collections/"
-            f"{quote(collection_name, safe='')}/points/query"
-        )
-        request = Request(endpoint, data=payload, headers=headers, method="POST")
-        with urlopen(request, timeout=30) as response:
-            result = json.loads(response.read().decode("utf-8"))
-        return list(result.get("result", {}).get("points", []))
-
-    def _has_qdrant_query_backend(self) -> bool:
-        return self._qdrant_client is not None or bool(settings.qdrant_url.strip())
-
-    def close(self) -> None:
-        if self._qdrant_client is not None:
-            self._qdrant_client.close()
-            self._qdrant_client = None
-        if self._neo4j_driver is not None:
-            self._neo4j_driver.close()
-            self._neo4j_driver = None
-        if self._qwen_multimodal_client is not None:
-            self._qwen_multimodal_client.close()
-            self._qwen_multimodal_client = None
-
-    def _open_qwen_multimodal(self) -> Any | None:
-        qdrant_meta = self.meta.get("qdrant", {})
-        if not (
-            settings.qwen_api_key
-            and qdrant_meta.get("qwen_multimodal_enabled")
-            and (
-                qdrant_meta.get("local_faiss_enabled")
-                or (
-                    qdrant_meta.get("multimodal_qdrant_enabled")
-                    and qdrant_meta.get("multimodal_collection")
-                )
-            )
+        if not manifest_path.is_file() or not index_path.is_file():
+            raise ValueError("Schema 4知识库缺少实体向量索引")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if (
+            not str(manifest.get("schema_version", "")).startswith(SCHEMA4_PREFIX)
+            or int(manifest.get("dimension", 0) or 0) != QWEN3_EMBEDDING_DIMENSION
+            or not bool(manifest.get("normalized"))
+            or "qwen3-embedding-0.6b" not in str(manifest.get("model", "")).casefold()
         ):
-            return None
-        try:
-            return QwenMultimodalEmbeddingClient(
-                api_key=settings.qwen_api_key,
-                model=settings.qwen_multimodal_embedding_model,
-                endpoint=settings.qwen_multimodal_embedding_url,
-                dimension=settings.qwen_multimodal_embedding_dimension,
-            )
-        except ValueError:
-            return None
+            raise ValueError("实体索引不是Qwen3-Embedding-0.6B的1024维归一化向量")
+        self.entity_items = [dict(item) for item in manifest.get("entities", []) if isinstance(item, dict)]
+        self.entity_index = faiss_module.deserialize_index(np.frombuffer(
+            index_path.read_bytes(), dtype=np.uint8
+        ))
+        if (
+            self.entity_index.d != QWEN3_EMBEDDING_DIMENSION
+            or self.entity_index.ntotal != len(self.entity_items)
+            or int(manifest.get("count", len(self.entity_items))) != len(self.entity_items)
+        ):
+            raise ValueError("实体FAISS维度或向量数量与manifest不一致")
+        self._validate_normalized_index(self.entity_index, "实体")
 
-    def _open_local_circuit_index(self, faiss_module: Any) -> tuple[Any | None, list[dict[str, Any]]]:
-        qdrant_meta = self.meta.get("qdrant", {})
-        if not qdrant_meta.get("local_faiss_enabled"):
-            return None, []
-        index_name = str(qdrant_meta.get("local_faiss_index", "circuit_vectors.faiss"))
-        items_name = str(qdrant_meta.get("local_faiss_items", "circuit_vector_items.jsonl"))
-        index_path = self.index_dir / index_name
-        items_path = self.index_dir / items_name
-        if not index_path.is_file() or not items_path.is_file():
-            return None, []
-        try:
-            serialized = np.frombuffer(index_path.read_bytes(), dtype=np.uint8)
-            index = faiss_module.deserialize_index(serialized)
-            items = [
-                json.loads(line)
-                for line in items_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-            if index.ntotal != len(items):
-                return None, []
-            return index, items
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return None, []
-
-    def _neo4j_http_chunk_ids(self, tokens: list[str]) -> set[str]:
-        if not (settings.neo4j_http_url.strip() and settings.neo4j_password and tokens):
-            return set()
-        statement = """
-        MATCH (chunk:KnowledgeEntity)-[r:RELATED {relation: 'MENTIONS'}]->(concept:KnowledgeEntity)
-        WHERE chunk.knowledge_base = $kb
-          AND any(token IN $tokens WHERE toLower(concept.name) CONTAINS token)
-        RETURN DISTINCT chunk.chunk_id AS chunk_id
-        LIMIT 100
-        """
-        payload = json.dumps(
-            {
-                "statements": [
-                    {
-                        "statement": statement,
-                        "parameters": {"kb": self.index_dir.name, "tokens": tokens},
-                        "resultDataContents": ["row"],
-                    }
-                ]
-            }
-        ).encode("utf-8")
-        credentials = base64.b64encode(
-            f"{settings.neo4j_user}:{settings.neo4j_password}".encode("utf-8")
-        ).decode("ascii")
-        endpoint = (
-            f"{settings.neo4j_http_url.rstrip('/')}/db/"
-            f"{quote(settings.neo4j_database, safe='')}/tx/commit"
-        )
-        request = Request(
-            endpoint,
-            data=payload,
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Basic {credentials}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=5) as response:
-                result = json.loads(response.read().decode("utf-8"))
-            if result.get("errors"):
-                return set()
-            data = result.get("results", [{}])[0].get("data", [])
-            return {str(item["row"][0]) for item in data if item.get("row", [None])[0]}
-        except Exception:
-            return set()
-
-    def _load_graph_expansion(self) -> dict[str, set[str]]:
-        path = self.index_dir / "knowledge_graph.json"
-        if not path.exists():
-            return {}
-        try:
-            graph = json.loads(path.read_text(encoding="utf-8"))
-            nodes = {item["id"]: item for item in graph.get("nodes", [])}
-            result: dict[str, set[str]] = {}
-            searchable_chunk_ids = {
-                chunk.id for chunk in self.chunks if chunk.doc_type != "question"
-            }
-            for edge in graph.get("edges", []):
-                if edge.get("type") != "MENTIONS":
-                    continue
-                chunk = nodes.get(edge.get("source"), {})
-                concept = nodes.get(edge.get("target"), {})
-                name = str(concept.get("name", "")).strip().lower()
-                chunk_id = str(chunk.get("chunk_id", ""))
-                if name and chunk_id in searchable_chunk_ids:
-                    result.setdefault(name, set()).add(chunk_id)
-            return result
-        except Exception:
-            return {}
+    def _map_chunk_sections(self) -> None:
+        by_title: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for section in self.sections.values():
+            source = str(section.get("source", ""))
+            titles = [section.get("title"), section.get("name"), *(section.get("title_path") or [])]
+            for title in titles:
+                normalized = _normalized_title(title)
+                if normalized:
+                    by_title.setdefault((source, normalized), []).append(section)
+        for chunk in self.chunks:
+            metadata = dict(chunk.multimodal or {})
+            section_id = str(metadata.get("section_id", ""))
+            if section_id in self.sections:
+                chunk.multimodal = metadata
+                continue
+            candidates: list[dict[str, Any]] = []
+            for title in (chunk.section, chunk.chapter):
+                candidates.extend(by_title.get((chunk.source, _normalized_title(title)), []))
+            page = int(chunk.page_start or 0)
+            candidates = list({str(item["id"]): item for item in candidates}.values())
+            candidates.sort(key=lambda item: (
+                not (int(item.get("page_start") or 0) <= page <= int(item.get("page_end") or 10**9)),
+                -int(item.get("level", 0) or 0),
+            ))
+            if candidates:
+                section = candidates[0]
+                metadata["section_id"] = str(section["id"])
+                metadata["section_path"] = list(section.get("title_path") or [])
+            chunk.multimodal = metadata
 
     @staticmethod
     def _search_text(chunk: TextChunk) -> str:
-        return " ".join(
-            [chunk.chapter, chunk.section, " ".join(chunk.knowledge_tags), chunk.text]
-        )
+        return " ".join(filter(None, (
+            chunk.chapter,
+            chunk.section,
+            " ".join(chunk.knowledge_tags),
+            chunk.text,
+        )))
 
-    def _vector_search(self, query_embedding: np.ndarray, count: int) -> tuple[dict[int, float], str]:
-        qdrant_meta = self.meta.get("qdrant", {})
-        if qdrant_meta.get("enabled") and self._has_qdrant_query_backend():
-            try:
-                points = self._qdrant_query(
-                    qdrant_meta["text_collection"], query_embedding[0].tolist(), count
-                )
-                values = {
-                    int(point["payload"]["chunk_index"]): float(point["score"])
-                    for point in points
-                    if point.get("payload")
-                    and "chunk_index" in point["payload"]
-                    and 0 <= int(point["payload"]["chunk_index"]) < len(self.chunks)
-                }
-                if values:
-                    return values, "qdrant"
-            except Exception:
-                pass
-        vector_scores, vector_indices = self.index.search(query_embedding, count)
-        return ({
-            int(index): float(score)
-            for score, index in zip(vector_scores[0], vector_indices[0])
-            if index >= 0
-        }, "faiss")
+    def close(self) -> None:
+        return None
 
-    def _entity_graph_scores(
-        self, query: str, query_embedding: np.ndarray
-    ) -> dict[int, float]:
-        if self._entity_index is None or not self._entity_items:
-            return {}
+    def _entity_candidates(
+        self, query: str, query_embedding: np.ndarray, limit: int = 12
+    ) -> list[dict[str, Any]]:
         query_lower = query.casefold()
-        exact_ids: set[str] = set()
-        for item in self._entity_items:
-            names = [str(item.get("name", "")), *map(str, item.get("aliases", []))]
+        exact: set[str] = set()
+        for entity_id, entity in self.entities.items():
+            names = [_compact(entity.get("name")), *[_compact(value) for value in entity.get("aliases", [])]]
             if any(name and name.casefold() in query_lower for name in names):
-                exact_ids.add(str(item.get("entity_id", "")))
-        scores, indices = self._entity_index.search(
-            query_embedding.astype(np.float32), min(12, len(self._entity_items))
+                exact.add(entity_id)
+        scores, rows = self.entity_index.search(
+            query_embedding.astype(np.float32), min(24, len(self.entity_items))
         )
-        entity_scores: dict[str, float] = {}
-        entity_sections: dict[str, list[str]] = {}
-        for item in self._entity_items:
-            entity_sections[str(item.get("entity_id", ""))] = [
-                str(value) for value in item.get("section_ids", [])
-            ]
-        for score, row in zip(scores[0], indices[0]):
-            if row < 0 or row >= len(self._entity_items):
+        values: dict[str, float] = {entity_id: 1.0 for entity_id in exact}
+        for score, row in zip(scores[0], rows[0]):
+            if row < 0 or row >= len(self.entity_items):
                 continue
-            entity_id = str(self._entity_items[int(row)].get("entity_id", ""))
-            if float(score) >= 0.55 or entity_id in exact_ids:
-                entity_scores[entity_id] = max(
-                    entity_scores.get(entity_id, 0.0),
-                    1.0 if entity_id in exact_ids else float(score),
-                )
-        for entity_id in exact_ids:
-            entity_scores[entity_id] = 1.0
-        direct_scores = dict(entity_scores)
-        for relation in self._entity_relations:
-            source, target = str(relation["source"]), str(relation["target"])
-            if source in direct_scores:
-                entity_scores[target] = max(
-                    entity_scores.get(target, 0.0), direct_scores[source] * 0.85
-                )
-            if target in direct_scores:
-                entity_scores[source] = max(
-                    entity_scores.get(source, 0.0), direct_scores[target] * 0.85
-                )
+            entity_id = str(self.entity_items[int(row)].get("entity_id", ""))
+            if entity_id in self.entities and (float(score) >= 0.55 or entity_id in exact):
+                values[entity_id] = max(values.get(entity_id, 0.0), float(score))
+        ranked = sorted(values.items(), key=lambda item: item[1], reverse=True)[:limit]
+        return [{**self.entities[entity_id], "retrieval_score": score, "exact_match": entity_id in exact} for entity_id, score in ranked]
+
+    def _chunk_candidates(
+        self,
+        query: str,
+        query_embedding: np.ndarray,
+        entity_values: list[dict[str, Any]],
+        count: int = 30,
+    ) -> list[tuple[int, RetrievalHit]]:
+        vector_scores, vector_rows = self.index.search(query_embedding, min(count, len(self.chunks)))
+        vector_map = {int(row): float(score) for score, row in zip(vector_scores[0], vector_rows[0]) if row >= 0}
+        bm25_values = self._bm25.get_scores(tokenize(query))
+        bm25_rows = np.argsort(bm25_values)[::-1][: min(count, len(self.chunks))]
+        bm25_map = {int(row): float(bm25_values[row]) for row in bm25_rows}
+        vector_norm = _normalize_scores(vector_map)
+        bm25_norm = _normalize_scores(bm25_map)
         section_scores: dict[str, float] = {}
-        for entity_id, score in entity_scores.items():
-            for section_id in entity_sections.get(entity_id, []):
-                section_scores[section_id] = max(section_scores.get(section_id, 0.0), score)
-        return {
-            index: section_scores[section_id]
-            for index, chunk in enumerate(self.chunks)
-            if isinstance(chunk.multimodal, dict)
-            and (section_id := str(chunk.multimodal.get("section_id", ""))) in section_scores
-        }
-
-    def _graph_scores(
-        self, query: str, query_embedding: np.ndarray | None = None
-    ) -> dict[int, float]:
-        if query_embedding is not None:
-            entity_scores = self._entity_graph_scores(query, query_embedding)
-            if entity_scores:
-                return entity_scores
-        query_lower = query.lower()
-        query_terms = {token for token in tokenize(query) if len(token) > 1}
-        matched: set[str] = set()
-        for concept, chunk_ids in self._graph_chunks.items():
-            concept_terms = {token for token in tokenize(concept) if len(token) > 1}
-            if (len(concept) > 1 and concept in query_lower) or concept_terms & query_terms:
-                matched.update(chunk_ids)
-        tokens = [token.lower() for token in tokenize(query) if len(token) > 1][:12]
-        matched.update(self._neo4j_http_chunk_ids(tokens))
-        if not matched:
-            return {}
-        return {
-            index: 1.0
-            for index, chunk in enumerate(self.chunks)
-            if chunk.id in matched
-        }
-
-    def _cross_encoder_scores(self, query: str, indices: list[int]) -> dict[int, float]:
-        if not settings.rerank_model_path or not indices:
-            return {}
-        try:
-            if self._cross_encoder is None:
-                with self._cross_encoder_lock:
-                    if self._cross_encoder is None:
-                        from sentence_transformers import CrossEncoder
-
-                        self._cross_encoder = CrossEncoder(settings.rerank_model_path, device="cpu")
-            with self._cross_encoder_lock:
-                values = self._cross_encoder.predict(
-                    [(query, self._search_text(self.chunks[index])) for index in indices]
+        section_entities: dict[str, list[str]] = {}
+        for entity in entity_values:
+            entity_id = str(entity.get("id", ""))
+            for section_id in entity.get("section_ids", []):
+                section_id = str(section_id)
+                section_scores[section_id] = max(
+                    section_scores.get(section_id, 0.0), float(entity.get("retrieval_score", 0.0))
                 )
-            return self._normalize({index: float(value) for index, value in zip(indices, values)})
-        except Exception:
-            return {}
+                section_entities.setdefault(section_id, []).append(entity_id)
+        hits: list[tuple[int, RetrievalHit]] = []
+        for index in set(vector_map) | set(bm25_map):
+            chunk = self.chunks[index]
+            section_id = str((chunk.multimodal or {}).get("section_id", ""))
+            graph_score = section_scores.get(section_id, 0.0)
+            score = 0.65 * vector_norm.get(index, 0.0) + 0.20 * bm25_norm.get(index, 0.0) + 0.15 * graph_score
+            evidence_ids = [str(value) for value in (chunk.multimodal or {}).get("evidence_ids", []) if str(value)]
+            hits.append((index, RetrievalHit(
+                chunk=chunk,
+                score=score,
+                vector_score=vector_map.get(index, 0.0),
+                bm25_score=bm25_map.get(index, 0.0),
+                rerank_score=score,
+                graph_score=graph_score,
+                section_id=section_id,
+                evidence_ids=evidence_ids,
+                matched_entity_ids=list(dict.fromkeys(section_entities.get(section_id, []))),
+            )))
+        hits.sort(key=lambda item: item[1].score, reverse=True)
+        return hits
 
-    def _local_circuit_scores(self, vector: list[float], count: int) -> dict[int, float]:
-        if self._circuit_index is None or not self._circuit_items:
-            return {}
-        query = np.asarray([vector], dtype=np.float32)
-        norms = np.linalg.norm(query, axis=1, keepdims=True)
-        query = query / np.maximum(norms, 1e-12)
-        scores, indices = self._circuit_index.search(
-            query, min(count, len(self._circuit_items))
-        )
-        values: dict[int, float] = {}
-        for score, vector_index in zip(scores[0], indices[0]):
-            if vector_index < 0 or vector_index >= len(self._circuit_items):
+    def _fact_candidates(
+        self, query: str, section_ids: set[str], entity_ids: set[str], limit: int
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        query_tokens = {token for token in tokenize(query) if len(token) > 1}
+        query_formula = _normalized_formula(query)
+        values: list[tuple[float, dict[str, Any]]] = []
+        for fact in self.facts:
+            text = " ".join(_compact(fact.get(key)) for key in (
+                "subject", "predicate_original", "predicate_normalized", "value", "description", "evidence_text"
+            ))
+            fact_tokens = {token for token in tokenize(text) if len(token) > 1}
+            overlap = len(query_tokens & fact_tokens) / max(1, len(query_tokens))
+            formula = _normalized_formula(fact.get("value"))
+            formula_match = bool(formula and len(formula) >= 4 and (formula in query_formula or query_formula in formula))
+            subject = _compact(fact.get("subject"))
+            subject_match = bool(subject and subject.casefold() in query.casefold())
+            fact_entities = {str(value) for value in fact.get("entity_ids", [])}
+            entity_match = bool(fact_entities & entity_ids)
+            section_match = str(fact.get("section_id", "")) in section_ids
+            score = 0.45 * overlap + 0.30 * float(formula_match or subject_match) + 0.15 * float(entity_match) + 0.10 * float(section_match)
+            if score > 0:
+                values.append((score, {**fact, "retrieval_score": round(score, 4)}))
+        values.sort(key=lambda item: item[0], reverse=True)
+        seen: set[str] = set()
+        result: list[dict[str, Any]] = []
+        for _score, fact in values:
+            key = str(fact.get("evidence_id") or fact.get("id") or "") + "|" + _normalized_formula(fact.get("value"))
+            if key in seen:
                 continue
-            item = self._circuit_items[int(vector_index)]
-            chunk_index = int(item.get("chunk_index", -1))
-            if 0 <= chunk_index < len(self.chunks):
-                values[chunk_index] = float(score)
-        return values
+            seen.add(key)
+            result.append(fact)
+            if len(result) >= limit:
+                break
+        return result
 
-    def _circuit_vector_scores(self, vector: list[float], count: int) -> dict[int, float]:
-        qdrant_meta = self.meta.get("qdrant", {})
-        if (
-            qdrant_meta.get("multimodal_qdrant_enabled")
-            and qdrant_meta.get("multimodal_collection")
-            and self._has_qdrant_query_backend()
-        ):
-            try:
-                points = self._qdrant_query(
-                    qdrant_meta["multimodal_collection"], vector, count
+    def _relationship_candidates(
+        self, entities: list[dict[str, Any]], limit: int
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        scores = {str(item["id"]): float(item.get("retrieval_score", 0.0)) for item in entities}
+        matched_ids = set(scores)
+        ranked: list[tuple[float, dict[str, Any]]] = []
+        for relation in self.relationships:
+            source, target = str(relation.get("source", "")), str(relation.get("target", ""))
+            both = source in matched_ids and target in matched_ids
+            one = source in matched_ids or target in matched_ids
+            if not one or (str(relation.get("relation", "")) == "关联" and not both):
+                continue
+            score = (
+                (1.0 if both else 0.6)
+                * float(relation.get("strength", 0.0) or 0.0) / 10
+                * float(relation.get("confidence", 0.0) or 0.0)
+                * max(scores.get(source, 0.55), scores.get(target, 0.55))
+            )
+            ranked.append((score, {**relation, "retrieval_score": round(score, 4)}))
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return [item for _score, item in ranked[:limit]]
+
+    def _section_candidates(
+        self,
+        hits: list[tuple[int, RetrievalHit]],
+        entities: list[dict[str, Any]],
+        feature: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        scores: dict[str, float] = {}
+        for _index, hit in hits[:20]:
+            if hit.section_id:
+                scores[hit.section_id] = max(scores.get(hit.section_id, 0.0), hit.score)
+        for entity in entities:
+            for section_id in entity.get("section_ids", []):
+                scores[str(section_id)] = max(
+                    scores.get(str(section_id), 0.0), float(entity.get("retrieval_score", 0.0))
                 )
-                values = {
-                    int(point["payload"]["chunk_index"]): float(point["score"])
-                    for point in points
-                    if point.get("payload")
-                    and point["payload"].get("element_type") == "circuit"
-                    and "chunk_index" in point["payload"]
-                    and 0 <= int(point["payload"]["chunk_index"]) < len(self.chunks)
-                }
-                if values:
-                    return values
-            except Exception:
-                pass
-        return self._local_circuit_scores(vector, count)
-
-    def _qwen_multimodal_scores(self, query: str, count: int) -> dict[int, float]:
-        qdrant_meta = self.meta.get("qdrant", {})
-        if not (
-            qdrant_meta.get("qwen_multimodal_enabled")
-            and self._qwen_multimodal_client is not None
-        ):
-            return {}
-        try:
-            with self._qwen_multimodal_lock:
-                vector = self._qwen_multimodal_client.embed_text(
-                    query, instruct=settings.circuit_image_embedding_instruct
-                )
-                return self._circuit_vector_scores(vector, count)
-        except Exception:
-            return {}
-
-    def _qwen_image_query_scores(
-        self, images: list[str] | None, count: int
-    ) -> dict[int, float]:
-        qdrant_meta = self.meta.get("qdrant", {})
-        if not (
-            images
-            and qdrant_meta.get("qwen_multimodal_enabled")
-            and self._qwen_multimodal_client is not None
-        ):
-            return {}
-        scores: dict[int, float] = {}
-        try:
-            with self._qwen_multimodal_lock:
-                for encoded in images[:5]:
-                    raw = base64.b64decode(encoded, validate=False)
-                    mime = "image/png" if raw.startswith(b"\x89PNG") else "image/jpeg"
-                    vector = self._qwen_multimodal_client.embed_image(
-                        raw,
-                        mime_type=mime,
-                        instruct=settings.circuit_image_embedding_instruct,
-                    )
-                    for index, score in self._circuit_vector_scores(vector, count).items():
-                        if score < settings.circuit_image_retrieval_min_score:
-                            continue
-                        scores[index] = max(scores.get(index, -1.0), score)
-            return scores
-        except Exception:
-            return {}
+        values = [
+            {**self.sections[section_id], "retrieval_score": round(score, 4)}
+            for section_id, score in scores.items()
+            if section_id in self.sections
+        ]
+        if feature == "learning_plan":
+            parent_ids = {str(item.get("parent", "")) for item in self.sections.values()}
+            leaf_values = [item for item in values if str(item.get("id", "")) not in parent_ids]
+            if leaf_values:
+                values = leaf_values
+        values.sort(key=lambda item: float(item.get("retrieval_score", 0.0)), reverse=True)
+        return values[:limit]
 
     @staticmethod
-    def _normalize(values: dict[int, float]) -> dict[int, float]:
-        if not values:
-            return {}
-        minimum, maximum = min(values.values()), max(values.values())
-        if math.isclose(minimum, maximum):
-            return {key: 1.0 if maximum > 0 else 0.0 for key in values}
-        return {key: (value - minimum) / (maximum - minimum) for key, value in values.items()}
+    def _deduplicate_hits(hits: list[tuple[int, RetrievalHit]], limit: int) -> list[RetrievalHit]:
+        seen: set[str] = set()
+        result: list[RetrievalHit] = []
+        for _index, hit in hits:
+            chunk = hit.chunk
+            evidence_key = "|".join(sorted(hit.evidence_ids or []))
+            key = evidence_key or str(chunk.content_hash or chunk.id)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(hit)
+            if len(result) >= limit:
+                break
+        return result
+
+    def retrieve(
+        self,
+        knowledge_base_id: str,
+        query: str,
+        feature: str = "course_qa",
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        if knowledge_base_id != self.index_dir.name:
+            raise ValueError("检索器与请求的知识库ID不一致")
+        if feature not in SUPPORTED_FEATURES:
+            raise ValueError(f"不支持的检索功能：{feature}")
+        query = _compact(query)
+        if not query:
+            return {key: [] for key in (
+                "sources", "facts", "entities", "relationships", "sections", "alignment_candidates"
+            )}
+        limits = dict(FEATURE_LIMITS[feature])
+        if limit is not None and limits["sources"]:
+            limits["sources"] = max(1, int(limit))
+        query_embedding = encode_texts(
+            self.embedding_model_path, [query], batch_size=1, purpose="query", device="cpu"
+        )
+        entities = self._entity_candidates(query, query_embedding, max(12, limits["entities"]))
+        hits = self._chunk_candidates(query, query_embedding, entities)
+        sections = self._section_candidates(hits, entities, feature, limits["sections"])
+        section_ids = {str(item.get("id", "")) for item in sections}
+        entity_ids = {str(item.get("id", "")) for item in entities}
+        facts = self._fact_candidates(query, section_ids, entity_ids, limits["facts"])
+        relationships = self._relationship_candidates(entities, limits["relationships"])
+        sources = self._deduplicate_hits(hits, limits["sources"])
+        selected_entities = entities[: limits["entities"]]
+        alignment_candidates: list[dict[str, Any]] = []
+        if feature in {"mistake_alignment", "homework_alignment"}:
+            for index, entity in enumerate(selected_entities):
+                next_score = float(selected_entities[index + 1].get("retrieval_score", 0.0)) if index + 1 < len(selected_entities) else 0.0
+                alignment_candidates.append({
+                    "entity_id": entity.get("id"),
+                    "name": entity.get("name"),
+                    "aliases": entity.get("aliases", []),
+                    "section_id": entity.get("section_id"),
+                    "section_ids": entity.get("section_ids", []),
+                    "confidence": round(float(entity.get("retrieval_score", 0.0)), 4),
+                    "ambiguous": index == 0 and bool(next_score) and float(entity.get("retrieval_score", 0.0)) - next_score < 0.05,
+                })
+        return {
+            "sources": [hit.source_dict() for hit in sources],
+            "facts": facts,
+            "entities": selected_entities,
+            "relationships": relationships,
+            "sections": sections,
+            "alignment_candidates": alignment_candidates,
+        }
 
     def search(
         self,
         query: str,
         k: int = 6,
         prefer_questions: bool = False,
-        query_images: list[str] | None = None,
     ) -> list[RetrievalHit]:
-        if not self.chunks:
+        del prefer_questions
+        query = _compact(query)
+        if not query:
             return []
-        searchable = {
-            index for index, chunk in enumerate(self.chunks)
-            if chunk.doc_type != "question"
-        }
-        if not searchable:
-            return []
-        excluded_count = len(self.chunks) - len(searchable)
-        candidate_count = min(len(self.chunks), max(k * 4, 16) + excluded_count)
         query_embedding = encode_texts(
-            self.embedding_model_path,
-            [query],
-            batch_size=1,
-            purpose="query",
+            self.embedding_model_path, [query], batch_size=1, purpose="query", device="cpu"
         )
-        vector_map, _vector_backend = self._vector_search(query_embedding, candidate_count)
-        vector_map = {index: score for index, score in vector_map.items() if index in searchable}
-        bm25_values = self._bm25.get_scores(tokenize(query))
-        bm25_top = np.argsort(bm25_values)[::-1][:candidate_count]
-        bm25_map = {
-            int(index): float(bm25_values[index])
-            for index in bm25_top
-            if int(index) in searchable
-        }
-
-        vector_norm = self._normalize(vector_map)
-        bm25_norm = self._normalize(bm25_map)
-        if getattr(self, "_entity_index", None) is not None:
-            graph_map = self._entity_graph_scores(query, query_embedding)
-            if not graph_map:
-                graph_map = self._graph_scores(query)
-        else:
-            graph_map = self._graph_scores(query)
-        image_map = self._qwen_multimodal_scores(query, candidate_count)
-        visual_candidate_count = max(
-            candidate_count, settings.circuit_image_retrieval_candidates
+        entities = self._entity_candidates(query, query_embedding)
+        return self._deduplicate_hits(
+            self._chunk_candidates(query, query_embedding, entities), k
         )
-        visual_query_map = self._qwen_image_query_scores(
-            query_images, visual_candidate_count
-        )
-        combined_image_map = dict(image_map)
-        for index, score in visual_query_map.items():
-            combined_image_map[index] = max(combined_image_map.get(index, -1.0), score)
-        image_norm = self._normalize(image_map)
-        visual_norm = self._normalize(visual_query_map)
-        candidates = (
-            set(vector_map) | set(bm25_map) | set(graph_map) | set(combined_image_map)
-        ) & searchable
-        query_tokens = set(tokenize(query))
-        cross_map = self._cross_encoder_scores(query, list(candidates))
-        hits_by_index: dict[int, RetrievalHit] = {}
-        for index in candidates:
-            chunk = self.chunks[index]
-            chunk_tokens = set(self._tokenized[index])
-            overlap = len(query_tokens & chunk_tokens) / max(1, len(query_tokens))
-            tag_overlap = len(query_tokens & set(tokenize(" ".join(chunk.knowledge_tags)))) / max(1, len(query_tokens))
-            if visual_query_map:
-                rerank = (
-                    0.24 * vector_norm.get(index, 0.0)
-                    + 0.16 * bm25_norm.get(index, 0.0)
-                    + 0.06 * overlap
-                    + 0.06 * tag_overlap
-                    + 0.08 * graph_map.get(index, 0.0)
-                    + 0.10 * cross_map.get(index, 0.0)
-                    + 0.30 * visual_norm.get(index, 0.0)
-                )
-            else:
-                rerank = (
-                    0.34 * vector_norm.get(index, 0.0)
-                    + 0.24 * bm25_norm.get(index, 0.0)
-                    + 0.08 * overlap
-                    + 0.08 * tag_overlap
-                    + 0.10 * graph_map.get(index, 0.0)
-                    + 0.10 * cross_map.get(index, 0.0)
-                    + 0.06 * image_norm.get(index, 0.0)
-                )
-            hits_by_index[index] = RetrievalHit(
-                chunk=chunk,
-                score=rerank,
-                vector_score=vector_map.get(index, 0.0),
-                bm25_score=bm25_map.get(index, 0.0),
-                rerank_score=rerank,
-                graph_score=graph_map.get(index, 0.0),
-                cross_encoder_score=cross_map.get(index, 0.0),
-                image_score=(
-                    visual_query_map.get(index, 0.0)
-                    if query_images
-                    else combined_image_map.get(index, 0.0)
-                ),
-            )
-        ranked = sorted(
-            hits_by_index.items(), key=lambda item: item[1].rerank_score, reverse=True
-        )
-        if not visual_query_map:
-            return [hit for _, hit in ranked[:k]]
-
-        # Keep the strongest high-confidence visual references in the result set
-        # before filling the remaining slots with the normal hybrid ranking.
-        visual_indices = [
-            index
-            for index, _score in sorted(
-                visual_query_map.items(), key=lambda item: item[1], reverse=True
-            )
-            if index in hits_by_index
-        ][: settings.circuit_image_retrieval_max_references]
-        visual_index_set = set(visual_indices)
-        selected = [hits_by_index[index] for index in visual_indices]
-        selected.extend(
-            hit for index, hit in ranked if index not in visual_index_set
-        )
-        return selected[:k]

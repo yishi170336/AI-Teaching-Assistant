@@ -93,6 +93,58 @@ AD_NOISE = (
 TAG_KEYWORDS = COURSE_CONCEPTS
 
 
+def assign_schema4_chunk_sections(
+    chunks: list[TextChunk], section_nodes: list[dict[str, Any]]
+) -> None:
+    """Persist section ownership on every future schema-4 retrieval chunk."""
+    sections = [
+        item for item in section_nodes
+        if isinstance(item, dict) and item.get("id") and item.get("type") == "section"
+    ]
+    for chunk in chunks:
+        metadata = dict(chunk.multimodal or {})
+        if str(metadata.get("section_id", "")):
+            chunk.multimodal = metadata
+            continue
+        page = int(chunk.page_start or 0)
+        source = str(chunk.source)
+        wanted = {
+            re.sub(r"[\s＊*，,。．:：()（）]+", "", value).casefold()
+            for value in (str(chunk.section), str(chunk.chapter))
+            if value.strip()
+        }
+        candidates: list[dict[str, Any]] = []
+        for section in sections:
+            if str(section.get("source", "")) != source:
+                continue
+            start = int(section.get("page_start") or 0)
+            end = int(section.get("page_end") or 10**9)
+            if not start <= page <= end:
+                continue
+            titles = [
+                section.get("title"), section.get("name"),
+                *(section.get("title_path") or []),
+            ]
+            exact = any(
+                re.sub(r"[\s＊*，,。．:：()（）]+", "", str(title)).casefold()
+                in wanted
+                for title in titles if str(title).strip()
+            )
+            candidates.append({**section, "_exact": exact})
+        candidates.sort(key=lambda item: (
+            not bool(item.get("_exact")),
+            -int(item.get("level", 0) or 0),
+            int(item.get("page_end") or page) - int(item.get("page_start") or page),
+        ))
+        if candidates:
+            selected = candidates[0]
+            metadata["section_id"] = str(selected["id"])
+            metadata["section_path"] = list(selected.get("title_path") or [])
+        if chunk.parent_id and not metadata.get("evidence_ids"):
+            metadata["evidence_ids"] = [str(chunk.parent_id)]
+        chunk.multimodal = metadata
+
+
 def _normalize_line(line: str) -> str:
     line = unicodedata.normalize("NFKC", line).replace("\u200b", "")
     line = re.sub(r"https?\s*:\s*[/\\]+\s*\S+", "", line, flags=re.I)
@@ -1265,6 +1317,7 @@ def build_knowledge_base(
 
     report(64, "chunking", "正在按章节内容单元生成正文与多模态检索块")
     chunks = knowledge_units_to_chunks(knowledge_units) + multimodal_chunks(elements)
+    assign_schema4_chunk_sections(chunks, section_nodes)
     if not chunks:
         raise RuntimeError(f"在 {resources_dir} 中没有提取到可索引内容")
     extraction_quality = validate_extracted_content(chunks)
@@ -1420,11 +1473,6 @@ def build_knowledge_base(
             "communities": semantic_graph.get("stats", {}).get("communities", 0),
         },
         "qdrant": qdrant_status,
-        "circuit_vision_model": (
-            f"qwen/{settings.qwen_visual_summary_model}"
-            if settings.qwen_api_key
-            else "not-configured (safe fallback)"
-        ),
         "visual_summary_model": (
             f"qwen/{settings.qwen_visual_summary_model}"
             if settings.qwen_api_key
@@ -1473,7 +1521,6 @@ def build_knowledge_base(
             "formula_elements": metadata["formula_elements"],
             "formula_processing": formula_processing,
             "table_elements": metadata["table_elements"],
-            "circuit_vision_model": metadata["vision_model"],
             "visual_summary_model": metadata["visual_summary_model"],
             "vision_summary_scope": ["course_image", "table"],
             "formula_vision_enabled": False,
@@ -1487,14 +1534,8 @@ def build_knowledge_base(
             "embedding_model": Path(embedding_model_path).name,
             "vector_store": qdrant_status.get("mode", "faiss") if qdrant_status.get("enabled") else "faiss",
             "vector_points": len(chunks),
-            "circuit_vector_points": qdrant_status.get("circuit_points", 0),
-            "circuit_vector_store": (
-                "qdrant+faiss"
-                if qdrant_status.get("multimodal_qdrant_enabled")
-                else "faiss"
-                if qdrant_status.get("local_faiss_enabled")
-                else "disabled"
-            ),
+            "image_vector_points": 0,
+            "image_vector_store": "disabled",
             "graph_nodes": len(legacy_graph["nodes"]),
             "graph_edges": len(legacy_graph["edges"]),
             "semantic_nodes": len(semantic_graph["nodes"]),
@@ -1504,12 +1545,9 @@ def build_knowledge_base(
         },
         "retrieval_service": {
             "status": "ready",
-            "strategies": [
-                "vector", "BM25", "knowledge-graph", "rerank", "circuit-image"
-            ],
+            "strategies": ["qwen3-vector", "BM25", "schema4-entity-graph"],
             "question_bank_search": False,
-            "circuit_image_min_score": settings.circuit_image_retrieval_min_score,
-            "circuit_image_max_references": settings.circuit_image_retrieval_max_references,
+            "image_vector_search": False,
         },
         "application": {
             "status": "ready",

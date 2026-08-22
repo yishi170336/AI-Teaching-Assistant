@@ -40,13 +40,8 @@ def _similarity(left: str, right: str) -> float:
 class MistakeKnowledgeService:
     """Read-only adapter from mistakes to the existing course knowledge graph."""
 
-    EXPLICIT_PREREQUISITE_RELATIONS = {
-        "PREREQUISITE",
-        "PREREQUISITE_OF",
-        "PRECEDES",
-        "FOUNDATION_OF",
-    }
-    DEPENDENCY_RELATIONS = {"DEPENDS_ON", "REQUIRES"}
+    EXPLICIT_PREREQUISITE_RELATIONS = {"前置", "先于", "基础"}
+    DEPENDENCY_RELATIONS = {"依赖", "需要"}
 
     def __init__(self, knowledge_bases: Any) -> None:
         self.knowledge_bases = knowledge_bases
@@ -57,31 +52,16 @@ class MistakeKnowledgeService:
         if not text:
             return []
         try:
-            retriever = self.knowledge_bases.get(knowledge_base)
-            hits = retriever.search(text[:12000], 10, False, None)
+            result = self.knowledge_bases.retrieve(
+                knowledge_base, text[:12000], "mistake_alignment", 5
+            )
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
             return []
-        scores: Counter[str] = Counter()
-        display_names: dict[str, str] = {}
-        for rank, hit in enumerate(hits):
-            chunk = getattr(hit, "chunk", None)
-            tags = getattr(chunk, "knowledge_tags", []) if chunk is not None else []
-            relevance = max(0.0, float(getattr(hit, "rerank_score", 0.0) or getattr(hit, "score", 0.0) or 0.0))
-            weight = max(0.05, relevance) / (rank + 1)
-            for raw_tag in tags:
-                tag = str(raw_tag).strip()
-                normalized = _normalized_name(tag)
-                if normalized and tag not in {"电路基础", "模拟电子技术基础"}:
-                    scores[normalized] += weight
-                    display_names.setdefault(normalized, tag)
-        if not scores:
-            return []
-        best = max(scores.values())
         return [
-            display_names[key]
-            for key, score in scores.most_common(12)
-            if score >= max(0.08, best * 0.22)
-        ][:8]
+            str(item.get("name", "")).strip()
+            for item in result.get("entities", [])[:8]
+            if str(item.get("name", "")).strip()
+        ]
 
     @staticmethod
     def _concept_nodes(graph: dict[str, Any]) -> list[dict[str, Any]]:
@@ -89,7 +69,7 @@ class MistakeKnowledgeService:
             node
             for node in graph.get("nodes", [])
             if isinstance(node, dict)
-            and node.get("type") == "concept"
+            and node.get("type") == "entity"
             and str(node.get("name", "")).strip()
         ]
 
@@ -114,7 +94,10 @@ class MistakeKnowledgeService:
             (
                 node
                 for node in concepts
-                if _normalized_name(str(node.get("name", ""))) == normalized_point
+                if any(
+                    _normalized_name(str(name)) == normalized_point
+                    for name in [node.get("name", ""), *node.get("aliases", [])]
+                )
             ),
             None,
         )
@@ -230,14 +213,16 @@ class MistakeKnowledgeService:
             if not isinstance(edge, dict):
                 continue
             source, target = str(edge.get("source", "")), str(edge.get("target", ""))
-            relation = str(edge.get("type", "")).upper()
+            if edge.get("type") != "concept_relation":
+                continue
+            relation = str(edge.get("relation", ""))
             prerequisite_id = ""
             if target in matched_ids and relation in self.EXPLICIT_PREREQUISITE_RELATIONS:
                 prerequisite_id = source
             elif source in matched_ids and relation in self.DEPENDENCY_RELATIONS:
                 prerequisite_id = target
             node = nodes.get(prerequisite_id)
-            if node and node.get("type") == "concept":
+            if node and node.get("type") == "entity":
                 result.append(
                     {
                         "knowledge_node_id": prerequisite_id,
@@ -280,7 +265,7 @@ class MistakeKnowledgeService:
     ) -> dict[str, Any]:
         points = list(dict.fromkeys(point.strip() for point in knowledge_points if point.strip()))[:12]
         try:
-            graph = self.knowledge_bases.graph(knowledge_base)
+            graph = self.knowledge_bases.semantic_graph(knowledge_base)
             concepts = self._concept_nodes(graph)
         except (OSError, RuntimeError, TypeError, ValueError):
             return {
@@ -294,31 +279,56 @@ class MistakeKnowledgeService:
                 "prerequisites": [],
             }
 
-        tags = [self._match_tag(point, concepts) for point in points]
-        matched_names = {
-            _normalized_name(str(tag["tag_name"]))
-            for tag in tags
-            if tag["tag_source"] == "knowledge_graph"
-        }
+        tags: list[dict[str, Any]] = []
+        for point in points:
+            try:
+                result = self.knowledge_bases.retrieve(
+                    knowledge_base, point, "mistake_alignment", 5
+                )
+                candidates = result.get("alignment_candidates", [])
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+                candidates = []
+            candidate = candidates[0] if candidates else None
+            if not candidate:
+                tags.append(self._unmatched_tag(point))
+                continue
+            confidence = float(candidate.get("confidence", 0.0) or 0.0)
+            ambiguous = bool(candidate.get("ambiguous"))
+            tags.append({
+                "tag_id": str(candidate.get("entity_id")),
+                "tag_name": str(candidate.get("name")),
+                "tag_source": "knowledge_graph",
+                "knowledge_node_id": str(candidate.get("entity_id")),
+                "match_type": "exact" if confidence >= 0.999 else "semantic",
+                "confidence": round(confidence, 3),
+                "is_exact": confidence >= 0.999,
+                "needs_confirmation": ambiguous or confidence < 0.75,
+                "section_id": str(candidate.get("section_id", "")),
+            })
         matched_ids = {
             str(tag["knowledge_node_id"])
             for tag in tags
             if tag.get("knowledge_node_id")
         }
-        chapter_summary = self._chapter_for_tags(graph, matched_names)
-        chunk_chapter, chunk_section, chunk_confidence = self._chunk_location(
-            knowledge_base,
-            matched_names,
-            str((chapter_summary or {}).get("name", "")),
+        section_id = next(
+            (str(tag.get("section_id", "")) for tag in tags if tag.get("section_id")), ""
         )
-        chapter_name = chunk_chapter or str((chapter_summary or {}).get("name", ""))
-        section_name = chunk_section
-        if chapter_name or section_name:
+        section = next(
+            (
+                node for node in graph.get("nodes", [])
+                if isinstance(node, dict) and str(node.get("id")) == section_id
+            ),
+            None,
+        )
+        if section:
+            title_path = [str(value) for value in section.get("title_path", [])]
             location = {
-                "chapter": chapter_name or "暂未确定",
-                "section": section_name or "暂未确定",
+                "chapter": title_path[0] if title_path else str(section.get("title", "暂未确定")),
+                "section": str(section.get("title", "暂未确定")),
                 "source": "knowledge_graph",
-                "confidence": chunk_confidence or 0.7,
+                "confidence": max(
+                    (float(tag.get("confidence", 0.0)) for tag in tags), default=0.0
+                ),
             }
         else:
             location = {
@@ -330,7 +340,7 @@ class MistakeKnowledgeService:
         return {
             "knowledge_tags": tags,
             "location": location,
-            "prerequisites": self._prerequisites(graph, matched_ids, chapter_summary),
+            "prerequisites": self._prerequisites(graph, matched_ids, None),
         }
 
     @staticmethod

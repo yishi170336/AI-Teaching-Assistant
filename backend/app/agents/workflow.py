@@ -592,21 +592,6 @@ def _filter_grounding_hits(
     focus_groups = _evidence_focus_groups(query, blueprint, hits)
     approved: list[RetrievalHit] = []
     graph_only_rejected = 0
-    blueprint = blueprint if isinstance(blueprint, dict) else {}
-    blueprint_text = _normalized_match_text(
-        " ".join(
-            (
-                " ".join(_string_list(blueprint.get("component_types"), 16)),
-                str(blueprint.get("topology", "")),
-            )
-        )
-    )
-    required_component_groups = [
-        aliases
-        for aliases in _CIRCUIT_COMPONENT_ALIASES
-        if any(_normalized_match_text(alias) in blueprint_text for alias in aliases)
-    ]
-
     for hit in hits:
         body = _normalized_match_text(
             " ".join((hit.chunk.chapter, hit.chunk.section, hit.chunk.text))
@@ -618,17 +603,6 @@ def _filter_grounding_hits(
         semantic_support = (
             hit.cross_encoder_score >= 0.55 and hit.rerank_score >= 0.35
         )
-        visual_support = bool(
-            blueprint.get("has_circuit")
-            and hit.image_score >= settings.circuit_image_retrieval_min_score
-            and (
-                not required_component_groups
-                or any(
-                    any(_normalized_match_text(alias) in body for alias in aliases)
-                    for aliases in required_component_groups
-                )
-            )
-        )
         # With no recognized course concept, require agreement between the
         # lexical and vector retrievers. A graph score by itself is never proof.
         multi_signal_fallback = bool(
@@ -637,7 +611,7 @@ def _filter_grounding_hits(
             and hit.vector_score > 0
             and hit.bm25_score > 0
         )
-        if direct_support or semantic_support or visual_support or multi_signal_fallback:
+        if direct_support or semantic_support or multi_signal_fallback:
             approved.append(hit)
         elif hit.graph_score > 0:
             graph_only_rejected += 1
@@ -1152,10 +1126,7 @@ def _client_accepts_message_images(client: Any) -> bool:
     model = str(getattr(client, "model", "")).casefold()
     if provider == "deepseek":
         return False
-    return any(
-        marker in model
-        for marker in ("qwen-vl", "qwen3-vl", "llava", "vision", "minicpm-v")
-    )
+    return model == "qwen3.7-flash" and provider in {"", "qwen"}
 
 
 def _learning_module_labels(points: list[str]) -> list[str]:
@@ -2032,7 +2003,7 @@ class CircuitTutorEngine:
                     or state.get("mode") == "quiz"
                 ):
                     raise RuntimeError(
-                        f"题目图片识别失败：{exc}。请配置 Qwen 视觉模型，并检查 API 地址、网络和模型权限后重试。"
+                        f"题目图片识别失败：{exc}。请检查服务端 Qwen API Key、网络和 qwen3.7-flash 模型权限后重试。"
                     ) from exc
                 text_parts.append(
                     f"[图片或文档页面已附加；预识别失败：{exc}。请在最终回答中直接读取附件。]"
@@ -3100,7 +3071,7 @@ class CircuitTutorEngine:
             str(point) for point in profile.get("knowledge_points", [])
         ) + " " + str(profile.get("goal", ""))
         retriever = self.knowledge_bases.get(state.get("knowledge_base", "default"))
-        hits = await asyncio.to_thread(retriever.search, query, 8, False, None)
+        hits = await asyncio.to_thread(retriever.search, query, 8, False)
         return {"hits": hits, "sources": [hit.source_dict() for hit in hits]}
 
     async def _generate_learning_plan(self, state: AgentState) -> AgentState:
@@ -3264,7 +3235,6 @@ class CircuitTutorEngine:
             state["rewritten_query"],
             6,
             False,
-            state.get("attachment_images", []),
         )
         hits, evidence_scope = _filter_grounding_hits(
             state["rewritten_query"],
@@ -3519,47 +3489,6 @@ class CircuitTutorEngine:
                         if explain_bound_answer
                         else "仅用于确认当前题目的实际考点"
                     )
-                )
-        retriever = self.knowledge_bases.get(state.get("knowledge_base", "default"))
-        reference_count = 0
-        seen_reference_paths: set[str] = set()
-        for source_index, hit in enumerate(state.get("hits", []), start=1):
-            if (
-                not attachment_images
-                or reference_count >= settings.circuit_image_retrieval_max_references
-                or len(images) >= settings.max_chat_document_images
-                or hit.chunk.element_type != "circuit"
-                or hit.image_score < settings.circuit_image_retrieval_min_score
-            ):
-                continue
-            relative = hit.chunk.image_path
-            if not relative or relative in seen_reference_paths:
-                continue
-            image_path = (retriever.index_dir / relative).resolve()
-            if retriever.index_dir.resolve() not in image_path.parents or not image_path.is_file():
-                continue
-            # Knowledge-base artifacts were already bounded during ingestion.
-            if image_path.stat().st_size <= 5 * 1024 * 1024:
-                images.append(base64.b64encode(image_path.read_bytes()).decode("ascii"))
-                seen_reference_paths.add(relative)
-                reference_count += 1
-                figure_match = re.search(
-                    r"(?:图|Fig\.?)\s*\d+(?:\.\d+)+(?:[-—]\d+)?",
-                    hit.chunk.text,
-                    flags=re.I,
-                )
-                location = " · ".join(
-                    item for item in (
-                        hit.chunk.source,
-                        hit.chunk.section,
-                        f"第 {hit.chunk.page_start} 页" if hit.chunk.page_start else "",
-                        figure_match.group(0) if figure_match else "",
-                    )
-                    if item
-                )
-                image_labels.append(
-                    f"图片{len(images)}：教材参考图片，对应[资料{source_index}] {location}，"
-                    f"图像相似度 {hit.image_score:.3f}"
                 )
         if image_labels:
             user += "\n\n图片顺序说明：\n" + "\n".join(image_labels)
@@ -4399,7 +4328,6 @@ class CircuitTutorEngine:
             query,
             6,
             False,
-            state.get("question_images") or state.get("attachment_images") or None,
         )
         hits, evidence_scope = _filter_grounding_hits(
             query,

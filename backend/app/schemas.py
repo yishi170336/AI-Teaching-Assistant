@@ -4,7 +4,7 @@ import re
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 
 class QuestionReference(BaseModel):
@@ -22,6 +22,8 @@ class QuestionReference(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     session_id: str = Field(min_length=1, max_length=96)
     student_id: str = Field(default="learner-demo", min_length=1, max_length=96)
     message: str = Field(default="", max_length=8000)
@@ -42,9 +44,6 @@ class ChatRequest(BaseModel):
     model: str = Field(default="qwen3.7-plus", min_length=1, max_length=128)
     api_key: str = Field(default="", max_length=512)
     base_url: str = Field(default="", max_length=512)
-    vision_model: str = Field(default="", max_length=128)
-    vision_api_key: str = Field(default="", max_length=512)
-    vision_base_url: str = Field(default="", max_length=512)
 
     @field_validator(
         "session_id", "student_id", "knowledge_base", "practice_session_id",
@@ -66,9 +65,6 @@ class ChatRequest(BaseModel):
         "model",
         "api_key",
         "base_url",
-        "vision_model",
-        "vision_api_key",
-        "vision_base_url",
     )
     @classmethod
     def strip_model_fields(cls, value: str) -> str:
@@ -96,12 +92,7 @@ class ChatRequest(BaseModel):
             raise ValueError("消息和附件不能同时为空")
         if not re.fullmatch(r"[A-Za-z0-9._:/-]+", self.model):
             raise ValueError("模型名称包含不支持的字符")
-        if self.vision_model and not re.fullmatch(r"[A-Za-z0-9._:/-]+", self.vision_model):
-            raise ValueError("视觉模型名称包含不支持的字符")
-        for label, value in (
-            ("API Base URL", self.base_url),
-            ("视觉模型 API Base URL", self.vision_base_url),
-        ):
+        for label, value in (("API Base URL", self.base_url),):
             if not value:
                 continue
             parsed = urlparse(value)
@@ -148,6 +139,9 @@ class SourceInfo(BaseModel):
     page_end: int | None = None
     score: float = 0.0
     doc_type: str = "textbook"
+    section_id: str = ""
+    evidence_ids: list[str] = Field(default_factory=list)
+    matched_entity_ids: list[str] = Field(default_factory=list)
 
 
 class MistakeMessage(BaseModel):

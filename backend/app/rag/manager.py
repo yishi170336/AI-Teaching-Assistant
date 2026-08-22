@@ -15,20 +15,13 @@ from uuid import uuid4
 
 from backend.app.config import settings
 from backend.app.rag.pipeline import KnowledgeBaseBuildCancelled
-from backend.app.rag.retriever import HybridRetriever
+from backend.app.rag.retriever import Schema4Retriever
 from backend.app.rag.retrieval_regression import (
     audit_retrieval_regression,
     load_regression_cases,
 )
 from backend.app.rag.multimodal import BuildModelConfig
 from backend.app.rag.paddleocr_vl import PaddleOCRVLConfig
-from backend.app.rag.multimodal import (
-    build_chapter_knowledge_summaries,
-    build_local_knowledge_graph,
-    project_student_knowledge_graph,
-)
-from backend.app.rag.ontology import is_course_concept
-from backend.app.rag.semantic_graph import enrich_semantic_display_names
 from backend.app.rag.stores import delete_qdrant_indexes, sync_neo4j_graph
 
 
@@ -37,7 +30,8 @@ logger = logging.getLogger(__name__)
 
 class KnowledgeBaseManager:
     def __init__(self) -> None:
-        self._retrievers: dict[str, HybridRetriever] = {}
+        self._retrievers: dict[str, Schema4Retriever] = {}
+        self._active_schema4_id = ""
         self._states: dict[str, dict[str, Any]] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._processes: dict[str, asyncio.subprocess.Process] = {}
@@ -127,33 +121,6 @@ class KnowledgeBaseManager:
         knowledge_base = self.validate_id(knowledge_base)
         return self.index_dir(knowledge_base).parent / f".{knowledge_base}-schema4-candidate"
 
-    @staticmethod
-    def _index_embedding_model(index_dir: Path) -> Path:
-        """Use the checkpoint that created an existing index during migration.
-
-        Changing the configured default from MiniLM (384 dimensions) to Qwen3
-        (1024 dimensions) must not make an old, still-active FAISS snapshot
-        unreadable while its replacement is being built.
-        """
-
-        meta_path = index_dir / "index_meta.json"
-        if meta_path.exists():
-            try:
-                value = str(
-                    json.loads(meta_path.read_text(encoding="utf-8")).get(
-                        "embedding_model", ""
-                    )
-                ).strip()
-                if value:
-                    candidate = Path(value)
-                    if not candidate.is_absolute():
-                        candidate = settings.root_dir / candidate
-                    if candidate.exists():
-                        return candidate
-            except (OSError, ValueError, json.JSONDecodeError):
-                pass
-        return settings.embedding_model_path
-
     def source_file(self, knowledge_base: str, source_name: str) -> Path:
         if not source_name or Path(source_name).name != source_name:
             raise ValueError("资料名称不合法")
@@ -165,6 +132,11 @@ class KnowledgeBaseManager:
 
     def load_existing(self) -> None:
         settings.vector_stores_dir.mkdir(parents=True, exist_ok=True)
+        for retriever in self._retrievers.values():
+            retriever.close()
+        self._retrievers.clear()
+        self._states.clear()
+        self._active_schema4_id = ""
         for index_dir in settings.vector_stores_dir.iterdir():
             if not index_dir.is_dir():
                 continue
@@ -174,9 +146,44 @@ class KnowledgeBaseManager:
                     shutil.rmtree(index_dir, ignore_errors=True)
                 continue
             knowledge_base = index_dir.name
+            meta_preview: dict[str, Any] = {}
+            graph_preview: dict[str, Any] = {}
             try:
-                self._retrievers[knowledge_base] = HybridRetriever(
-                    index_dir, self._index_embedding_model(index_dir)
+                meta_path = index_dir / "index_meta.json"
+                graph_path = index_dir / "semantic_knowledge_graph.json"
+                if meta_path.is_file():
+                    meta_preview = json.loads(meta_path.read_text(encoding="utf-8"))
+                if graph_path.is_file():
+                    graph_preview = json.loads(graph_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                meta_preview = {}
+                graph_preview = {}
+            schema_version = str(
+                graph_preview.get("schema_version")
+                or meta_preview.get("schema_version")
+                or "unknown"
+            )
+            if not schema_version.startswith("4."):
+                self._states[knowledge_base] = {
+                    "id": knowledge_base,
+                    "display_name": self._display_name(
+                        knowledge_base, meta=meta_preview
+                    ),
+                    "state": "unsupported",
+                    "documents": meta_preview.get("documents", 0),
+                    "chunks": meta_preview.get("chunks", 0),
+                    "schema_version": schema_version,
+                    "message": "历史知识库已保留，但Schema 4运行时不会加载",
+                    "available": False,
+                    "runtime_supported": False,
+                    "progress": 0,
+                    "stage": "unsupported",
+                    "cancellable": False,
+                }
+                continue
+            try:
+                self._retrievers[knowledge_base] = Schema4Retriever(
+                    index_dir, settings.embedding_model_path
                 )
                 meta = self._retrievers[knowledge_base].meta
                 self._states[knowledge_base] = {
@@ -192,24 +199,41 @@ class KnowledgeBaseManager:
                     "validation": meta.get("validation", {}),
                     "message": "索引已加载",
                     "available": True,
+                    "runtime_supported": True,
                     "progress": 100,
                     "stage": "ready",
                     "cancellable": False,
                 }
             except Exception as exc:
-                logger.exception("Failed to load knowledge base %s", knowledge_base)
+                logger.warning(
+                    "Schema 4 knowledge base %s failed validation: %s",
+                    knowledge_base,
+                    exc,
+                )
                 self._states[knowledge_base] = {
                     "id": knowledge_base,
-                    "display_name": self._display_name(knowledge_base),
+                    "display_name": self._display_name(
+                        knowledge_base, meta=meta_preview
+                    ),
                     "state": "error",
                     "documents": 0,
                     "chunks": 0,
-                    "message": str(exc),
+                    "schema_version": schema_version,
+                    "message": f"Schema 4知识库校验失败，未加载：{exc}",
                     "available": False,
+                    "runtime_supported": False,
                     "progress": 0,
                     "stage": "error",
                     "cancellable": False,
                 }
+        preferred = [
+            knowledge_base
+            for knowledge_base, retriever in self._retrievers.items()
+            if str(retriever.meta.get("display_name", "")) == "电子电路"
+        ]
+        self._active_schema4_id = (
+            preferred[0] if preferred else next(iter(sorted(self._retrievers)), "")
+        )
         custom_resources = settings.resources_dir / "knowledge_bases"
         if custom_resources.exists():
             for resource_dir in custom_resources.iterdir():
@@ -228,6 +252,7 @@ class KnowledgeBaseManager:
                     "chunks": 0,
                     "message": "资料已保留，尚未完成知识库构建",
                     "available": False,
+                    "runtime_supported": False,
                     "progress": 0,
                     "stage": "missing",
                     "cancellable": False,
@@ -243,16 +268,22 @@ class KnowledgeBaseManager:
                     "documents": len(default_resources), "chunks": 0,
                     "message": "资料已保留，尚未完成知识库构建", "progress": 0,
                     "stage": "missing", "cancellable": False, "available": False,
+                    "runtime_supported": False,
                 },
             )
 
-    def get(self, knowledge_base: str) -> HybridRetriever:
-        knowledge_base = self.validate_id(knowledge_base)
-        if knowledge_base not in self._retrievers:
-            raise RuntimeError(f"知识库 {knowledge_base} 尚未构建完成")
-        return self._retrievers[knowledge_base]
+    def resolve_runtime_id(self, knowledge_base: str) -> str:
+        requested = self.validate_id(knowledge_base)
+        if requested in self._retrievers:
+            return requested
+        if self._active_schema4_id in self._retrievers:
+            return self._active_schema4_id
+        raise RuntimeError("没有可用的Schema 4课程知识库")
 
-    def get_or_none(self, knowledge_base: str) -> HybridRetriever | None:
+    def get(self, knowledge_base: str) -> Schema4Retriever:
+        return self._retrievers[self.resolve_runtime_id(knowledge_base)]
+
+    def get_or_none(self, knowledge_base: str) -> Schema4Retriever | None:
         """不抛异常的 get，用于 Agent 节点中优雅降级。"""
         try:
             return self.get(knowledge_base)
@@ -278,85 +309,18 @@ class KnowledgeBaseManager:
         )
 
     def graph(self, knowledge_base: str) -> dict[str, Any]:
-        """Return the persisted graph, or derive it from older compatible indexes."""
-        retriever = self.get(knowledge_base)
-        path = retriever.index_dir / "knowledge_graph.json"
-        if path.exists():
-            graph = json.loads(path.read_text(encoding="utf-8"))
-        else:
-            graph = build_local_knowledge_graph(retriever.chunks)
-        projected = project_student_knowledge_graph(graph)
-        visible_nodes = [
-            node for node in projected.get("nodes", [])
-            if node.get("type") != "concept"
-            or is_course_concept(str(node.get("name", "")))
-        ]
-        allowed_ids = {str(node.get("id")) for node in visible_nodes}
-        visible_edges = [
-            edge for edge in projected.get("edges", [])
-            if str(edge.get("source")) in allowed_ids
-            and str(edge.get("target")) in allowed_ids
-        ]
-        chapters = projected.get("chapters") or build_chapter_knowledge_summaries(
-            retriever.chunks
-        )
-        return {
-            "knowledge_base": knowledge_base,
-            "nodes": visible_nodes,
-            "edges": visible_edges,
-            "chapters": chapters,
-            "stats": {
-                "nodes": len(visible_nodes),
-                "edges": len(visible_edges),
-                "concepts": sum(node.get("type") == "concept" for node in visible_nodes),
-                "documents": sum(node.get("type") == "document" for node in visible_nodes),
-                "pages": sum(node.get("type") == "page" for node in visible_nodes),
-                "circuits": sum(node.get("type") == "circuit" for node in visible_nodes),
-                "components": sum(node.get("type") == "component" for node in visible_nodes),
-                "chapters": len(chapters),
-            },
-        }
+        return self.semantic_graph(knowledge_base)
 
     def semantic_graph(self, knowledge_base: str) -> dict[str, Any]:
-        """Return only the experimental semantic graph used by the graph page."""
-
+        """Return the authoritative schema-4 graph for the resolved knowledge base."""
         retriever = self.get(knowledge_base)
+        resolved_id = retriever.index_dir.name
         path = retriever.index_dir / "semantic_knowledge_graph.json"
-        if not path.exists():
-            return {
-                "knowledge_base": knowledge_base,
-                "schema_version": "3.0-pending-rebuild",
-                "nodes": [],
-                "edges": [],
-                "chapters": [],
-                "communities": [],
-                "stats": {
-                    "nodes": 0,
-                    "edges": 0,
-                    "concepts": 0,
-                    "entities": 0,
-                    "semantic_relations": 0,
-                    "relationship_mentions": 0,
-                    "communities": 0,
-                    "chapters": 0,
-                },
-            }
         graph = json.loads(path.read_text(encoding="utf-8"))
-        schema_version = str(graph.get("schema_version", ""))
-        schema4 = schema_version.startswith("4.")
-        # Schema 4 entities are already canonicalized during graph construction.
-        # The legacy display-name enrichment scans graph evidence and is both
-        # redundant and expensive for a full-book graph, so retain it only for
-        # older indexes whose symbolic labels still need presentation cleanup.
-        if not schema4:
-            enrich_semantic_display_names(graph)
         nodes = [
             node for node in graph.get("nodes", [])
             if isinstance(node, dict)
-            and (
-                node.get("type") in {"section", "entity"}
-                if schema4 else node.get("type") == "entity"
-            )
+            and node.get("type") in {"section", "entity"}
         ]
         allowed_ids = {str(node.get("id")) for node in nodes}
         edges = [
@@ -367,21 +331,13 @@ class KnowledgeBaseManager:
             and str(edge.get("relation", "")).strip()
         ]
         chapters = graph.get("chapters") or []
-        communities = [
-            {
-                key: value for key, value in community.items()
-                if key not in {"text_unit_ids"}
-            }
-            for community in graph.get("communities", [])
-            if isinstance(community, dict)
-        ]
         return {
-            "knowledge_base": knowledge_base,
+            "knowledge_base": resolved_id,
             "schema_version": graph.get("schema_version"),
             "nodes": nodes,
             "edges": edges,
             "chapters": chapters,
-            "communities": communities,
+            "communities": [],
             "stats": {
                 "nodes": len(nodes),
                 "edges": len(edges),
@@ -394,9 +350,9 @@ class KnowledgeBaseManager:
                 ),
                 "semantic_relations": sum(
                     edge.get("type") == "concept_relation" for edge in edges
-                ) if schema4 else len(edges),
-                "relationship_mentions": len(graph.get("relationship_mentions", [])),
-                "communities": len(communities),
+                ),
+                "relationship_mentions": 0,
+                "communities": 0,
                 "chapters": len(chapters),
             },
         }
@@ -437,17 +393,24 @@ class KnowledgeBaseManager:
     def quick_search(
         self, knowledge_base: str, query: str, top_k: int = 4
     ) -> list[dict[str, Any]]:
-        """轻量快速检索，不做重排，用于主 Agent 理解阶段。
-
-        与 HybridRetriever.search() 不同，此方法跳过 cross-encoder 重排和
-        多模态检索，以降低延迟。仅使用向量 + BM25 + 知识图谱信号。
-        """
+        """Return schema-4 textbook sources for lightweight agent planning."""
         retriever = self.get(knowledge_base)
         try:
-            hits = retriever.search(query, top_k, False, None)
-            return [hit.source_dict() for hit in hits]
+            return retriever.retrieve(
+                retriever.index_dir.name, query, "course_qa", top_k
+            )["sources"]
         except Exception:
             return []
+
+    def retrieve(
+        self,
+        knowledge_base: str,
+        query: str,
+        feature: str = "course_qa",
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        retriever = self.get(knowledge_base)
+        return retriever.retrieve(retriever.index_dir.name, query, feature, limit)
 
     def graph_lookup(
         self, knowledge_base: str, concepts: list[str]
@@ -462,7 +425,7 @@ class KnowledgeBaseManager:
             "prerequisites": {},
         }
         try:
-            graph_data = self.graph(knowledge_base)
+            graph_data = self.semantic_graph(knowledge_base)
         except Exception:
             return result
 
@@ -473,30 +436,37 @@ class KnowledgeBaseManager:
 
         normalized = {c.lower().strip() for c in concepts if c.strip()}
         for node in nodes:
-            name = str(node.get("name", "")).lower().strip()
-            if any(concept in name or name in concept for concept in normalized):
+            if node.get("type") != "entity":
+                continue
+            names = [str(node.get("name", "")), *map(str, node.get("aliases", []))]
+            if any(
+                concept in name.lower().strip() or name.lower().strip() in concept
+                for concept in normalized for name in names if name.strip()
+            ):
                 node_id = str(node.get("id", ""))
                 if node_id:
                     matched_ids.add(node_id)
                     result["concepts"].append({
                         "id": node_id,
                         "name": node.get("name", ""),
-                        "type": node.get("type", ""),
+                        "type": node.get("entity_type", ""),
                     })
 
         # 查询相关边
         for edge in edges:
             source = str(edge.get("source", ""))
             target = str(edge.get("target", ""))
-            if source in matched_ids or target in matched_ids:
+            if edge.get("type") == "concept_relation" and (
+                source in matched_ids or target in matched_ids
+            ):
                 result["relations"].append({
                     "source": edge.get("source"),
                     "target": edge.get("target"),
                     "relation": edge.get("relation") or edge.get("type", "RELATED"),
                 })
                 # 收集前置概念
-                relation = str(edge.get("relation") or edge.get("type", "")).upper()
-                if relation in ("PREREQUISITE", "DEPENDS_ON"):
+                relation = str(edge.get("relation") or "")
+                if relation in ("依赖", "前置"):
                     prereq = edge.get("source", "")
                     concept = edge.get("target", "")
                     result["prerequisites"].setdefault(concept, []).append(prereq)
@@ -539,6 +509,7 @@ class KnowledgeBaseManager:
             "documents": previous_state.get("documents", 0),
             "chunks": previous_state.get("chunks", 0),
             "available": knowledge_base in self._retrievers,
+            "runtime_supported": knowledge_base in self._retrievers,
             "progress": 0,
             "stage": "queued",
             "message": "构建任务已进入后台队列",
@@ -696,8 +667,9 @@ class KnowledgeBaseManager:
                 if current is not None:
                     current.close()
                 self._retrievers[knowledge_base] = await asyncio.to_thread(
-                    HybridRetriever, final_dir, self._index_embedding_model(final_dir)
+                    Schema4Retriever, final_dir, settings.embedding_model_path
                 )
+                self._active_schema4_id = knowledge_base
             except Exception:
                 logger.exception("Failed to restore knowledge base %s", knowledge_base)
 
@@ -770,14 +742,14 @@ class KnowledgeBaseManager:
             ensure_not_cancelled()
             self._update_progress(knowledge_base, 90, "candidate_validation", "正在验证候选索引可加载性")
             candidate = await asyncio.to_thread(
-                HybridRetriever, staging_dir, settings.embedding_model_path
+                Schema4Retriever, staging_dir, settings.embedding_model_path
             )
             baseline = previous
             temporary_baseline = False
             try:
                 if baseline is None and final_dir.exists():
                     baseline = await asyncio.to_thread(
-                        HybridRetriever, final_dir, self._index_embedding_model(final_dir)
+                        Schema4Retriever, final_dir, settings.embedding_model_path
                     )
                     temporary_baseline = True
                 regression_cases = load_regression_cases(
@@ -829,9 +801,10 @@ class KnowledgeBaseManager:
                 json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             retriever = await asyncio.to_thread(
-                HybridRetriever, final_dir, settings.embedding_model_path
+                Schema4Retriever, final_dir, settings.embedding_model_path
             )
             self._retrievers[knowledge_base] = retriever
+            self._active_schema4_id = knowledge_base
             completed_at = self._now()
             self._states[knowledge_base] = {
                 "id": knowledge_base,
@@ -846,6 +819,7 @@ class KnowledgeBaseManager:
                 "validation": meta.get("validation", {}),
                 "message": "知识库已更新",
                 "available": True,
+                "runtime_supported": True,
                 "progress": 100,
                 "stage": "ready",
                 "cancellable": False,
@@ -879,6 +853,7 @@ class KnowledgeBaseManager:
                 "documents": previous_meta.get("documents", 0),
                 "chunks": previous_meta.get("chunks", 0),
                 "available": knowledge_base in self._retrievers,
+                "runtime_supported": knowledge_base in self._retrievers,
             }
         except Exception as exc:
             logger.exception("Knowledge base build failed: %s", knowledge_base)
@@ -891,6 +866,7 @@ class KnowledgeBaseManager:
                 "chunks": 0,
                 "message": f"{exc}；已保留候选缓存，下次重建将自动续跑",
                 "available": knowledge_base in self._retrievers,
+                "runtime_supported": knowledge_base in self._retrievers,
                 "progress": 0,
                 "stage": "error",
                 "cancellable": False,

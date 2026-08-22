@@ -250,7 +250,7 @@ function StudentGrading({
     return (
       <div className="student-grading-wait">
         <LoaderCircle className="spin" size={24} />
-        <div><strong>AI 正在批改你的答案</strong><span>qwen3-vl-flash 评分后，还会由 qwen3-vl-8b-instruct 独立复核。</span></div>
+        <div><strong>AI 正在批改你的答案</strong><span>Qwen3.7-Flash 评分后，还会由独立的 Qwen3.7-Flash 审查流程复核。</span></div>
       </div>
     )
   }

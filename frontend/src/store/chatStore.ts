@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { AttachmentInfo, ContextStateSummary, ConversationFocus, KBStatus, MistakeCandidateDraft, ModelConfig, ModelProviderId, OCRModelConfig, PhotoRecognition, PracticeExercise, PracticeGrading, QuestionRecommendation, QuestionReference, QuestionSummary, ResolvedContext, SourceInfo, StoredMessage, streamChat, uploadChatAttachment, VisionModelConfig } from '../lib/api'
+import { AttachmentInfo, ContextStateSummary, ConversationFocus, KBStatus, MistakeCandidateDraft, ModelConfig, ModelProviderId, OCRModelConfig, PhotoRecognition, PracticeExercise, PracticeGrading, QuestionRecommendation, QuestionReference, QuestionSummary, ResolvedContext, SourceInfo, StoredMessage, streamChat, uploadChatAttachment } from '../lib/api'
 
 export type ChatMode = 'auto' | 'answer' | 'quiz' | 'plan' | 'recommend' | 'explain'
 export type ChatScene = 'chat' | 'image_answer' | 'quiz_grade'
@@ -46,24 +46,15 @@ export type PendingAttachment = {
 const sessionKey = 'circuitmind-session-id'
 const studentKey = 'circuitmind-student-id'
 const modelConfigKey = 'circuitmind-model-config'
-const visionModelConfigKey = 'circuitmind-vision-model-config'
 const ocrModelConfigKey = 'circuitmind-ocr-model-config'
 const defaultKnowledgeBaseKey = 'circuitmind-default-knowledge-base'
 export const CHAT_MODEL_PROVIDER: ModelProviderId = 'qwen'
 export const CHAT_MODEL = 'qwen3.7-plus'
-const QWEN_VL_FALLBACK_MODEL = 'qwen3-vl-flash'
 const QWEN_TEXT_MODELS = ['qwen3.7-flash', 'qwen3.7-plus', 'qwen3.7-max'] as const
-const QWEN_VISION_MODELS = ['qwen3-vl-flash', 'qwen3-vl-plus'] as const
 
 const defaultModelConfig: ModelConfig = {
   provider: CHAT_MODEL_PROVIDER,
   model: CHAT_MODEL,
-  apiKey: '',
-  baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-}
-
-const defaultVisionModelConfig: VisionModelConfig = {
-  model: QWEN_VL_FALLBACK_MODEL,
   apiKey: '',
   baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
 }
@@ -95,13 +86,6 @@ function normalizedQwenTextModel(model: string) {
   return QWEN_TEXT_MODELS.some((item) => item === canonical)
     ? canonical
     : CHAT_MODEL
-}
-
-function normalizedQwenVisionModel(model: string) {
-  const canonical = canonicalModel('qwen', model)
-  return QWEN_VISION_MODELS.some((item) => item === canonical)
-    ? canonical
-    : QWEN_VL_FALLBACK_MODEL
 }
 
 function normalizedModelConfig(value: Partial<ModelConfig>): ModelConfig {
@@ -136,25 +120,6 @@ function getModelConfig(): ModelConfig {
     return config
   } catch {
     return defaultModelConfig
-  }
-}
-
-function getVisionModelConfig(): VisionModelConfig {
-  try {
-    const stored = JSON.parse(localStorage.getItem(visionModelConfigKey) || '{}')
-    const config = {
-      model: typeof stored.model === 'string' && stored.model.trim()
-        ? normalizedQwenVisionModel(stored.model)
-        : defaultVisionModelConfig.model,
-      apiKey: typeof stored.apiKey === 'string' ? stored.apiKey : '',
-      baseUrl: typeof stored.baseUrl === 'string' && stored.baseUrl.trim()
-        ? stored.baseUrl.trim()
-        : defaultVisionModelConfig.baseUrl,
-    }
-    localStorage.setItem(visionModelConfigKey, JSON.stringify(config))
-    return config
-  } catch {
-    return defaultVisionModelConfig
   }
 }
 
@@ -237,7 +202,6 @@ type ChatState = {
   knowledgeBase: string
   defaultKnowledgeBase: string
   modelConfig: ModelConfig
-  visionModelConfig: VisionModelConfig
   ocrModelConfig: OCRModelConfig
   messages: ChatMessage[]
   streaming: boolean
@@ -262,7 +226,6 @@ type ChatState = {
   setDefaultKnowledgeBase: (id: string) => void
   syncKnowledgeBases: (knowledgeBases: KBStatus[]) => void
   setModelConfig: (config: ModelConfig) => void
-  setVisionModelConfig: (config: VisionModelConfig) => void
   setOCRModelConfig: (config: OCRModelConfig) => void
   addAttachments: (files: File[]) => Promise<void>
   removeAttachment: (localId: string) => void
@@ -281,7 +244,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   knowledgeBase: initialKnowledgeBase,
   defaultKnowledgeBase: initialKnowledgeBase,
   modelConfig: getModelConfig(),
-  visionModelConfig: getVisionModelConfig(),
   ocrModelConfig: getOCRModelConfig(),
   messages: [],
   streaming: false,
@@ -325,7 +287,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
   syncKnowledgeBases: (knowledgeBases) => {
     const currentDefault = get().defaultKnowledgeBase
-    const available = knowledgeBases.filter((item) => item.state === 'ready' || item.available)
+    const available = knowledgeBases.filter((item) => (
+      item.runtime_supported === true && (item.state === 'ready' || item.available)
+    ))
     if (available.some((item) => item.id === currentDefault)) return
 
     const replacement = available[0]?.id || ''
@@ -346,15 +310,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const normalized = normalizedModelConfig(modelConfig)
     localStorage.setItem(modelConfigKey, JSON.stringify(normalized))
     set({ modelConfig: normalized })
-  },
-  setVisionModelConfig: (visionModelConfig) => {
-    const normalized = {
-      model: normalizedQwenVisionModel(visionModelConfig.model || defaultVisionModelConfig.model),
-      apiKey: visionModelConfig.apiKey,
-      baseUrl: visionModelConfig.baseUrl.trim() || defaultVisionModelConfig.baseUrl,
-    }
-    localStorage.setItem(visionModelConfigKey, JSON.stringify(normalized))
-    set({ visionModelConfig: normalized })
   },
   setOCRModelConfig: (ocrModelConfig) => {
     const normalized = normalizedOCRModelConfig(ocrModelConfig)
@@ -514,8 +469,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const requestScene = get().scene
     const requestContextState = get().contextState
     const selectedModel = get().modelConfig
-    const selectedVisionModel = get().visionModelConfig
-    const sharesQwenCredentials = selectedModel.provider === 'qwen'
     const assistantMessage: ChatMessage = {
       id: assistantId,
       role: 'assistant',
@@ -567,9 +520,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           model: selectedModel.model,
           api_key: selectedModel.apiKey,
           base_url: selectedModel.baseUrl,
-          vision_model: selectedVisionModel.model,
-          vision_api_key: sharesQwenCredentials ? '' : selectedVisionModel.apiKey,
-          vision_base_url: sharesQwenCredentials ? '' : selectedVisionModel.baseUrl,
         },
         {
           onStatus: (data) => set({ stage: data.message, stageAgent: data.agent }),

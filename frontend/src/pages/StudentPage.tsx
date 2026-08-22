@@ -166,7 +166,6 @@ import {
   ScheduleItemDraft,
   SessionSummary,
   SourceInfo,
-  VisionModelConfig,
   setScheduleItemCompleted,
   updateMistake,
   updateMistakeAnnotation,
@@ -275,12 +274,7 @@ const fallbackModelCatalog: ModelCatalog = {
         { value: 'qwen3.7-plus', label: 'Qwen3.7-Plus' },
         { value: 'qwen3.7-max', label: 'Qwen3.7-Max' },
       ],
-      vision_model_options: [
-        { value: 'qwen3-vl-flash', label: 'Qwen3-VL-Flash' },
-        { value: 'qwen3-vl-plus', label: 'Qwen3-VL-Plus' },
-      ],
       default_model: 'qwen3.7-plus',
-      default_vision_model: 'qwen3-vl-flash',
       base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       requires_api_key: true,
       configured: false,
@@ -5099,23 +5093,19 @@ function ModelSettingsModal({
   catalog: ModelCatalog
 }) {
   const active = useChatStore((state) => state.modelConfig)
-  const activeVision = useChatStore((state) => state.visionModelConfig)
   const activeOCR = useChatStore((state) => state.ocrModelConfig)
   const setModelConfig = useChatStore((state) => state.setModelConfig)
-  const setVisionModelConfig = useChatStore((state) => state.setVisionModelConfig)
   const setOCRModelConfig = useChatStore((state) => state.setOCRModelConfig)
   const [draft, setDraft] = useState<ModelConfig>(active)
-  const [visionDraft, setVisionDraft] = useState<VisionModelConfig>(activeVision)
   const [ocrDraft, setOCRDraft] = useState<OCRModelConfig>(activeOCR)
   const { message: toast } = AntApp.useApp()
 
   useEffect(() => {
     if (open) {
       setDraft(active)
-      setVisionDraft(activeVision)
       setOCRDraft(activeOCR)
     }
-  }, [open, active, activeVision, activeOCR])
+  }, [open, active, activeOCR])
 
   const provider = catalog.providers.find((item) => item.id === draft.provider)
     || fallbackModelCatalog.providers[0]
@@ -5127,10 +5117,6 @@ function ModelSettingsModal({
     disabled: false,
     description: '',
   }))
-  const qwenProvider = catalog.providers.find((item) => item.id === 'qwen')
-    || fallbackModelCatalog.providers.find((item) => item.id === 'qwen')!
-  const visionModels = qwenProvider.vision_model_options
-    || fallbackModelCatalog.providers.find((item) => item.id === 'qwen')!.vision_model_options!
   const sharesQwenCredentials = draft.provider === 'qwen'
   const ocrProvider = catalog.ocr.providers.find((item) => item.id === ocrDraft.provider)
     || fallbackModelCatalog.ocr.providers[0]
@@ -5164,35 +5150,18 @@ function ModelSettingsModal({
       toast.warning(selectedOption.description || '该模型不能用于当前对话')
       return
     }
-    if (!visionDraft.model.trim()) {
-      toast.warning('请填写 Qwen 视觉模型名称')
-      return
-    }
-    if (!sharesQwenCredentials && !visionDraft.baseUrl.trim()) {
-      toast.warning('请填写 Qwen 视觉模型 API Base URL')
-      return
-    }
     if (ocrDraft.provider === 'api' && !catalog.ocr.api_configured && !ocrDraft.apiToken.trim()) {
       toast.warning('请填写 PaddleOCR-VL API Token，或在后端环境变量中配置')
       return
     }
     setModelConfig({ ...draft, model: draft.model.trim(), baseUrl: draft.baseUrl.trim() })
-    setVisionModelConfig({
-      ...visionDraft,
-      model: visionDraft.model.trim(),
-      baseUrl: visionDraft.baseUrl.trim() || qwenProvider.base_url,
-    })
     setOCRModelConfig({
       ...ocrDraft,
       model: 'PaddleOCR-VL-1.6',
       jobUrl: ocrDraft.jobUrl.trim() || catalog.ocr.api_job_url,
     })
     onClose()
-    if (!visionDraft.apiKey.trim() && !qwenProvider.configured && !sharesQwenCredentials) {
-      toast.warning(`已切换到 ${draft.model.trim()}；拍照答题仍需配置 Qwen 视觉 API Key`)
-    } else {
-      toast.success(`已切换到 ${draft.model.trim()}`)
-    }
+    toast.success(`已切换到 ${draft.model.trim()}`)
   }
 
   const clearSavedApiKey = () => {
@@ -5200,13 +5169,6 @@ function ModelSettingsModal({
     setModelConfig(cleared)
     setDraft((value) => ({ ...value, apiKey: '' }))
     toast.success('已清除当前浏览器保存的 API Key')
-  }
-
-  const clearSavedVisionApiKey = () => {
-    const cleared = { ...activeVision, apiKey: '' }
-    setVisionModelConfig(cleared)
-    setVisionDraft((value) => ({ ...value, apiKey: '' }))
-    toast.success('已清除当前浏览器保存的 Qwen 视觉 API Key')
   }
 
   const clearSavedOCRApiToken = () => {
@@ -5222,23 +5184,6 @@ function ModelSettingsModal({
     return <Cloud size={18} />
   }
 
-  const visionModelField = (
-    <div className="model-field">
-      <label>{sharesQwenCredentials ? '视觉模型' : 'Qwen 视觉模型'}</label>
-      <Select
-        value={visionDraft.model}
-        options={visionModels.map((option) => ({
-          value: option.value,
-          label: option.label,
-        }))}
-        onChange={(model) => setVisionDraft((value) => ({ ...value, model }))}
-        style={{ width: '100%' }}
-        showSearch
-        aria-label="选择 Qwen 视觉模型"
-      />
-    </div>
-  )
-
   return (
     <Modal
       open={open}
@@ -5252,7 +5197,7 @@ function ModelSettingsModal({
         <span className="modal-icon"><ServerCog size={22} /></span>
         <div>
           <h2>选择与配置模型</h2>
-          <p>配置学生交互、图片理解以及知识库 PaddleOCR-VL 的本地/API 运行方式。</p>
+          <p>配置学生交互模型以及知识库 PaddleOCR-VL 的本地/API 运行方式。</p>
         </div>
       </div>
 
@@ -5302,19 +5247,6 @@ function ModelSettingsModal({
           )}
           {draft.provider === 'ollama' && provider.status_message && <small className="model-status-hint">{provider.status_message}</small>}
         </div>
-
-        {sharesQwenCredentials && (
-          <div className="vision-config-section shared-api">
-            <div className="vision-config-heading">
-              <span className="modal-icon"><ScanLine size={18} /></span>
-              <div>
-                <strong>图片识别</strong>
-                <small>文本与视觉模型共用下方同一套通义千问 API 配置。</small>
-              </div>
-            </div>
-            {visionModelField}
-          </div>
-        )}
 
         <div className="vision-config-section">
           <div className="vision-config-heading">
@@ -5420,47 +5352,11 @@ function ModelSettingsModal({
             {draft.provider === 'ollama'
               ? '模型在本机运行；题目、检索上下文和回答不会发送到第三方模型服务。'
               : sharesQwenCredentials
-                ? '文本答疑、图片理解和知识讲解文本会使用这套共享 API；知识库 OCR 使用上方独立的 PaddleOCR 配置。API Key 仅保存在当前浏览器。'
+                ? '文本答疑会使用这套 API；图片理解由服务端固定的 Qwen3.7-Flash 完成，知识库 OCR 使用上方独立的 PaddleOCR 配置。API Key 仅保存在当前浏览器。'
                 : '使用云端模型时，题目、最近对话及检索上下文会发送到所选 API；配置和 API Key 会保存在此浏览器的本地存储中，不写入项目文件。'}
           </span>
         </div>
 
-        {!sharesQwenCredentials && (
-          <div className="vision-config-section">
-            <div className="vision-config-heading">
-              <span className="modal-icon"><ScanLine size={18} /></span>
-              <div>
-                <strong>图片识别</strong>
-                <small>使用独立 Qwen API 处理拍照答题、图片原题变式、手写批改和知识讲解配图。</small>
-              </div>
-            </div>
-            {visionModelField}
-            <div className="model-field">
-              <label>Qwen API Key</label>
-              <Input.Password
-                value={visionDraft.apiKey}
-                onChange={(event) => setVisionDraft((value) => ({ ...value, apiKey: event.target.value }))}
-                placeholder={qwenProvider.configured ? '后端已配置；留空即可使用' : '拍照答题必填，保存在当前浏览器'}
-                prefix={<KeyRound size={15} />}
-                autoComplete="off"
-              />
-              {activeVision.apiKey && (
-                <button type="button" className="clear-api-key" onClick={clearSavedVisionApiKey}>
-                  清除已保存的 Qwen 视觉 API Key
-                </button>
-              )}
-            </div>
-            <div className="model-field">
-              <label>Qwen API Base URL</label>
-              <Input
-                value={visionDraft.baseUrl}
-                onChange={(event) => setVisionDraft((value) => ({ ...value, baseUrl: event.target.value }))}
-                placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
-                prefix={<Cloud size={15} />}
-              />
-            </div>
-          </div>
-        )}
       </div>
 
       <div className="model-modal-actions">
@@ -5518,7 +5414,6 @@ function StudentPageContent() {
   const setDefaultKnowledgeBase = useChatStore((state) => state.setDefaultKnowledgeBase)
   const syncKnowledgeBases = useChatStore((state) => state.syncKnowledgeBases)
   const modelConfig = useChatStore((state) => state.modelConfig)
-  const visionModelConfig = useChatStore((state) => state.visionModelConfig)
   const ocrModelConfig = useChatStore((state) => state.ocrModelConfig)
   const setModelConfig = useChatStore((state) => state.setModelConfig)
   const loadSession = useChatStore((state) => state.loadSession)
@@ -5706,7 +5601,7 @@ function StudentPageContent() {
   }, [messages, toast])
 
   const kbOptions = useMemo(() => {
-    const base = statuses.map((item) => ({
+    const base = statuses.filter((item) => item.runtime_supported === true).map((item) => ({
       value: item.id,
       label: item.id === defaultKnowledgeBase
         ? `${knowledgeBaseDisplayName(item, item.id)}（默认课程）`
@@ -5723,17 +5618,19 @@ function StudentPageContent() {
     return base
   }, [statuses, knowledgeBase, defaultKnowledgeBase])
 
-  const defaultKbOptions = useMemo(() => statuses.map((item) => ({
+  const defaultKbOptions = useMemo(() => statuses
+    .filter((item) => item.runtime_supported === true)
+    .map((item) => ({
     value: item.id,
     label: item.id === defaultKnowledgeBase
       ? `${knowledgeBaseDisplayName(item, item.id)}（当前默认）`
       : knowledgeBaseDisplayName(item, item.id),
     disabled: item.state !== 'ready' && !item.available,
-  })), [statuses, defaultKnowledgeBase])
+    })), [statuses, defaultKnowledgeBase])
 
   const chooseDefaultKnowledgeBase = (id: string) => {
     const target = statuses.find((item) => item.id === id)
-    if (!target || (target.state !== 'ready' && !target.available)) {
+    if (!target?.runtime_supported || (target.state !== 'ready' && !target.available)) {
       toast.warning('只有存在可用索引的知识库可以设为默认课程知识库')
       return
     }
@@ -5770,7 +5667,6 @@ function StudentPageContent() {
         pageCount: explanationPageCount,
         imageModel: explanationImageModel,
         modelConfig,
-        visionModelConfig,
       })
       setActiveExplanation(explanation)
       setExplanationHistory((current) => [explanation, ...current.filter((item) => item.id !== explanation.id)])
@@ -6159,6 +6055,7 @@ function StudentPageContent() {
       const deletedDisplayName = currentKbDisplayName
       const replacement = statuses.find((item) => (
         item.id !== deleted
+        && item.runtime_supported === true
         && (item.state === 'ready' || item.available)
       ))
       const nextKnowledgeBase = replacement?.id || ''

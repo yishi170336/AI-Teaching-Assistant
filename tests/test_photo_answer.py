@@ -34,11 +34,11 @@ def _complete_recognition(**overrides):
     return normalize_recognition(value)
 
 
-def test_chat_request_new_fields_are_backward_compatible():
+def test_chat_request_has_no_independent_visual_configuration():
     payload = ChatRequest(session_id="student-1", message="解释欧姆定律")
     assert payload.scene == "chat"
     assert payload.recognition_confirmed is False
-    assert payload.vision_model == ""
+    assert "vision_model" not in payload.model_dump()
 
 
 def test_chat_request_accepts_authoritative_question_reference_without_message():
@@ -63,8 +63,8 @@ def test_quiz_grading_scene_is_supported():
         scene="quiz_grade",
     )
     assert payload.scene == "quiz_grade"
-    assert payload.vision_api_key == ""
-    assert payload.vision_base_url == ""
+    assert "vision_api_key" not in payload.model_dump()
+    assert "vision_base_url" not in payload.model_dump()
 
 
 def test_photo_recognition_confirmation_rules_cover_unclear_and_incomplete_questions():
@@ -256,7 +256,7 @@ def test_photo_recognition_returns_actionable_error_when_no_visual_model_works()
             raise RuntimeError("images unsupported")
 
     engine = object.__new__(CircuitTutorEngine)
-    with pytest.raises(RuntimeError, match="配置 Qwen 视觉模型"):
+    with pytest.raises(RuntimeError, match="服务端 Qwen API Key"):
         asyncio.run(engine._analyze_attachments({
             "scene": "image_answer",
             "attachment_text": "",

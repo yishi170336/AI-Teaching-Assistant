@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.app.config import settings
-from backend.app.rag.retriever import HybridRetriever
+from backend.app.rag.retriever import Schema4Retriever
 
 
 FACT_COVERAGE_FLOOR = 0.9882
@@ -131,8 +131,8 @@ def validate_retrieval(
     candidate_dir: Path,
     queries: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    baseline = HybridRetriever(baseline_dir, _embedding_path(baseline_dir))
-    candidate = HybridRetriever(candidate_dir, _embedding_path(candidate_dir))
+    baseline = Schema4Retriever(baseline_dir, _embedding_path(baseline_dir))
+    candidate = Schema4Retriever(candidate_dir, _embedding_path(candidate_dir))
     results: list[dict[str, Any]] = []
     try:
         for item in queries:

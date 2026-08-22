@@ -1,61 +1,87 @@
 {
   "document_cleaning": {
-    "status": "ready",
-    "pages_reviewed": 465,
+    "status": "disabled",
+    "pages_preserved": 465,
     "pages_discarded": 0,
     "partial_characters_removed": 0,
     "question_banks_excluded": 0
   },
   "document_parsing": {
     "status": "ready",
-    "engine": "PyMuPDF text + Qwen3-VL scanned-page OCR + PDF-Extract-Kit layout",
-    "ocr_pages": 462,
-    "placeholder_text_chunks": 3,
-    "layout_elements": 1485,
-    "preserves_page_bbox": true
+    "engine": "PaddleOCR-VL all-page OCR (cache-first) + PDF-Extract-Kit layout; PyMuPDF rendering only",
+    "ocr_pages": 465,
+    "placeholder_text_chunks": 0,
+    "layout_elements": 7942,
+    "preserves_page_bbox": true,
+    "section_semantics": {
+      "status": "passed",
+      "audited_pages": 465,
+      "sectioned_pages": 406,
+      "structural_heading_pages": 76,
+      "section_transitions": 144,
+      "verified_heading_pages": 146,
+      "inherited_heading_pages": 260,
+      "heading_crop_pages": 1,
+      "toc_corrected_pages": 8,
+      "inconsistent_section_numbers": 0,
+      "critical_issues": 0,
+      "hard_invariant_issues": 0,
+      "failure_threshold": 8,
+      "issues": [],
+      "repaired_section_provenance": 6
+    }
   },
   "modality_processing": {
     "status": "ready",
-    "text_chunks": 665,
-    "circuit_diagrams": 469,
-    "formula_elements": 696,
+    "text_chunks": 0,
+    "circuit_diagrams": 305,
+    "formula_elements": 915,
     "formula_processing": {
       "detected_regions": 11278,
       "inline_regions_kept_in_text": 10225,
       "display_candidates": 696,
-      "recognized_formulas": 422,
-      "fallback_formulas": 246,
-      "indexed_formulas": 696,
+      "recognized_formulas": 683,
+      "fallback_formulas": 0,
+      "indexed_formulas": 915,
       "rejected_or_merged_regions": 0,
-      "uncertain_formulas": 277,
-      "recognition": "PDF-Extract-Kit localization + native PDF geometry LaTeX + qwen/qwen3-vl-flash scan fallback"
+      "uncertain_formulas": 42,
+      "recognition": "PaddleOCR-VL page formula transcription + PDF-Extract-Kit localization/validation; vision formula recognition disabled"
     },
-    "table_elements": 33,
-    "circuit_vision_model": "qwen/qwen3-vl-flash"
+    "table_elements": 44,
+    "visual_summary_model": "qwen/qwen3.7-flash",
+    "vision_summary_scope": [
+      "course_image",
+      "table"
+    ],
+    "formula_vision_enabled": false
   },
   "knowledge_fusion": {
     "status": "ready",
+    "knowledge_document": "book_knowledge_document.json",
+    "knowledge_units": 194,
+    "graph_builder": "hierarchical-summary-entity",
+    "graph_model": "qwen3.7-flash",
+    "embedding_model": "Qwen3-Embedding-0.6B",
     "vector_store": "faiss",
-    "vector_points": 2074,
-    "circuit_vector_points": 469,
-    "circuit_vector_store": "faiss",
-    "graph_nodes": 12987,
-    "graph_edges": 35437,
-    "chapter_summaries": 23,
+    "vector_points": 2494,
+    "image_vector_points": 0,
+    "image_vector_store": "disabled",
+    "graph_nodes": 1437,
+    "graph_edges": 3362,
+    "semantic_nodes": 1437,
+    "semantic_edges": 3573,
+    "chapter_summaries": 11,
     "graph_store": "local-json"
   },
   "retrieval_service": {
     "status": "ready",
     "strategies": [
-      "vector",
+      "qwen3-vector",
       "BM25",
-      "knowledge-graph",
-      "rerank",
-      "circuit-image"
+      "schema4-entity-graph"
     ],
     "question_bank_search": false,
-    "circuit_image_min_score": 0.7,
-    "circuit_image_max_references": 2
+    "image_vector_search": false
   },
   "application": {
     "status": "ready",

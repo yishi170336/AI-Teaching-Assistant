@@ -13,8 +13,10 @@ export type SourceInfo = {
   vector_score?: number
   bm25_score?: number
   graph_score?: number
-  image_score?: number
   rerank_score?: number
+  section_id?: string
+  evidence_ids?: string[]
+  matched_entity_ids?: string[]
   knowledge_base?: string
   historical?: boolean
   citation_index?: number
@@ -28,6 +30,7 @@ export type KBStatus = {
   chunks: number
   message: string
   available?: boolean
+  runtime_supported?: boolean
   progress?: number
   stage?: string
   cancellable?: boolean
@@ -51,12 +54,6 @@ export type ModelProviderId = 'ollama' | 'deepseek' | 'qwen' | 'custom'
 
 export type ModelConfig = {
   provider: ModelProviderId
-  model: string
-  apiKey: string
-  baseUrl: string
-}
-
-export type VisionModelConfig = {
   model: string
   apiKey: string
   baseUrl: string
@@ -170,8 +167,6 @@ export type ModelProviderInfo = {
   status_message?: string
   model_options?: ModelOption[]
   text_model_options?: ModelOption[]
-  vision_model_options?: ModelOption[]
-  default_vision_model?: string
 }
 
 export type ModelCatalog = {
@@ -1138,9 +1133,6 @@ export async function streamChat(
     model: string
     api_key: string
     base_url: string
-    vision_model?: string
-    vision_api_key?: string
-    vision_base_url?: string
   },
   callbacks: SSECallbacks,
   signal?: AbortSignal,
@@ -1717,9 +1709,7 @@ export async function createKnowledgeExplanation(fields: {
   pageCount: number
   imageModel: string
   modelConfig: ModelConfig
-  visionModelConfig: VisionModelConfig
 }): Promise<KnowledgeExplanation> {
-  const sharesQwenCredentials = fields.modelConfig.provider === 'qwen'
   const response = await fetch('/api/knowledge-explanations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1732,8 +1722,6 @@ export async function createKnowledgeExplanation(fields: {
       model: fields.modelConfig.model,
       api_key: fields.modelConfig.apiKey,
       base_url: fields.modelConfig.baseUrl,
-      image_api_key: sharesQwenCredentials ? '' : fields.visionModelConfig.apiKey,
-      image_base_url: sharesQwenCredentials ? '' : fields.visionModelConfig.baseUrl,
     }),
   })
   const result = await response.json().catch(() => ({}))

@@ -42,25 +42,15 @@ class Settings:
     )
     qwen_chat_model: str = os.getenv("QWEN_CHAT_MODEL", "qwen3.7-plus")
     qwen_graph_model: str = os.getenv("QWEN_GRAPH_MODEL", "qwen3.7-flash")
-    qwen_vision_model: str = os.getenv("QWEN_VISION_MODEL", "qwen3-vl-flash")
-    qwen_visual_summary_model: str = os.getenv(
-        "QWEN_VISUAL_SUMMARY_MODEL",
-        os.getenv("QWEN_CIRCUIT_VISION_MODEL", "qwen3.7-flash"),
-    )
-    # Backward-compatible alias for existing deployments and index metadata.
-    qwen_circuit_vision_model: str = os.getenv(
-        "QWEN_CIRCUIT_VISION_MODEL", qwen_visual_summary_model
-    )
+    # Visual understanding is a server-owned capability.  It is deliberately
+    # not user-selectable so chat, textbook enrichment and homework grading use
+    # the same validated multimodal model.
+    qwen_vision_model: str = "qwen3.7-flash"
+    qwen_visual_summary_model: str = "qwen3.7-flash"
     qwen_cleaning_model: str = os.getenv("QWEN_CLEANING_MODEL", "qwen3.7-flash")
-    qwen_homework_extraction_model: str = os.getenv(
-        "QWEN_HOMEWORK_EXTRACTION_MODEL", "qwen3-vl-flash"
-    )
-    qwen_homework_grading_model: str = os.getenv(
-        "QWEN_HOMEWORK_GRADING_MODEL", "qwen3-vl-flash"
-    )
-    qwen_homework_review_model: str = os.getenv(
-        "QWEN_HOMEWORK_REVIEW_MODEL", "qwen3-vl-8b-instruct"
-    )
+    qwen_homework_extraction_model: str = "qwen3.7-flash"
+    qwen_homework_grading_model: str = "qwen3.7-flash"
+    qwen_homework_review_model: str = "qwen3.7-flash"
     qwen_vision_max_tokens: int = int(os.getenv("QWEN_VISION_MAX_TOKENS", "8192"))
     qwen_image_model: str = os.getenv("QWEN_IMAGE_MODEL", "qwen-image-2.0")
     qwen_image_endpoint: str = os.getenv(
@@ -93,15 +83,6 @@ class Settings:
             "components, terminal connections, signal direction, and biasing; ignore "
             "typography, scan quality, and page layout."
         ),
-    )
-    circuit_image_retrieval_min_score: float = float(
-        os.getenv("CIRCUIT_IMAGE_RETRIEVAL_MIN_SCORE", "0.70")
-    )
-    circuit_image_retrieval_max_references: int = int(
-        os.getenv("CIRCUIT_IMAGE_RETRIEVAL_MAX_REFERENCES", "2")
-    )
-    circuit_image_retrieval_candidates: int = int(
-        os.getenv("CIRCUIT_IMAGE_RETRIEVAL_CANDIDATES", "12")
     )
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     memory_turns: int = int(os.getenv("MEMORY_TURNS", "8"))

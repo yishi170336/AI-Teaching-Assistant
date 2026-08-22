@@ -30,10 +30,12 @@ class OpenAICompatibleClient:
         model: str,
         api_key: str,
         base_url: str,
+        enable_thinking: bool | None = None,
     ) -> None:
         self.provider = provider
         self.model = model
         self.base_url = base_url.rstrip("/")
+        self.enable_thinking = enable_thinking
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(240.0, connect=15.0),
             headers={
@@ -151,6 +153,8 @@ class OpenAICompatibleClient:
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if self.enable_thinking is not None:
+            payload["enable_thinking"] = self.enable_thinking
         try:
             response = await self._post(payload)
         except ModelAPIError as exc:
@@ -192,6 +196,8 @@ class OpenAICompatibleClient:
                     "stream": True,
                     "max_tokens": settings.remote_max_tokens,
                 }
+                if self.enable_thinking is not None:
+                    payload["enable_thinking"] = self.enable_thinking
                 finish_reason: str | None = None
                 async with self._client.stream("POST", self.endpoint, json=payload) as response:
                     if response.is_error:

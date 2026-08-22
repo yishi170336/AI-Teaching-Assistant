@@ -1,5 +1,6 @@
 import asyncio
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import httpx
@@ -13,7 +14,7 @@ from backend.app.services.ollama_client import OllamaClient
 from backend.app.services.openai_compatible_client import OpenAICompatibleClient
 from backend.app.services.model_catalog import (
     QWEN_TEXT_MODELS,
-    QWEN_VISION_MODELS,
+    QWEN_VISUAL_TASK_MODEL,
     canonical_model_id,
     chat_model_unavailable_reason,
     choose_default_model,
@@ -95,14 +96,13 @@ def test_student_chat_uses_request_selected_model(monkeypatch):
     asyncio.run(client.close())
 
 
-def test_photo_answer_can_use_browser_qwen_vision_config_with_deepseek_answer(monkeypatch):
+def test_photo_answer_uses_fixed_server_qwen37_flash(monkeypatch):
     monkeypatch.setattr(
         main_module,
         "settings",
         SimpleNamespace(
-            qwen_api_key="",
+            qwen_api_key="server-qwen-key",
             qwen_base_url="https://dashscope.example/v1",
-            qwen_vision_model="server-vision-model",
         ),
     )
     payload = ChatRequest(
@@ -113,47 +113,24 @@ def test_photo_answer_can_use_browser_qwen_vision_config_with_deepseek_answer(mo
         model="deepseek-v4-flash",
         api_key="deepseek-key",
         base_url="https://deepseek.example/v1",
-        vision_model="qwen3-vl-flash",
-        vision_api_key="browser-qwen-key",
-        vision_base_url="https://workspace.example/v1",
     )
     selected_client = SimpleNamespace(provider="deepseek", model="deepseek-v4-flash")
     client, should_close = main_module.select_vision_client(payload, selected_client)
     assert should_close is True
     assert client.provider == "qwen"
-    assert client.model == "qwen3-vl-flash"
-    assert client.base_url == "https://workspace.example/v1"
+    assert client.model == QWEN_VISUAL_TASK_MODEL
+    assert client.base_url == "https://dashscope.example/v1"
+    assert client._client.headers["Authorization"] == "Bearer server-qwen-key"
     asyncio.run(client.close())
 
 
-def test_qwen_text_and_vision_share_browser_credentials(monkeypatch):
-    monkeypatch.setattr(
-        main_module,
-        "settings",
-        SimpleNamespace(
-            qwen_api_key="server-qwen-key",
-            qwen_base_url="https://dashscope.example/v1",
-            qwen_vision_model="server-vision-model",
-        ),
-    )
-    payload = ChatRequest(
-        session_id="student-demo",
-        message="分析题图",
-        scene="image_answer",
-        model_provider="qwen",
-        model="qwen3.7-plus",
-        api_key="browser-qwen-key",
-        base_url="https://workspace.example/v1",
-        vision_model="qwen3-vl-plus",
-    )
-    selected_client = SimpleNamespace(provider="qwen", model="qwen3.7-plus")
-    client, should_close = main_module.select_vision_client(payload, selected_client)
-    assert should_close is True
-    assert client.provider == "qwen"
-    assert client.model == "qwen3-vl-plus"
-    assert client.base_url == "https://workspace.example/v1"
-    assert client._client.headers["Authorization"] == "Bearer browser-qwen-key"
-    asyncio.run(client.close())
+def test_chat_request_rejects_removed_visual_configuration_fields():
+    with pytest.raises(ValidationError):
+        ChatRequest(
+            session_id="student-demo",
+            message="分析题图",
+            vision_model="qwen3-vl-plus",
+        )
 
 
 def test_photo_answer_rejects_text_only_deepseek_without_qwen_vision_key(monkeypatch):
@@ -163,7 +140,6 @@ def test_photo_answer_rejects_text_only_deepseek_without_qwen_vision_key(monkeyp
         SimpleNamespace(
             qwen_api_key="",
             qwen_base_url="https://dashscope.example/v1",
-            qwen_vision_model="qwen3-vl-flash",
         ),
     )
     payload = ChatRequest(
@@ -175,7 +151,7 @@ def test_photo_answer_rejects_text_only_deepseek_without_qwen_vision_key(monkeyp
         api_key="deepseek-key",
         base_url="https://deepseek.example/v1",
     )
-    with pytest.raises(ValueError, match="拍照答题需要配置 Qwen 视觉模型 API Key"):
+    with pytest.raises(ValueError, match="服务端配置 Qwen API Key"):
         main_module.select_vision_client(payload, object())
 
 
@@ -229,16 +205,16 @@ def test_knowledge_build_ignores_legacy_browser_model_credentials(monkeypatch):
     assert config.base_url == "https://dashscope.example/v1"
 
 
-def test_qwen_catalog_separates_text_and_vision_models():
+def test_qwen_catalog_only_exposes_text_models():
     assert QWEN_TEXT_MODELS == [
         "qwen3.7-flash",
         "qwen3.7-plus",
         "qwen3.7-max",
     ]
-    assert QWEN_VISION_MODELS == ["qwen3-vl-flash", "qwen3-vl-plus"]
+    assert QWEN_VISUAL_TASK_MODEL == "qwen3.7-flash"
 
 
-def test_models_endpoint_exposes_separate_qwen_option_groups(monkeypatch):
+def test_models_endpoint_does_not_expose_visual_model_options(monkeypatch):
     async def fake_health():
         return {"ok": False, "models": [], "model_available": False}
 
@@ -265,9 +241,9 @@ def test_models_endpoint_exposes_separate_qwen_option_groups(monkeypatch):
     qwen = next(item for item in catalog["providers"] if item["id"] == "qwen")
 
     assert [item["value"] for item in qwen["text_model_options"]] == QWEN_TEXT_MODELS
-    assert [item["value"] for item in qwen["vision_model_options"]] == QWEN_VISION_MODELS
+    assert "vision_model_options" not in qwen
     assert qwen["default_model"] == "qwen3.7-plus"
-    assert qwen["default_vision_model"] == "qwen3-vl-flash"
+    assert "default_vision_model" not in qwen
     assert catalog["ocr"]["default_provider"] == "local"
     assert catalog["ocr"]["model"] == "PaddleOCR-VL-1.6"
     assert catalog["ocr"]["api_configured"] is True
@@ -320,6 +296,29 @@ def test_openai_compatible_client_builds_multimodal_image_url_content():
             ],
         }
     ]
+
+
+def test_fixed_visual_client_disables_thinking(monkeypatch):
+    import backend.app.main as main_module
+
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        replace(main_module.settings, qwen_api_key="server-key"),
+    )
+    client, should_close = main_module.select_vision_client(
+        ChatRequest(
+            session_id="student-demo",
+            message="分析图片",
+            model_provider="qwen",
+            model="qwen3.7-plus",
+        ),
+        object(),
+    )
+    assert should_close is True
+    assert client.model == "qwen3.7-flash"
+    assert client.enable_thinking is False
+    asyncio.run(client.close())
 
 
 def test_openai_stream_continues_after_length_finish_reason():
@@ -402,8 +401,8 @@ def test_qwen_display_alias_is_canonicalized_to_exact_api_id():
 
 
 def test_unavailable_qwen_vl_models_fall_back_to_flash():
-    assert canonical_model_id("qwen", "qwen3-vl-embedding") == "qwen3-vl-flash"
-    assert canonical_model_id("qwen", "qwen3-vl-8b-instruct") == "qwen3-vl-flash"
+    assert canonical_model_id("qwen", "qwen3-vl-embedding") == "qwen3.7-flash"
+    assert canonical_model_id("qwen", "qwen3-vl-8b-instruct") == "qwen3.7-flash"
     assert chat_model_unavailable_reason("qwen", "qwen3-vl-embedding") == ""
 
 

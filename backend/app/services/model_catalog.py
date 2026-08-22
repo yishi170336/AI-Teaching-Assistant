@@ -9,26 +9,18 @@ QWEN_TEXT_MODEL_OPTIONS = [
     {"value": "qwen3.7-max", "label": "Qwen3.7-Max"},
 ]
 
-QWEN_VISION_MODEL_OPTIONS = [
-    {"value": "qwen3-vl-flash", "label": "Qwen3-VL-Flash"},
-    {"value": "qwen3-vl-plus", "label": "Qwen3-VL-Plus"},
-]
-
 QWEN_TEXT_MODELS = [
     str(option["value"])
     for option in QWEN_TEXT_MODEL_OPTIONS
 ]
 
-QWEN_VISION_MODELS = [
-    str(option["value"])
-    for option in QWEN_VISION_MODEL_OPTIONS
-]
-
 QWEN_CHAT_DISABLED_REASONS: dict[str, str] = {}
 
 QWEN_TEXT_FALLBACK_MODEL = "qwen3.7-plus"
-QWEN_VL_FALLBACK_MODEL = "qwen3-vl-flash"
-QWEN_VL_FALLBACK_ALIASES = {
+QWEN_VISUAL_TASK_MODEL = "qwen3.7-flash"
+LEGACY_VISION_MODEL_ALIASES = {
+    "qwen3-vl-flash",
+    "qwen3-vl-plus",
     "qwen3-vl-8b-instruct",
     "qwen3-vl-embedding",
 }
@@ -39,8 +31,8 @@ def canonical_model_id(provider: str, model: str) -> str:
     normalized = model.strip()
     if provider == "qwen" and normalized.lower().startswith("qwen"):
         canonical = normalized.lower()
-        if canonical in QWEN_VL_FALLBACK_ALIASES:
-            return QWEN_VL_FALLBACK_MODEL
+        if canonical in LEGACY_VISION_MODEL_ALIASES:
+            return QWEN_VISUAL_TASK_MODEL
         return canonical
     return normalized
 
