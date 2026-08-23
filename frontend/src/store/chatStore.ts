@@ -98,8 +98,15 @@ function normalizedModelConfig(value: Partial<ModelConfig>): ModelConfig {
     model: value.provider === 'qwen'
       ? normalizedQwenTextModel(value.model || defaultModelConfig.model)
       : canonicalModel(value.provider, value.model || defaultModelConfig.model),
-    apiKey: typeof value.apiKey === 'string' ? value.apiKey : '',
-    baseUrl: typeof value.baseUrl === 'string' ? value.baseUrl.trim() : '',
+    // The built-in Qwen provider always uses the server-owned credential.
+    // Clear historical browser keys so a stale/restricted key can never
+    // override the validated backend configuration.
+    apiKey: value.provider === 'qwen'
+      ? ''
+      : typeof value.apiKey === 'string' ? value.apiKey : '',
+    baseUrl: value.provider === 'qwen'
+      ? defaultModelConfig.baseUrl
+      : typeof value.baseUrl === 'string' ? value.baseUrl.trim() : '',
   }
 }
 
@@ -118,10 +125,8 @@ function getModelConfig(): ModelConfig {
     const previous = normalizedModelConfig(stored)
     const config = {
       ...defaultModelConfig,
-      apiKey: previous.provider === 'qwen' ? previous.apiKey : '',
-      baseUrl: previous.provider === 'qwen' && previous.baseUrl
-        ? previous.baseUrl
-        : defaultModelConfig.baseUrl,
+      apiKey: '',
+      baseUrl: defaultModelConfig.baseUrl,
     }
     localStorage.setItem(modelConfigKey, JSON.stringify(config))
     return config

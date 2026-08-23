@@ -1623,8 +1623,12 @@ def select_model_client(payload: ChatRequest) -> tuple[Any, bool]:
         api_key = payload.api_key or settings.deepseek_api_key
         base_url = (payload.base_url or settings.deepseek_base_url) if payload.api_key else settings.deepseek_base_url
     elif payload.model_provider == "qwen":
-        api_key = payload.api_key or settings.qwen_api_key
-        base_url = (payload.base_url or settings.qwen_base_url) if payload.api_key else settings.qwen_base_url
+        # Built-in Qwen models are a server-owned capability.  Older browser
+        # sessions may still contain a stale or restricted key; allowing that
+        # value to override the validated server credential makes the final
+        # answer fail even though coordinator/auditor calls succeed.
+        api_key = settings.qwen_api_key
+        base_url = settings.qwen_base_url
     else:
         api_key = payload.api_key
         base_url = payload.base_url

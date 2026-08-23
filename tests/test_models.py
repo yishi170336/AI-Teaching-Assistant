@@ -321,6 +321,34 @@ def test_fixed_visual_client_disables_thinking(monkeypatch):
     asyncio.run(client.close())
 
 
+def test_builtin_qwen_ignores_stale_browser_credentials(monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        SimpleNamespace(
+            qwen_api_key="server-qwen-key",
+            qwen_base_url="https://dashscope.example/v1",
+        ),
+    )
+    payload = ChatRequest(
+        session_id="student-demo",
+        message="分析电路",
+        model_provider="qwen",
+        model="qwen3.7-flash",
+        api_key="stale-browser-key",
+        base_url="https://restricted.example/v1",
+    )
+
+    client, should_close = main_module.select_model_client(payload)
+
+    assert should_close is True
+    assert client.provider == "qwen"
+    assert client.model == "qwen3.7-flash"
+    assert client.base_url == "https://dashscope.example/v1"
+    assert client._client.headers["Authorization"] == "Bearer server-qwen-key"
+    asyncio.run(client.close())
+
+
 def test_openai_stream_continues_after_length_finish_reason():
     client = OpenAICompatibleClient(
         provider="deepseek",

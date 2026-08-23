@@ -201,10 +201,10 @@ class OpenAICompatibleClient:
                 finish_reason: str | None = None
                 async with self._client.stream("POST", self.endpoint, json=payload) as response:
                     if response.is_error:
-                        body = await response.aread()
+                        await response.aread()
                         raise ModelAPIError(
                             f"{self.provider} 模型请求失败 ({response.status_code})："
-                            f"{body.decode('utf-8', errors='replace')[:300]}",
+                            f"{self._error_detail(response)}",
                             response.status_code,
                         )
                     async for line in response.aiter_lines():

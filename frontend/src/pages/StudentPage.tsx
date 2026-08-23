@@ -5176,6 +5176,7 @@ function ModelSettingsModal({
     description: '',
   }))
   const sharesQwenCredentials = draft.provider === 'qwen'
+  const acceptsBrowserCredentials = draft.provider !== 'ollama' && draft.provider !== 'qwen'
   const ocrProvider = catalog.ocr.providers.find((item) => item.id === ocrDraft.provider)
     || fallbackModelCatalog.ocr.providers[0]
 
@@ -5195,11 +5196,15 @@ function ModelSettingsModal({
       toast.warning('请填写模型名称')
       return
     }
-    if (draft.provider !== 'ollama' && !draft.baseUrl.trim()) {
+    if (acceptsBrowserCredentials && !draft.baseUrl.trim()) {
       toast.warning('请填写 API Base URL')
       return
     }
-    if (provider.requires_api_key && !provider.configured && !draft.apiKey.trim()) {
+    if (draft.provider === 'qwen' && !provider.configured) {
+      toast.warning('服务端尚未配置 Qwen API Key')
+      return
+    }
+    if (acceptsBrowserCredentials && provider.requires_api_key && !provider.configured && !draft.apiKey.trim()) {
       toast.warning('请填写 API Key，或在后端环境变量中配置')
       return
     }
@@ -5375,7 +5380,7 @@ function ModelSettingsModal({
           )}
         </div>
 
-        {draft.provider !== 'ollama' && (
+        {acceptsBrowserCredentials && (
           <>
             <div className="model-field">
               <label>API Key</label>
@@ -5410,7 +5415,7 @@ function ModelSettingsModal({
             {draft.provider === 'ollama'
               ? '模型在本机运行；题目、检索上下文和回答不会发送到第三方模型服务。'
               : sharesQwenCredentials
-                ? '文本答疑会使用这套 API；图片理解由服务端固定的 Qwen3.7-Flash 完成，知识库 OCR 使用上方独立的 PaddleOCR 配置。API Key 仅保存在当前浏览器。'
+                ? 'Qwen 文本答疑、图片理解和多智能体服务角色统一使用服务端配置；浏览器不再保存或发送 Qwen API Key。知识库 OCR 使用上方独立的 PaddleOCR 配置。'
                 : '使用云端模型时，题目、最近对话及检索上下文会发送到所选 API；配置和 API Key 会保存在此浏览器的本地存储中，不写入项目文件。'}
           </span>
         </div>
