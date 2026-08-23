@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from backend.app.agents.v2.prompt_registry import render_agent_prompt
+
 
 _FAILED_STATUSES = {"failed", "cancelled"}
 _PRIVATE_FOCUS_FIELDS = {
@@ -457,6 +459,15 @@ async def resolve_semantic_request(
                 f"\n学生原话：{message[:2400]}"
                 f"\n本批题目（sequence 是全会话序号）：{json.dumps(batch, ensure_ascii=False)[:18000]}"
             )
+            candidate_prompt = render_agent_prompt(
+                "turn_coordinator",
+                task=candidate_prompt,
+                input_json=json.dumps(
+                    {"message": message[:2400], "focus_candidates": batch},
+                    ensure_ascii=False,
+                ),
+                output_schema='{"target_focus_ids":["focus_id"]}',
+            )
             try:
                 raw = await client.chat(
                     [{"role": "user", "content": candidate_prompt}],
@@ -522,6 +533,24 @@ async def resolve_semantic_request(
         f"\n当前焦点 ID：{active_id or '无'}"
         f"\n学生请求：{message[:2400]}"
         f"\n题目目录：{json.dumps(compact_catalog, ensure_ascii=False)[:24000]}"
+    )
+    prompt = render_agent_prompt(
+        "turn_coordinator",
+        task=prompt,
+        input_json=json.dumps(
+            {
+                "mode_hint": mode,
+                "active_focus_id": active_id,
+                "message": message[:2400],
+                "focus_catalog": compact_catalog,
+            },
+            ensure_ascii=False,
+        )[:28000],
+        output_schema=(
+            '{"operation":"...","scope":"none|current|specific|multiple|global|ambiguous",'
+            '"target_focus_ids":[],"target_step":"","confidence":0.0,'
+            '"needs_clarification":false,"reason":""}'
+        ),
     )
     try:
         raw = await client.chat(

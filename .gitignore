@@ -13,6 +13,7 @@ tools/spreadsheet/node_modules/
 data/vector_stores/*/*.tmp
 data/uploads/
 data/session_memory/
+data/agent_runs/
 data/question_recommendations/
 data/mistake_book*.json
 data/mistake_candidates.json

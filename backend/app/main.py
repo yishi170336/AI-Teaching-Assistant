@@ -22,8 +22,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from backend.app.agents.v2.engine import CircuitTutorEngine
 from backend.app.agents.workflow import (
-    CircuitTutorEngine,
     _contextual_attachment_ids,
     _history_recognition_for_attachments,
     _json_object,
@@ -1661,6 +1661,23 @@ def select_vision_client(payload: ChatRequest, selected_client: Any) -> tuple[An
     )
 
 
+def select_service_client() -> tuple[Any, bool]:
+    """Return the fixed server-owned client used by coordinators and auditors."""
+
+    if not settings.qwen_api_key:
+        raise ValueError("多智能体服务角色需要服务端配置 Qwen API Key")
+    return (
+        OpenAICompatibleClient(
+            provider="qwen",
+            model=QWEN_VISUAL_TASK_MODEL,
+            api_key=settings.qwen_api_key,
+            base_url=settings.qwen_base_url,
+            enable_thinking=False,
+        ),
+        True,
+    )
+
+
 def _safe_explanation_error(exc: Exception) -> str:
     message = re.sub(r"sk-[A-Za-z0-9_-]+", "[API KEY 已隐藏]", str(exc)).strip()
     return (message or "知识讲解生成失败")[:500]
@@ -1671,6 +1688,7 @@ async def _run_knowledge_explanation(
     payload: KnowledgeExplanationRequest,
     selected_client: Any,
     close_selected_client: bool,
+    service_client: Any,
     image_client: QwenImageClient,
 ) -> None:
     try:
@@ -1679,6 +1697,7 @@ async def _run_knowledge_explanation(
             question=payload.question,
             requested_page_count=payload.page_count,
             text_client=selected_client,
+            service_client=service_client,
             image_client=image_client,
         )
     except asyncio.CancelledError:
@@ -1700,6 +1719,7 @@ async def _run_knowledge_explanation(
             )
     finally:
         await image_client.close()
+        await service_client.close()
         if close_selected_client:
             await selected_client.close()
 
@@ -1709,9 +1729,11 @@ async def create_knowledge_explanation(
     payload: KnowledgeExplanationRequest,
 ) -> dict[str, Any]:
     selected_client: Any | None = None
+    service_client: Any | None = None
     close_selected_client = False
     try:
         selected_client, close_selected_client = select_model_client(payload)  # type: ignore[arg-type]
+        service_client, _ = select_service_client()
         image_api_key = (
             payload.image_api_key
             or (payload.api_key if payload.model_provider == "qwen" else "")
@@ -1734,6 +1756,8 @@ async def create_knowledge_explanation(
             endpoint=image_endpoint,
         )
     except ValueError as exc:
+        if service_client is not None:
+            await service_client.close()
         if selected_client is not None and close_selected_client:
             await selected_client.close()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1752,6 +1776,7 @@ async def create_knowledge_explanation(
             payload,
             selected_client,
             close_selected_client,
+            service_client,
             image_client,
         )
     )
@@ -1891,6 +1916,8 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
         close_selected_client = False
         vision_client: Any | None = None
         close_vision_client = False
+        service_client: Any | None = None
+        close_service_client = False
         workflow_task: asyncio.Task[Any] | None = None
         session_lock: Any | None = None
         lock_acquired = False
@@ -1931,6 +1958,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
             await session_lock.acquire()
             lock_acquired = True
             selected_client, close_selected_client = select_model_client(payload)
+            service_client, close_service_client = select_service_client()
             selected_model = getattr(
                 selected_client,
                 "model",
@@ -2037,7 +2065,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     mode=semantic_mode,
                     active_focus=requested_focus,
                     focus_catalog=focus_catalog,
-                    client=selected_client,
+                    client=service_client,
                 )
             focus_by_id = {
                 str(item["conversation_focus"].get("id")): dict(item["conversation_focus"])
@@ -2246,17 +2274,15 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
             if needs_required_vision:
                 # A newly uploaded question/answer image really must be read before
                 # the turn can continue, so missing vision configuration is fatal.
-                vision_client, close_vision_client = select_vision_client(
-                    payload, selected_client
-                )
+                vision_client = service_client
+                close_vision_client = False
             elif reference_images:
                 # Question-bank figures and answer figures are supplementary.  The
                 # parsed prompt and reference answer are already authoritative, so
                 # a text-only answer model must still be able to explain the item.
                 try:
-                    vision_client, close_vision_client = select_vision_client(
-                        payload, selected_client
-                    )
+                    vision_client = service_client
+                    close_vision_client = False
                 except ValueError:
                     vision_client = None
                     close_vision_client = False
@@ -2293,6 +2319,8 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
 
             workflow_task = asyncio.create_task(
                 engine.run(
+                    run_id=turn_id,
+                    session_id=payload.session_id,
                     message=effective_message,
                     mode=semantic_mode,
                     student_id=payload.student_id,
@@ -2306,6 +2334,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     attachment_items=resolved.items,
                     llm=selected_client,
                     vision_llm=vision_client or selected_client,
+                    service_llm=service_client,
                     question_ref=question_ref,
                     structured_question=(
                         question_context["question"] if question_context else None
@@ -2484,6 +2513,9 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                     "conversation_focus": _public_conversation_focus(final_focus),
                     "resolved_context": context_envelope,
                     "context_state": public_context_state(session_context_state),
+                    "run_id": result.run_id,
+                    "prompt_bundle_version": result.prompt_bundle_version,
+                    "quality": result.quality,
                 },
             )
             if not streamed_answer:
@@ -2541,7 +2573,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
                 history=updated_history,
                 previous=conversation_summary,
                 focus=final_focus,
-                client=selected_client,
+                client=service_client,
             )
             yield sse("done", {"ok": True})
         except asyncio.CancelledError:
@@ -2569,6 +2601,8 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
             try:
                 if close_vision_client and vision_client is not None:
                     await vision_client.close()
+                if close_service_client and service_client is not None:
+                    await service_client.close()
                 if close_selected_client and selected_client is not None:
                     await selected_client.close()
             finally:

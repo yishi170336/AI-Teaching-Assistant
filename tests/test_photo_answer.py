@@ -230,24 +230,30 @@ def test_structured_question_bypasses_photo_ocr_and_uses_readiness():
     assert gated["needs_confirmation"] is True
 
 
-def test_photo_recognition_falls_back_to_selected_multimodal_model():
+def test_photo_recognition_never_falls_back_to_student_selected_model():
     class BrokenQwenVision:
         async def chat(self, *_args, **_kwargs):
             raise RuntimeError("vision service unavailable")
 
     class SelectedMultimodalModel:
+        def __init__(self):
+            self.calls = 0
+
         async def chat(self, _messages, **_kwargs):
+            self.calls += 1
             return json.dumps(_complete_recognition(), ensure_ascii=False)
 
     engine = object.__new__(CircuitTutorEngine)
-    result = asyncio.run(engine._analyze_attachments({
-        "scene": "image_answer",
-        "attachment_text": "",
-        "attachment_images": ["image"],
-        "vision_llm": BrokenQwenVision(),
-        "llm": SelectedMultimodalModel(),
-    }))
-    assert result["attachment_blueprint"]["is_complete"] is True
+    selected = SelectedMultimodalModel()
+    with pytest.raises(RuntimeError, match="服务端 Qwen API Key"):
+        asyncio.run(engine._analyze_attachments({
+            "scene": "image_answer",
+            "attachment_text": "",
+            "attachment_images": ["image"],
+            "vision_llm": BrokenQwenVision(),
+            "llm": selected,
+        }))
+    assert selected.calls == 0
 
 
 def test_photo_recognition_returns_actionable_error_when_no_visual_model_works():

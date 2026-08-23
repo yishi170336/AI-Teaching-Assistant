@@ -19,6 +19,11 @@ import fitz
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 
+from backend.app.agents.v2.prompt_registry import (
+    prompt_bundle_version,
+    render_agent_prompt,
+)
+from backend.app.agents.v2.quality import validate_score_totals
 from backend.app.config import settings
 from backend.app.rag.pdf_extract_kit import PDFExtractKitAdapter
 from backend.app.services.qwen_multimodal_client import QwenVisionClient
@@ -6117,7 +6122,7 @@ def _grading_review_prompt(
     grading: dict[str, Any],
     answer_completeness: list[dict[str, Any]],
 ) -> str:
-    return (
+    task = (
         """你是独立的作业批改审查员。请结合随请求提供的学生答案图片，检查前一模型的答案转写、步骤分和得分。
 answer_source=uploaded_images 表示学生已经提交了该题答案图片，不得因为结构化文字为空而称其“未作答”。
 question_id 是图片与题目的唯一关联依据，题号可重复；同一图片也可合理地用于多道题。
@@ -6134,6 +6139,26 @@ question_id 是图片与题目的唯一关联依据，题号可重复；同一�
         + json.dumps(answer_completeness, ensure_ascii=False)
         + "\n前一模型本批批改结果：\n"
         + json.dumps(grading, ensure_ascii=False)
+    )
+    return render_agent_prompt(
+        "grading_auditor",
+        task=task,
+        input_json=json.dumps(
+            {
+                "question_ids": [item.get("question_id") for item in student_payload],
+                "question_count": len(reference),
+                "has_answer_images": any(
+                    item.get("answer_source") == "uploaded_images"
+                    for item in student_payload
+                ),
+            },
+            ensure_ascii=False,
+        ),
+        output_schema=(
+            '{"passed":boolean,"confidence":number,'
+            '"issues":string[],"recommendation":string}'
+        ),
+        authority_extra="必须独立查看原始作答图片；不得读取阅卷 Agent 的私有推理。",
     )
 
 
@@ -6257,6 +6282,26 @@ required_subquestions 非空时，必须先逐小问核对图片并返回全部 
                 + "\n独立的小问作答完整性检查：\n"
                 + json.dumps(answer_completeness, ensure_ascii=False)
             )
+            grading_prompt = render_agent_prompt(
+                "rubric_grader",
+                task=grading_prompt,
+                input_json=json.dumps(
+                    {
+                        "question_ids": [item.get("id") for item in batch_questions],
+                        "batch_index": batch_index,
+                        "has_answer_images": bool(contact_sheet),
+                    },
+                    ensure_ascii=False,
+                ),
+                output_schema=(
+                    '{"extracted_answer":string,"items":[{"question_id":string,'
+                    '"number":string,"student_answer":string,"score":number,'
+                    '"max_score":number,"is_correct":boolean,'
+                    '"subquestion_results":object[],"feedback":string,'
+                    '"evidence":string}],"summary":string}'
+                ),
+                authority_extra="question_id 是唯一绑定依据；不得用题号或图片顺序替代。",
+            )
             grading_result = grading_client.complete_json(
                 grading_prompt,
                 **image_kwargs,
@@ -6303,6 +6348,27 @@ required_subquestions 非空时，必须先逐小问核对图片并返回全部 
                     + """
 请重新查看学生原图，依据审查意见纠正答案转写、漏题、步骤分或得分。审查意见仅用于定位问题，最终仍须以原图、标准答案和评分标准为准。
 这是唯一一次自动纠正机会，必须返回本批次全部题目且 question_id 完全一致；返回格式与上一轮要求相同。"""
+                )
+                correction_prompt = render_agent_prompt(
+                    "rubric_grader",
+                    task=correction_prompt,
+                    input_json=json.dumps(
+                        {
+                            "question_ids": sorted(expected_ids),
+                            "missing_question_ids": sorted(initial_missing_ids),
+                            "missing_subquestions": sorted(initial_missing_parts),
+                            "review": review,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    output_schema=(
+                        '{"extracted_answer":string,"items":[{"question_id":string,'
+                        '"number":string,"student_answer":string,"score":number,'
+                        '"max_score":number,"is_correct":boolean,'
+                        '"subquestion_results":object[],"feedback":string,'
+                        '"evidence":string}],"summary":string}'
+                    ),
+                    authority_extra="这是唯一一次返工；修正后仍未通过时必须进入 review_required。",
                 )
                 grading_result = grading_client.complete_json(
                     correction_prompt,
@@ -6352,6 +6418,12 @@ required_subquestions 非空时，必须先逐小问核对图片并返回全部 
             if isinstance(item, dict) and item.get("id")
         }
         all_items.sort(key=lambda item: item_order.get(str(item.get("question_id")), 10**9))
+        score_gate = validate_score_totals(all_items)
+        if not score_gate.passed:
+            forced_review_issues.extend(
+                f"题目 {question_id} 的逐小问得分之和与大题得分不一致"
+                for question_id in score_gate.issue_paths
+            )
         grading = {
             "items": all_items,
             "total_score": round(sum(_as_float(item.get("score")) for item in all_items), 2),
@@ -6394,6 +6466,7 @@ required_subquestions 非空时，必须先逐小问核对图片并返回全部 
             "review_model": (
                 settings.qwen_homework_review_model if batches else "deterministic-rules"
             ),
+            "prompt_bundle_version": prompt_bundle_version(),
         }
         extracted_answer = "\n\n".join(extracted_parts)
         status = "graded" if review["passed"] else "review_required"
