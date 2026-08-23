@@ -20,6 +20,7 @@ import { Link } from 'react-router-dom'
 import {
   App as AntApp,
   Button,
+  Dropdown,
   Empty,
   Image as AntImage,
   Input,
@@ -37,6 +38,7 @@ import {
   Upload,
   type UploadFile,
   type UploadProps,
+  type MenuProps,
 } from 'antd'
 import {
   AlertTriangle,
@@ -895,6 +897,45 @@ function ChatComposer({
       setMode(nextMode)
     }
   }
+  const activeFeature = composerMode === 'image_answer'
+    ? { key: 'image_answer', label: '整份试题 / PDF' }
+    : mode === 'quiz'
+      ? { key: 'quiz', label: '同类出题' }
+      : mode === 'recommend'
+        ? { key: 'recommend', label: '题库荐题' }
+        : mode === 'explain'
+          ? { key: 'explain', label: '知识讲解' }
+          : mode === 'plan'
+            ? { key: 'plan', label: '学习规划' }
+            : undefined
+  const featureMenuItems: MenuProps['items'] = [
+    {
+      key: 'quiz',
+      icon: <WandSparkles size={15} />,
+      label: <span className="composer-function-menu-copy"><strong>同类出题</strong><small>基于当前题目生成同构变式</small></span>,
+    },
+    {
+      key: 'recommend',
+      icon: <LibraryBig size={15} />,
+      label: <span className="composer-function-menu-copy"><strong>题库荐题</strong><small>从题库筛选匹配练习</small></span>,
+    },
+    {
+      key: 'explain',
+      icon: <Presentation size={15} />,
+      label: <span className="composer-function-menu-copy"><strong>知识讲解</strong><small>生成结构化讲解页面</small></span>,
+    },
+    {
+      key: 'plan',
+      icon: <CalendarCheck2 size={15} />,
+      label: <span className="composer-function-menu-copy"><strong>学习规划</strong><small>按目标和薄弱点规划路径</small></span>,
+    },
+    { type: 'divider' },
+    {
+      key: 'image_answer',
+      icon: <UploadCloud size={15} />,
+      label: <span className="composer-function-menu-copy"><strong>整份试题 / PDF</strong><small>上传整卷并在后台逐题拆分</small></span>,
+    },
+  ]
 
   const selectFiles = (files: File[]) => {
     if (!files.length) return
@@ -917,46 +958,41 @@ function ChatComposer({
     <div className="composer-shell">
       <div className="composer-card">
         <div className="composer-topline">
-          <Segmented<ComposerMode>
-            className="composer-mode-desktop"
-            size="small"
-            value={composerMode}
-            onChange={changeComposerMode}
-            options={[
-              { label: '智能路由', value: 'auto' },
-              { label: 'AI 答疑', value: 'answer' },
-              { label: '拍照答题', value: 'image_answer' },
-              { label: '同类出题', value: 'quiz' },
-              { label: '题库荐题', value: 'recommend' },
-              { label: '知识讲解', value: 'explain' },
-              { label: '学习规划', value: 'plan' },
-            ]}
-          />
-          <div className="composer-mode-mobile">
-            <Segmented<ComposerMode>
-              size="small"
-              value={(['answer', 'image_answer', 'recommend'] as ComposerMode[]).includes(composerMode) ? composerMode : 'answer'}
-              onChange={changeComposerMode}
-              options={[
-                { label: '答疑', value: 'answer' },
-                { label: '拍照', value: 'image_answer' },
-                { label: '题库荐题', value: 'recommend' },
-              ]}
-            />
-            <Select
-              size="small"
-              value={(['auto', 'quiz', 'explain', 'plan'] as ComposerMode[]).includes(composerMode) ? composerMode : undefined}
-              placeholder="更多"
-              onChange={(nextMode) => changeComposerMode(nextMode as ComposerMode)}
-              options={[
-                { label: '智能路由', value: 'auto' },
-                { label: '同类出题', value: 'quiz' },
-                { label: '知识讲解', value: 'explain' },
-                { label: '学习规划', value: 'plan' },
-              ]}
-            />
+          <div className="composer-routing-control">
+            <button
+              type="button"
+              className={`composer-agent-mode ${activeFeature ? '' : 'active'}`}
+              onClick={() => changeComposerMode('auto')}
+              aria-pressed={!activeFeature}
+            >
+              <BrainCircuit size={15} />
+              <span>智能助教</span>
+            </button>
+            {activeFeature && (
+              <span className="composer-active-function">
+                {activeFeature.label}
+                <button type="button" onClick={() => changeComposerMode('auto')} aria-label={`退出${activeFeature.label}`}>
+                  <X size={12} />
+                </button>
+              </span>
+            )}
           </div>
-          <span className="composer-tip">{mode === 'explain' ? `${knowledgeImageModelLabel(explanationImageModel)} · 逐页生成` : 'Shift + Enter 换行'}</span>
+          <div className="composer-topline-actions">
+            <Dropdown
+              trigger={['click']}
+              placement="topRight"
+              menu={{
+                items: featureMenuItems,
+                selectedKeys: activeFeature ? [activeFeature.key] : [],
+                onClick: ({ key }) => changeComposerMode(key as ComposerMode),
+              }}
+            >
+              <Button className="composer-function-button" size="small" icon={<WandSparkles size={14} />}>
+                功能 <ChevronDown size={12} />
+              </Button>
+            </Dropdown>
+            <span className="composer-tip">{mode === 'explain' ? `${knowledgeImageModelLabel(explanationImageModel)} · 逐页生成` : 'Shift + Enter 换行'}</span>
+          </div>
         </div>
         {activeFocus && mode !== 'explain' && mode !== 'plan' && (
           <div className="conversation-focus-bar">

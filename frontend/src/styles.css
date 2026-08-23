@@ -439,9 +439,17 @@ button { color: inherit; }
 .composer-shell { z-index: 5; padding: 10px 24px 12px; background: linear-gradient(180deg, rgba(248,250,248,0), #f8faf8 20%); }
 .composer-card { width: min(800px, 100%); margin: 0 auto; padding: 10px 12px 11px 15px; background: #fff; border: 1px solid #ccdcd8; border-radius: 16px; box-shadow: 0 10px 28px rgba(37,72,69,.095); }
 .composer-topline { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }
-.composer-card .ant-segmented { padding: 2px; background: #eff4f2; }
-.composer-card .ant-segmented-item { min-height: 25px; color: #708683; font-size: 10px; }
-.composer-card .ant-segmented-item-selected { color: #1f625d; font-weight: 700; box-shadow: 0 1px 4px rgba(29,74,70,.08); }
+.composer-routing-control, .composer-topline-actions { display: flex; align-items: center; gap: 7px; }
+.composer-agent-mode { display: inline-flex; align-items: center; gap: 6px; min-height: 29px; padding: 4px 9px; color: #577572; cursor: pointer; background: #f1f6f4; border: 1px solid #dfe9e6; border-radius: 9px; font-size: 10px; font-weight: 700; }
+.composer-agent-mode:hover, .composer-agent-mode.active { color: #126f68; background: #e5f3ef; border-color: #b8d9d2; }
+.composer-active-function { display: inline-flex; align-items: center; gap: 5px; min-height: 27px; padding: 3px 5px 3px 9px; color: #285f5a; background: #edf6f3; border: 1px solid #cfe3de; border-radius: 99px; font-size: 9px; font-weight: 700; }
+.composer-active-function button { display: grid; width: 19px; height: 19px; padding: 0; color: #6b8b87; cursor: pointer; background: transparent; border: 0; border-radius: 50%; place-items: center; }
+.composer-active-function button:hover { color: #a04d43; background: #f7e5e1; }
+.composer-function-button.ant-btn { display: inline-flex; align-items: center; gap: 3px; min-height: 29px; color: #426d69; background: #fff; border-color: #d6e4e0; border-radius: 9px; box-shadow: none; font-size: 10px; font-weight: 700; }
+.composer-function-button.ant-btn:hover { color: #0f766e !important; background: #eef7f4 !important; border-color: #afd4cc !important; }
+.composer-function-menu-copy { display: flex; min-width: 172px; flex-direction: column; gap: 1px; padding: 2px 0; }
+.composer-function-menu-copy strong { color: #315d59; font-size: 11px; }
+.composer-function-menu-copy small { color: #879996; font-size: 8px; }
 .composer-tip { padding-right: 4px; color: #a0afac; font-size: 8px; }
 .conversation-focus-bar { display: flex; align-items: center; gap: 9px; margin: 6px 0 8px; padding: 8px 9px; color: #245c58; background: linear-gradient(135deg, #f0f8f6, #f7fbfa); border: 1px solid #d3e7e2; border-radius: 11px; }
 .conversation-focus-icon { display: grid; flex: 0 0 27px; width: 27px; height: 27px; place-items: center; color: #fff; background: #25877f; border-radius: 8px; }
@@ -2176,7 +2184,6 @@ button { color: inherit; }
 .explanation-history-grid small { color: #91a0a8; font-size: 7px; }
 .explanation-history-open > svg { color: #9aadb7; }
 
-.composer-mode-mobile { display: none; }
 .photo-submit-hint { padding: 0 4px 4px; color: #8a6d4b; font-size: 11px; }
 .photo-pdf-processing { display: grid; place-items: center; gap: 12px; min-height: 280px; text-align: center; }
 .photo-pdf-processing .ant-progress { width: min(520px, 90%); }
@@ -2228,8 +2235,8 @@ button { color: inherit; }
   .explanation-progress-strip > span { grid-column: 1 / -1; grid-row: 2; }
   .explanation-outline-list { grid-template-columns: 1fr; }
   .explanation-planning-state { min-height: 300px; flex-direction: column; padding: 25px; text-align: center; }
-  .composer-mode-desktop { display: none !important; }
-  .composer-mode-mobile { display: flex; align-items: center; gap: 6px; width: 100%; }
-  .composer-mode-mobile .ant-segmented { flex: 1; }
-  .composer-mode-mobile .ant-select { width: 70px; }
+  .composer-topline { align-items: flex-start; gap: 8px; }
+  .composer-topline-actions { flex: 0 0 auto; }
+  .composer-tip { display: none; }
+  .composer-active-function { max-width: 126px; overflow: hidden; }
 }
