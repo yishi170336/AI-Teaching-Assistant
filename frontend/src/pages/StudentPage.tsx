@@ -773,7 +773,13 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
   const visibleResultCount = relatedEntities.length
     + atomicStatements.length
     + formulaKnowledge.length
-    + paddleEvidence.length
+    + Math.min(paddleEvidence.length, 5)
+  const resultBreakdown = [
+    relatedEntities.length ? `图谱 ${relatedEntities.length}` : '',
+    atomicStatements.length ? `陈述 ${atomicStatements.length}` : '',
+    formulaKnowledge.length ? `公式 ${formulaKnowledge.length}` : '',
+    paddleEvidence.length ? `证据 ${Math.min(paddleEvidence.length, 5)}` : '',
+  ].filter(Boolean).join(' · ')
   return (
     <aside className="knowledge-panel">
       <div className="panel-heading">
@@ -786,9 +792,9 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
         </Tooltip>
       </div>
       {activeSources.length > 0 && (
-        <div className={`source-usage-summary ${activeCitedSources.length ? '' : 'uncited'}`}>
-          <span>{knowledgeBaseDisplayName(current, activeKnowledgeBase)} · 召回 {activeSources.length} 条</span>
-          <strong>{visibleResultCount} 项结果</strong>
+        <div className="source-usage-summary">
+          <span>{knowledgeBaseDisplayName(current, activeKnowledgeBase)}{resultBreakdown ? ` · ${resultBreakdown}` : ''}</span>
+          <strong>共 {visibleResultCount} 项</strong>
         </div>
       )}
       <div className="source-list retrieval-result-list">
@@ -1748,11 +1754,9 @@ function messageEntityLinks(sources: SourceInfo[] | undefined): KnowledgeEntityL
   ;(sources || []).forEach((source) => {
     ;(source.matched_entities || []).forEach((entity) => {
       if (!entity.id || !entity.name) return
-      const current = entities.get(entity.id)
       entities.set(entity.id, {
         id: entity.id,
         name: entity.name,
-        aliases: [...new Set([...(current?.aliases || []), ...(entity.aliases || [])])],
       })
     })
   })
@@ -1760,9 +1764,13 @@ function messageEntityLinks(sources: SourceInfo[] | undefined): KnowledgeEntityL
 }
 
 const answerReferenceSectionPattern = /\n{1,3}(?:#{1,6}\s*|\*\*\s*)?(?:检索依据|参考资料|引用来源|参考文献)(?:\s*\*\*)?\s*[：:]?\s*\n[\s\S]*$/
+const inlineSourceCitationPattern = /\s*(?:\[\s*资料\s*\d+\s*\]|【\s*资料\s*\d+\s*】)/g
 
 function normalizeAssistantAnswer(content: string) {
-  return normalizeQuizContent(content).replace(answerReferenceSectionPattern, '').trimEnd()
+  return normalizeQuizContent(content)
+    .replace(answerReferenceSectionPattern, '')
+    .replace(inlineSourceCitationPattern, '')
+    .trimEnd()
 }
 
 function Conversation({

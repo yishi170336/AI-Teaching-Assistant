@@ -319,7 +319,7 @@ def test_backend_removes_model_reference_section_without_appending_a_list():
     response, cited_sources = _finalize_answer_citations(model_response, hits)
 
     assert "模型自行生成的错误清单" not in response
-    assert response == "结论由第四条资料支持 [资料4]。"
+    assert response == "结论由第四条资料支持。"
     assert "检索依据" not in response
     assert [source["id"] for source in cited_sources] == ["chunk-4"]
     assert cited_sources[0]["citation_index"] == 4
@@ -362,7 +362,7 @@ def test_legacy_unit_section_is_corrected_in_context_and_source_metadata():
 
     response, sources = _finalize_answer_citations("结论。[资料1]", [hit])
     assert "1.0 mA" not in response
-    assert response == "结论。[资料1]"
+    assert response == "结论。"
     assert sources[0]["section"] == "本章小结"
 
 
@@ -525,7 +525,8 @@ def test_streaming_suppresses_model_reference_list_without_appending_a_list():
     assert streamed == result["response"]
     assert "模型错误清单" not in streamed
     assert "### 检索依据" not in streamed
-    assert streamed.endswith("[资料2]。")
+    assert streamed.endswith("。")
+    assert "[资料" not in streamed
     assert result["cited_sources"][0]["citation_index"] == 2
 
 
@@ -927,7 +928,7 @@ def test_learning_plan_graph_has_analysis_retrieval_and_generation_nodes():
     assert "generate_learning_plan" in graph.nodes
 
 
-def test_learning_plan_reports_the_sources_referenced_in_its_answer():
+def test_learning_plan_hides_internal_source_numbers_from_its_answer():
     class FakePlanModel:
         model = "test-plan-citations"
 
@@ -953,7 +954,8 @@ def test_learning_plan_reports_the_sources_referenced_in_its_answer():
     result, deltas = asyncio.run(scenario())
 
     assert [source["citation_index"] for source in result["cited_sources"]] == [2, 4]
-    assert result["response"] == "先复习静态工作点[资料2]，再完成失真分析[资料4]。"
+    assert result["response"] == "先复习静态工作点，再完成失真分析。"
+    assert "[资料" not in result["response"]
     assert "### 检索依据" not in "".join(deltas)
 
 

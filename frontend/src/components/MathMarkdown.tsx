@@ -25,17 +25,20 @@ function escapeRegularExpression(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-/** Link only names supplied by the retriever, while leaving Markdown and LaTeX intact. */
+/**
+ * Link only canonical entity names supplied by the retriever.
+ *
+ * Aliases remain useful for retrieval, but they are intentionally not linked in
+ * answers: a broad alias such as “电子” on the canonical entity “载流子” would
+ * otherwise make the visible link text disagree with the graph node it opens.
+ */
 export function linkKnowledgeEntities(content: string, entities: KnowledgeEntityLink[] = []) {
   const terms = new Map<string, { id: string; text: string }>()
   entities.forEach((entity) => {
-    const values = [entity.name, ...(entity.aliases || [])]
-    values.forEach((rawValue) => {
-      const text = String(rawValue || '').trim()
-      if (text.length < 2 || /^[$\\]/.test(text)) return
-      const key = text.toLocaleLowerCase('zh-CN')
-      if (!terms.has(key)) terms.set(key, { id: entity.id, text })
-    })
+    const text = String(entity.name || '').trim()
+    if (text.length < 2 || /^[$\\]/.test(text)) return
+    const key = text.toLocaleLowerCase('zh-CN')
+    if (!terms.has(key)) terms.set(key, { id: entity.id, text })
   })
   const candidates = [...terms.values()].sort((left, right) => right.text.length - left.text.length)
   if (!candidates.length) return content
