@@ -15,6 +15,10 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from backend.app.config import settings  # noqa: E402
+from backend.app.rag.exercise_filter import (  # noqa: E402
+    filter_exercise_documents,
+    filter_exercise_items,
+)
 from backend.app.rag.graphrag_adapter import (  # noqa: E402
     audit_microsoft_graphrag,
     run_microsoft_graphrag,
@@ -254,11 +258,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         load_canonical_page_documents(args.source_pdf, index_dir),
         cleaning_path,
     )
+    documents, exercise_audit = filter_exercise_documents(documents)
+    (index_dir / "exercise_filter_audit.json").write_text(
+        json.dumps(exercise_audit, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     allowed_pages = {int(item.source_page or item.page) for item in documents}
-    elements = [
+    elements = filter_exercise_items([
         item for item in load_layout_elements(element_path)
         if int(item.source_page or item.page) in allowed_pages
-    ]
+    ])
     section_audit = validate_section_semantics(documents)
     visual_audit = audit_visual_semantics(elements)
     if section_audit["status"] == "failed":

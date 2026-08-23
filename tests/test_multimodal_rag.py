@@ -668,7 +668,7 @@ def test_chapter_knowledge_summaries_group_concepts_with_evidence_and_pages():
     ]
     assert chapters[0]["concept_count"] == 3
     assert chapters[0]["page_start"] == 1
-    assert chapters[0]["page_end"] == 3
+    assert chapters[0]["page_end"] == 2
     assert all(item["name"] != "习题伪知识点" for item in chapters[0]["concepts"])
     pn_junction = next(
         concept for concept in chapters[0]["concepts"] if concept["name"] == "PN结"
@@ -959,7 +959,7 @@ def test_rule_page_cleaning_excludes_exercise_range_until_next_chapter():
     assert decisions[3]["page_type"] == "exercise"
 
 
-def test_enhance_pdf_disables_page_cleaning_and_keeps_every_page(
+def test_enhance_pdf_only_filters_exercise_sections(
     tmp_path,
     monkeypatch,
 ):
@@ -994,10 +994,12 @@ def test_enhance_pdf_disables_page_cleaning_and_keeps_every_page(
         ),
     )
 
-    assert [item.page for item in kept] == [1, 2]
-    assert all(item["keep"] is True for item in audit)
-    assert all(item["method"] == "disabled" for item in audit)
-    assert all(item["page_type"] == "unfiltered" for item in audit)
+    assert [item.page for item in kept] == [1]
+    assert audit[0]["keep"] is True
+    assert audit[0]["page_type"] == "course_content"
+    assert audit[1]["keep"] is False
+    assert audit[1]["page_type"] == "exercise"
+    assert all(item["method"] == "section-boundary-rule" for item in audit)
     assert all(item["removed_characters"] == 0 for item in audit)
     persisted = json.loads(
         (tmp_path / "index" / "unfiltered.cleaning_audit.json").read_text(

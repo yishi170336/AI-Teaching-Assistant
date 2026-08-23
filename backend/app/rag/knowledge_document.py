@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from backend.app.rag.exercise_filter import is_exercise_context
 from backend.app.rag.models import PageDocument, TextChunk
 from backend.app.rag.multimodal import LayoutElement
 from backend.app.rag.ontology import extract_course_concepts
@@ -413,7 +414,14 @@ def compile_knowledge_document(
         documents,
         key=lambda item: (item.source, item.source_page or item.page, item.page),
     ):
-        if document.doc_type in {"question", "exercise"}:
+        raw_blocks = (
+            document.extra.get("text_blocks", [])
+            if isinstance(document.extra, dict)
+            else []
+        )
+        if document.doc_type in {"question", "exercise"} or (
+            not raw_blocks and is_exercise_context(document.chapter, document.section)
+        ):
             continue
         source_page = int(document.source_page or document.page)
         text_evidence = _document_text_evidence(document)
@@ -423,6 +431,8 @@ def compile_knowledge_document(
         ):
             chapter = str(evidence.get("chapter", document.chapter)) or document.chapter
             section = str(evidence.get("section", document.section)) or document.section
+            if is_exercise_context(chapter, section):
+                continue
             if (
                 not segments
                 or segments[-1]["chapter"] != chapter
@@ -462,11 +472,15 @@ def compile_knowledge_document(
         ):
             if element.element_type == "text":
                 continue
+            if is_exercise_context(element.chapter, element.section):
+                continue
             record, semantic = _element_record(element)
             context = block_context.get(
                 str(element.ocr_block_id or element.id),
                 (element.chapter or document.chapter, element.section or document.section),
             )
+            if is_exercise_context(*context):
+                continue
             target = next(
                 (
                     segment

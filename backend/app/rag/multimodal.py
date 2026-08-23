@@ -20,6 +20,12 @@ import fitz
 import httpx
 
 from backend.app.config import settings
+from backend.app.rag.exercise_filter import (
+    EXERCISE_FILTER_POLICY_VERSION,
+    bbox_in_exercise_range,
+    filter_exercise_documents,
+    is_exercise_context,
+)
 from backend.app.rag.pdf_extract_kit import DetectedRegion, PDFExtractKitAdapter
 from backend.app.rag.models import PageDocument, TextChunk
 from backend.app.rag.section_titles import (
@@ -61,7 +67,7 @@ PARTIAL_NOISE_MARKERS = (
     "扫码", "公众号", "购买正版", "资源下载", "广告", "网址", "http://", "https://",
 )
 
-PAGE_CLEANING_POLICY_VERSION = "disabled-pass-through-v1"
+PAGE_CLEANING_POLICY_VERSION = EXERCISE_FILTER_POLICY_VERSION
 
 SCANNED_PAGE_PLACEHOLDER = "[本页主要包含电路图、公式或其他图形内容]"
 PAGE_OCR_SCHEMA_VERSION = PADDLEOCR_VL_SCHEMA_VERSION
@@ -2483,32 +2489,29 @@ def enhance_pdf(
         if owns_ocr_client and ocr_client is not None:
             ocr_client.close()
         raise
+    unfiltered_documents = list(page_documents)
     page_text_hashes = {
         item.page: hashlib.sha256(item.text.encode("utf-8")).hexdigest()
-        for item in page_documents
+        for item in unfiltered_documents
     }
     audit_path = output_dir / f"{path.stem}.cleaning_audit.json"
-    # Page cleaning is intentionally disabled. Preserve every OCR page and every
-    # character so exercises, appendices and publication matter remain available
-    # to the later section/evidence pipeline. The pass-through audit is written
-    # immediately, before visual calls, so an interrupted build is still auditable.
-    decisions: dict[int, dict[str, Any]] = {
-        item.page: {
-            "page": item.page,
-            "source_page": item.source_page or item.page,
-            "keep": True,
-            "page_type": "unfiltered",
-            "reason": "页面清洗已禁用，原页完整保留",
-            "method": "disabled",
+    # Broad page cleaning remains disabled.  Only structurally identified
+    # exercise sections are excluded; mixed pages retain every non-exercise
+    # Paddle block so a preceding chapter summary is never lost with the exercises.
+    kept_docs, exercise_audit = filter_exercise_documents(unfiltered_documents)
+    decisions: dict[int, dict[str, Any]] = {}
+    for item in exercise_audit:
+        page_no = int(item["page"])
+        decisions[page_no] = {
+            **item,
+            "method": "section-boundary-rule",
             "cleaning_policy_version": PAGE_CLEANING_POLICY_VERSION,
             "requested_remove_fragments": [],
             "remove_fragments": [],
             "removed_characters": 0,
             "document_hash": document_hash,
-            "page_text_hash": page_text_hashes[item.page],
+            "page_text_hash": page_text_hashes[page_no],
         }
-        for item in page_documents
-    }
     audit_path.write_text(
         json.dumps(
             [decisions[number] for number in sorted(decisions)],
@@ -2517,7 +2520,10 @@ def enhance_pdf(
         ),
         encoding="utf-8",
     )
-    kept_docs = list(page_documents)
+    (output_dir / f"{path.stem}.exercise_filter_audit.json").write_text(
+        json.dumps(exercise_audit, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     page_meta = {item.page: item for item in kept_docs}
     allowed_pages = set(page_meta)
     external = _external_pdf_extract_elements(path)
@@ -2603,8 +2609,10 @@ def enhance_pdf(
                     description, table_cells = _table_fact_description(text, element_id)
                 element = LayoutElement(
                     id=element_id, source=path.name, page=page_no, element_type=element_type,
-                    bbox=bbox, text=text, reading_order=order, chapter=meta.chapter,
-                    section=meta.section, content_hash=digest, description=description,
+                    bbox=bbox, text=text, reading_order=order,
+                    chapter=str(block.get("chapter", meta.chapter)) or meta.chapter,
+                    section=str(block.get("section", meta.section)) or meta.section,
+                    content_hash=digest, description=description,
                     nearby_text=_localized_nearby_text(bbox, text_blocks),
                     confidence=float(block.get("confidence", 0.0) or 0.0),
                     processor="paddleocr-vl-layout",
@@ -2705,6 +2713,10 @@ def enhance_pdf(
                 formula_candidate_index = 0
                 for region in selected_regions:
                     bbox_points = [round(value / render_scale, 2) for value in region.bbox_pixels]
+                    if bbox_in_exercise_range(
+                        meta, bbox_points, page_height=float(page.rect.height)
+                    ):
+                        continue
                     category = region.category.lower()
                     is_formula_region = category in {
                         "isolate_formula", "isolated", "isolated_formula"
@@ -3058,6 +3070,10 @@ def enhance_pdf(
                         if rects
                         else [0.0, 0.0, float(page.rect.width), float(page.rect.height)]
                     )
+                    if bbox_in_exercise_range(
+                        meta, bbox, page_height=float(page.rect.height)
+                    ):
+                        continue
                     if _is_full_page_scan(
                         bbox, float(page.rect.width), float(page.rect.height), meta
                     ):
@@ -3132,6 +3148,11 @@ def enhance_pdf(
             # not raster images. Render such a page so Qwen3-VL can still see it.
             if (
                 page_image_count == 0
+                and not (
+                    ((meta.extra or {}).get("exercise_filter") or {}).get(
+                        "excluded_normalized_y_ranges"
+                    )
+                )
                 and len(page.get_drawings()) >= 3
                 and (not settings.multimodal_image_limit or image_counter < settings.multimodal_image_limit)
             ):
@@ -3304,6 +3325,8 @@ def multimodal_chunks(elements: Iterable[LayoutElement]) -> list[TextChunk]:
     seen: set[tuple[str, int, str, str]] = set()
     seen_semantic: set[tuple[str, int, str, str]] = set()
     for element in elements:
+        if is_exercise_context(element.chapter, element.section):
+            continue
         if element.element_type == "text":
             continue  # page-level text chunks already provide coherent overlap.
         dedup_key = (element.source, element.page, element.element_type, element.content_hash)
@@ -3373,7 +3396,9 @@ def build_chapter_knowledge_summaries(
 
     grouped: dict[str, dict[str, Any]] = {}
     for chunk_index, chunk in enumerate(chunks):
-        if chunk.doc_type == "question":
+        if chunk.doc_type == "question" or is_exercise_context(
+            chunk.chapter, chunk.section
+        ):
             continue
         chapter = _normalize_chapter_heading(chunk.chapter)
         if not chapter:
@@ -3481,7 +3506,9 @@ def build_local_knowledge_graph(chunks: Iterable[TextChunk]) -> dict[str, Any]:
             seen_edges.add(edge)
 
     for chunk in chunk_items:
-        if chunk.doc_type in {"question", "exercise"}:
+        if chunk.doc_type in {"question", "exercise"} or is_exercise_context(
+            chunk.chapter, chunk.section
+        ):
             continue
         document_id = "document:" + hashlib.sha1(chunk.source.encode("utf-8")).hexdigest()[:16]
         source_stem = Path(chunk.source).stem

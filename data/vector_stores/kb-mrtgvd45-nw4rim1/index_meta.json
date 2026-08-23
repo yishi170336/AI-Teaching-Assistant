@@ -15,7 +15,7 @@
   "dimension": 1024,
   "documents": 1,
   "text_pages": 465,
-  "knowledge_units": 194,
+  "knowledge_units": 185,
   "ocr_pages": 465,
   "ocr_model": {
     "requested_device": "api",
@@ -33,10 +33,10 @@
   },
   "questions": 0,
   "excluded_sources": [],
-  "chunks": 2494,
-  "layout_elements": 7942,
-  "circuit_diagrams": 305,
-  "formula_elements": 915,
+  "chunks": 2036,
+  "layout_elements": 6532,
+  "circuit_diagrams": 151,
+  "formula_elements": 846,
   "formula_processing": {
     "detected_regions": 11278,
     "inline_regions_kept_in_text": 10225,
@@ -48,46 +48,46 @@
     "uncertain_formulas": 42,
     "recognition": "PaddleOCR-VL page formula transcription + PDF-Extract-Kit localization/validation; vision formula recognition disabled"
   },
-  "table_elements": 44,
-  "discarded_pages": 0,
+  "table_elements": 40,
+  "discarded_pages": 67,
   "knowledge_graph": {
-    "nodes": 1437,
-    "edges": 3362,
-    "chapters": 11,
+    "nodes": 1339,
+    "edges": 3319,
+    "chapters": 10,
     "neo4j": {
       "enabled": true,
       "knowledge_base": "kb-mrtgvd45-nw4rim1",
-      "nodes": 1437,
-      "edges": 3573,
+      "nodes": 1339,
+      "edges": 3319,
       "node_labels": {
-        "SECTION": 212,
-        "参数与物理量": 322,
-        "器件与元件": 136,
-        "方法与模型": 144,
-        "材料与结构": 37,
+        "SECTION": 202,
+        "参数与物理量": 288,
+        "器件与元件": 131,
+        "方法与模型": 133,
+        "材料与结构": 36,
         "物理定律与原理": 4,
-        "物理过程与效应": 114,
-        "电路与系统": 308,
-        "课程概念": 160
+        "物理过程与效应": 109,
+        "电路与系统": 283,
+        "课程概念": 153
       },
       "relationship_types": {
-        "CONCEPT_RELATION": 1360,
-        "ENTITY_SECTION": 2002,
-        "PARENT_CHILD": 211
+        "CONCEPT_RELATION": 1268,
+        "ENTITY_SECTION": 1850,
+        "PARENT_CHILD": 201
       },
-      "attribute_facts": 2787
+      "attribute_facts": 2641
     }
   },
   "semantic_knowledge_graph": {
     "display_only": false,
     "provider": "hierarchical-summary-entity",
-    "nodes": 1437,
-    "edges": 3573,
-    "chapters": 11,
-    "entities": 1225,
-    "semantic_relationships": 1360,
+    "nodes": 1339,
+    "edges": 3319,
+    "chapters": 10,
+    "entities": 1137,
+    "semantic_relationships": 1268,
     "relationship_mentions": 0,
-    "text_units": 194,
+    "text_units": 185,
     "communities": 0
   },
   "qdrant": {
@@ -128,27 +128,27 @@
   ],
   "validation": {
     "status": "passed",
-    "chunks": 2494,
-    "vectors": 2494,
+    "chunks": 2036,
+    "vectors": 2036,
     "vector_dimension": 1024,
-    "graph_nodes": 1437,
-    "graph_edges": 3362,
+    "graph_nodes": 1339,
+    "graph_edges": 3319,
     "question_chunks": 0,
     "dangling_graph_edges": 0,
-    "concept_nodes": 1225,
-    "semantic_relationships": 3362,
+    "concept_nodes": 1137,
+    "semantic_relationships": 1268,
     "placeholder_text_chunks": 0,
     "semantic_graph": {
       "status": "passed",
-      "chunks": 2494,
-      "vectors": 2494,
+      "chunks": 2036,
+      "vectors": 2036,
       "vector_dimension": 1024,
-      "graph_nodes": 1437,
-      "graph_edges": 3573,
+      "graph_nodes": 1339,
+      "graph_edges": 3319,
       "question_chunks": 0,
       "dangling_graph_edges": 0,
-      "concept_nodes": 1225,
-      "semantic_relationships": 3573,
+      "concept_nodes": 1137,
+      "semantic_relationships": 1268,
       "placeholder_text_chunks": 0
     },
     "section_semantics": {
@@ -180,9 +180,9 @@
   "extraction_quality": {
     "text_chunks": 0,
     "placeholder_text_chunks": 0,
-    "concept_nodes": 1225,
-    "entity_nodes": 1225,
-    "semantic_relationships": 1360,
+    "concept_nodes": 1137,
+    "entity_nodes": 1137,
+    "semantic_relationships": 1268,
     "semantic_quality_status": "passed",
     "semantic_quality_warnings": 0,
     "fact_evidence_coverage": 1.0,
@@ -207,10 +207,11 @@
   },
   "pipeline_layers": {
     "document_cleaning": {
-      "status": "disabled",
-      "pages_preserved": 465,
-      "pages_discarded": 0,
+      "status": "exercise_section_filter_only",
+      "pages_preserved": 398,
+      "pages_discarded": 67,
       "partial_characters_removed": 0,
+      "exercise_blocks_removed": 1400,
       "question_banks_excluded": 0
     },
     "document_parsing": {
@@ -218,7 +219,7 @@
       "engine": "PaddleOCR-VL all-page OCR (cache-first) + PDF-Extract-Kit layout; PyMuPDF rendering only",
       "ocr_pages": 465,
       "placeholder_text_chunks": 0,
-      "layout_elements": 7942,
+      "layout_elements": 6532,
       "preserves_page_bbox": true,
       "section_semantics": {
         "status": "passed",
@@ -241,8 +242,8 @@
     "modality_processing": {
       "status": "ready",
       "text_chunks": 0,
-      "circuit_diagrams": 305,
-      "formula_elements": 915,
+      "circuit_diagrams": 151,
+      "formula_elements": 846,
       "formula_processing": {
         "detected_regions": 11278,
         "inline_regions_kept_in_text": 10225,
@@ -254,7 +255,7 @@
         "uncertain_formulas": 42,
         "recognition": "PaddleOCR-VL page formula transcription + PDF-Extract-Kit localization/validation; vision formula recognition disabled"
       },
-      "table_elements": 44,
+      "table_elements": 40,
       "circuit_vision_model": "qwen/qwen3.7-flash",
       "visual_summary_model": "qwen/qwen3.7-flash",
       "vision_summary_scope": [
@@ -266,33 +267,30 @@
     "knowledge_fusion": {
       "status": "ready",
       "knowledge_document": "book_knowledge_document.json",
-      "knowledge_units": 194,
+      "knowledge_units": 185,
       "graph_builder": "hierarchical-summary-entity",
       "graph_model": "qwen3.7-flash",
       "embedding_model": "Qwen3-Embedding-0.6B",
       "vector_store": "faiss",
-      "vector_points": 2494,
+      "vector_points": 2036,
       "image_vector_points": 0,
       "image_vector_store": "disabled",
-      "graph_nodes": 1437,
-      "graph_edges": 3362,
-      "semantic_nodes": 1437,
-      "semantic_edges": 3573,
-      "chapter_summaries": 11,
+      "graph_nodes": 1339,
+      "graph_edges": 3319,
+      "semantic_nodes": 1339,
+      "semantic_edges": 3319,
+      "chapter_summaries": 10,
       "graph_store": "local-json"
     },
     "retrieval_service": {
       "status": "ready",
       "strategies": [
-        "vector",
+        "qwen3-vector",
         "BM25",
-        "knowledge-graph",
-        "rerank",
-        "circuit-image"
+        "schema4-entity-graph"
       ],
       "question_bank_search": false,
-      "circuit_image_min_score": 0.7,
-      "circuit_image_max_references": 2
+      "image_vector_search": false
     },
     "application": {
       "status": "ready",
@@ -306,5 +304,97 @@
       ]
     }
   },
-  "display_name": "电子电路"
+  "display_name": "电子电路",
+  "exercise_filter": {
+    "schema_version": "1.0-exercise-prune-audit",
+    "policy_version": "1.0-exercise-section-noise",
+    "knowledge_base": "kb-mrtgvd45-nw4rim1",
+    "completed_at": "2026-08-23T13:59:43.805188+08:00",
+    "backup_dir": "E:\\Work\\AI助教\\data\\vector_stores\\kb-mrtgvd45-nw4rim1\\backups\\exercise-prune-20260823-135937",
+    "removed_section_ids": [
+      "section:e52317afb67d:chapter-5f2604c742",
+      "section:e52317afb67d:struct-1393abff1b6b",
+      "section:e52317afb67d:struct-2ad3e5bff6a4",
+      "section:e52317afb67d:struct-497e2129bcfb",
+      "section:e52317afb67d:struct-599275546306",
+      "section:e52317afb67d:struct-5ac582efb755",
+      "section:e52317afb67d:struct-8e1d5a20704b",
+      "section:e52317afb67d:struct-a10f21bc5aca",
+      "section:e52317afb67d:struct-bb2bd20228d1",
+      "section:e52317afb67d:struct-cf1f39ec8c3c"
+    ],
+    "removed_sections": 10,
+    "removed_knowledge_units": 9,
+    "removed_chunks": 458,
+    "removed_multimodal_elements": 1410,
+    "removed_paddle_evidence": 1400,
+    "removed_entities": 88,
+    "removed_concept_relationships": 92,
+    "removed_attribute_facts": 425,
+    "fully_exercise_pages": 67,
+    "retained": {
+      "chunks": 2036,
+      "sections": 202,
+      "entities": 1137,
+      "concept_relationships": 1268,
+      "paddle_evidence": 5813,
+      "attribute_facts": 2873
+    },
+    "quality_audit": {
+      "schema_version": "4.0-hierarchical-summary-entity-graph",
+      "status": "passed",
+      "critical_issues": 0,
+      "warning_issues": 0,
+      "metrics": {
+        "sections": 202,
+        "content_sections": 185,
+        "entities": 1137,
+        "relationships": 1268,
+        "text_units": 185,
+        "attribute_facts": 2873,
+        "text_unit_fact_coverage": 1.0,
+        "multimodal_element_fact_coverage": 0.9959595959595959,
+        "dangling_relationships": 0,
+        "self_relationships": 0,
+        "isolated_entities": 0,
+        "invalid_evidence_references": 0,
+        "invalid_summary_claims": 0,
+        "ungrounded_entities": 0,
+        "ungrounded_relationships": 0,
+        "invalid_embedding_refs": 0,
+        "vector_mismatch": 0,
+        "missing_section_summaries": 0,
+        "missing_summary_evidence": 0,
+        "oversized_section_summaries": 0,
+        "canonical_alias_conflicts": 0,
+        "duplicate_entity_ids": 0,
+        "duplicate_canonical_names": 0
+      }
+    },
+    "raw_page_ocr_cache_retained": true,
+    "raw_page_ocr_cache_reason": "仅作为免 OCR 续建源保留；运行时证据库和索引已删除习题内容",
+    "neo4j": {
+      "enabled": true,
+      "knowledge_base": "kb-mrtgvd45-nw4rim1",
+      "nodes": 1339,
+      "edges": 3319,
+      "node_labels": {
+        "SECTION": 202,
+        "参数与物理量": 288,
+        "器件与元件": 131,
+        "方法与模型": 133,
+        "材料与结构": 36,
+        "物理定律与原理": 4,
+        "物理过程与效应": 109,
+        "电路与系统": 283,
+        "课程概念": 153
+      },
+      "relationship_types": {
+        "CONCEPT_RELATION": 1268,
+        "ENTITY_SECTION": 1850,
+        "PARENT_CHILD": 201
+      },
+      "attribute_facts": 2641
+    }
+  }
 }

@@ -1,9 +1,10 @@
 {
   "document_cleaning": {
-    "status": "disabled",
-    "pages_preserved": 465,
-    "pages_discarded": 0,
+    "status": "exercise_section_filter_only",
+    "pages_preserved": 398,
+    "pages_discarded": 67,
     "partial_characters_removed": 0,
+    "exercise_blocks_removed": 1400,
     "question_banks_excluded": 0
   },
   "document_parsing": {
@@ -11,7 +12,7 @@
     "engine": "PaddleOCR-VL all-page OCR (cache-first) + PDF-Extract-Kit layout; PyMuPDF rendering only",
     "ocr_pages": 465,
     "placeholder_text_chunks": 0,
-    "layout_elements": 7942,
+    "layout_elements": 6532,
     "preserves_page_bbox": true,
     "section_semantics": {
       "status": "passed",
@@ -34,8 +35,8 @@
   "modality_processing": {
     "status": "ready",
     "text_chunks": 0,
-    "circuit_diagrams": 305,
-    "formula_elements": 915,
+    "circuit_diagrams": 151,
+    "formula_elements": 846,
     "formula_processing": {
       "detected_regions": 11278,
       "inline_regions_kept_in_text": 10225,
@@ -47,7 +48,8 @@
       "uncertain_formulas": 42,
       "recognition": "PaddleOCR-VL page formula transcription + PDF-Extract-Kit localization/validation; vision formula recognition disabled"
     },
-    "table_elements": 44,
+    "table_elements": 40,
+    "circuit_vision_model": "qwen/qwen3.7-flash",
     "visual_summary_model": "qwen/qwen3.7-flash",
     "vision_summary_scope": [
       "course_image",
@@ -58,19 +60,19 @@
   "knowledge_fusion": {
     "status": "ready",
     "knowledge_document": "book_knowledge_document.json",
-    "knowledge_units": 194,
+    "knowledge_units": 185,
     "graph_builder": "hierarchical-summary-entity",
     "graph_model": "qwen3.7-flash",
     "embedding_model": "Qwen3-Embedding-0.6B",
     "vector_store": "faiss",
-    "vector_points": 2494,
+    "vector_points": 2036,
     "image_vector_points": 0,
     "image_vector_store": "disabled",
-    "graph_nodes": 1437,
-    "graph_edges": 3362,
-    "semantic_nodes": 1437,
-    "semantic_edges": 3573,
-    "chapter_summaries": 11,
+    "graph_nodes": 1339,
+    "graph_edges": 3319,
+    "semantic_nodes": 1339,
+    "semantic_edges": 3319,
+    "chapter_summaries": 10,
     "graph_store": "local-json"
   },
   "retrieval_service": {

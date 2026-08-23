@@ -1210,7 +1210,7 @@ def build_knowledge_base(
             report(
                 10 + int((source_index + 1) / source_count * 35),
                 "document_parsing",
-                f"已完成 {path.name} 的完整页面解析（未执行页面清洗）",
+                f"已完成 {path.name} 的页面解析与习题章节过滤",
             )
     finally:
         if paddle_ocr_client is not None:
@@ -1499,10 +1499,20 @@ def build_knowledge_base(
     }
     metadata["pipeline_layers"] = {
         "document_cleaning": {
-            "status": "disabled",
-            "pages_preserved": len(cleaning_audits),
-            "pages_discarded": 0,
+            "status": "exercise_section_filter_only",
+            "pages_preserved": sum(
+                bool(item.get("keep", True)) for item in cleaning_audits
+            ),
+            "pages_discarded": sum(
+                not bool(item.get("keep", True)) for item in cleaning_audits
+            ),
             "partial_characters_removed": 0,
+            "exercise_blocks_removed": sum(
+                int(item.get("removed_blocks", 0) or 0) for item in cleaning_audits
+            ),
+            "mixed_pages_preserved": sum(
+                item.get("page_type") == "mixed" for item in cleaning_audits
+            ),
             "question_banks_excluded": len(excluded_sources),
         },
         "document_parsing": {

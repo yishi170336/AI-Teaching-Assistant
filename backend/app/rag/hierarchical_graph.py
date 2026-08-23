@@ -12,6 +12,10 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from backend.app.rag.exercise_filter import (
+    exercise_section_ids,
+    is_exercise_context,
+)
 from backend.app.rag.embedding_runtime import (
     encode_texts,
     get_build_gpu_memory_limit_mib,
@@ -433,6 +437,11 @@ def compile_hierarchical_knowledge_document(
     raw_units = compile_knowledge_document(
         document_values, element_values, target_chars=100_000_000
     )
+    raw_units = [
+        unit
+        for unit in raw_units
+        if not is_exercise_context(unit.chapter, unit.section, *unit.title_path)
+    ]
     nodes: dict[str, dict[str, Any]] = {}
     grouped: dict[str, list[KnowledgeUnit]] = defaultdict(list)
     structural_counts: dict[tuple[str, str, str], int] = defaultdict(int)
@@ -2419,6 +2428,25 @@ def build_hierarchical_summary_entity_graph(
     """Run the ordered seven-stage schema-4 graph build and persist vector artifacts."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    removed_section_ids = exercise_section_ids(sections)
+    units = [
+        unit
+        for unit in units
+        if unit.section_id not in removed_section_ids
+        and not is_exercise_context(unit.chapter, unit.section, *unit.title_path)
+    ]
+    sections = [
+        {
+            **section,
+            "children": [
+                value
+                for value in section.get("children", [])
+                if str(value) not in removed_section_ids
+            ],
+        }
+        for section in sections
+        if str(section.get("id", "")) not in removed_section_ids
+    ]
     tokenizer = _load_tokenizer(embedding_model_path)
     units = summarize_sections(
         units, client, output_dir / "section_summaries.jsonl", tokenizer
