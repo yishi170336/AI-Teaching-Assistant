@@ -516,6 +516,8 @@ button { color: inherit; }
 .message-bubble.failed { color: #a24e42; }
 .assistant-answer-content { user-select: text; -webkit-user-select: text; }
 .assistant-answer-content ::selection { color: #163f3c; background: #bfe9df; }
+.assistant-answer-content .knowledge-entity-link { padding: 0 2px; color: #087f75; font-weight: 750; text-decoration: none; background: linear-gradient(transparent 68%, #ccefe9 68%); border-bottom: 1px dashed #48a99e; border-radius: 2px; cursor: pointer; }
+.assistant-answer-content .knowledge-entity-link:hover { color: #075e58; background: #dff5f1; border-bottom-style: solid; }
 .learning-annotation-trigger { position: fixed; z-index: 1100; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 112px; height: 34px; padding: 0 12px; color: #fff; white-space: nowrap; cursor: pointer; background: linear-gradient(135deg, #173f53, #0f6f69); border: 1px solid rgba(255,255,255,.2); border-radius: 999px; box-shadow: 0 9px 24px rgba(16,62,70,.24), 0 2px 6px rgba(16,62,70,.14); font-size: 11px; font-weight: 800; line-height: 1; transform-origin: top left; animation: annotation-trigger-in .14s ease-out; }
 .learning-annotation-trigger:hover { background: linear-gradient(135deg, #123749, #0b625d); box-shadow: 0 11px 28px rgba(16,62,70,.28), 0 2px 7px rgba(16,62,70,.16); transform: translateY(-1px); }
 @keyframes annotation-trigger-in { from { opacity: 0; transform: translateY(-3px) scale(.96); } to { opacity: 1; transform: translateY(0) scale(1); } }

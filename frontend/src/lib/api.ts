@@ -17,6 +17,11 @@ export type SourceInfo = {
   section_id?: string
   evidence_ids?: string[]
   matched_entity_ids?: string[]
+  matched_entities?: Array<{
+    id: string
+    name: string
+    aliases?: string[]
+  }>
   knowledge_base?: string
   historical?: boolean
   citation_index?: number

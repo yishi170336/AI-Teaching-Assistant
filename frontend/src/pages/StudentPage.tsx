@@ -92,7 +92,7 @@ import {
   RotateCcw,
   ScanLine,
 } from 'lucide-react'
-import MathMarkdown, { InlineMath } from '../components/MathMarkdown'
+import MathMarkdown, { InlineMath, type KnowledgeEntityLink } from '../components/MathMarkdown'
 import HomeworkView from './HomeworkView'
 import AnswerReportsView from './AnswerReportsView'
 import {
@@ -721,7 +721,7 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
       )
       return priority(right) - priority(left)
     })
-    return [...new Set(prioritized.flatMap((source) => (source.evidence_ids || []).slice(0, 2)))].slice(0, 10)
+    return [...new Set(prioritized.flatMap((source) => (source.evidence_ids || []).slice(0, 2)))].slice(0, 5)
   }, [activeSources])
   const evidenceKey = evidenceIds.join('\u0000')
 
@@ -797,7 +797,7 @@ function KnowledgePanel({ statuses, onCreate }: { statuses: KBStatus[]; onCreate
             {(relatedEntities.length > 0 || retrievalGraphLoading) && <section className="retrieval-result-group"><h3><Network size={13} />相关图谱节点 <span>{relatedEntities.length}</span></h3>{retrievalGraphLoading && !relatedEntities.length ? <div className="retrieval-loading"><LoaderCircle className="spin" size={14} /> 正在读取图谱节点…</div> : relatedEntities.map((node) => <RetrievalGraphNodeCard key={node.id} node={node} graph={retrievalGraph as KnowledgeGraph} score={entityScores.get(node.id) || 0} />)}</section>}
             {atomicStatements.length > 0 && <section className="retrieval-result-group"><h3><ListTodo size={13} />原子陈述 <span>{atomicStatements.length}</span></h3>{atomicStatements.map((source) => <StructuredRetrievalCard key={source.id} source={source} label="原子陈述" cited={isSourceCited(source)} />)}</section>}
             {formulaKnowledge.length > 0 && <section className="retrieval-result-group"><h3><Cpu size={13} />公式知识整理 <span>{formulaKnowledge.length}</span></h3>{formulaKnowledge.map((source) => <StructuredRetrievalCard key={source.id} source={source} label="公式知识" cited={isSourceCited(source)} />)}</section>}
-            {(paddleEvidence.length > 0 || paddleEvidenceLoading) && <section className="retrieval-result-group"><h3><ScanLine size={13} />原始 Paddle 证据 <span>{paddleEvidence.length}</span></h3>{paddleEvidenceLoading && !paddleEvidence.length ? <div className="retrieval-loading"><LoaderCircle className="spin" size={14} /> 正在读取块级证据…</div> : paddleEvidence.map((item) => <PaddleEvidenceCard key={item.id} evidence={item} />)}</section>}
+            {(paddleEvidence.length > 0 || paddleEvidenceLoading) && <section className="retrieval-result-group"><h3><ScanLine size={13} />原始 Paddle 证据 <span>{Math.min(paddleEvidence.length, 5)}</span></h3>{paddleEvidenceLoading && !paddleEvidence.length ? <div className="retrieval-loading"><LoaderCircle className="spin" size={14} /> 正在读取块级证据…</div> : paddleEvidence.slice(0, 5).map((item) => <PaddleEvidenceCard key={item.id} evidence={item} />)}</section>}
           </>
         ) : noGroundedEvidence ? (
           <div className="source-empty">
@@ -1743,6 +1743,28 @@ function ReferenceMistakeConfirmModal({
   )
 }
 
+function messageEntityLinks(sources: SourceInfo[] | undefined): KnowledgeEntityLink[] {
+  const entities = new Map<string, KnowledgeEntityLink>()
+  ;(sources || []).forEach((source) => {
+    ;(source.matched_entities || []).forEach((entity) => {
+      if (!entity.id || !entity.name) return
+      const current = entities.get(entity.id)
+      entities.set(entity.id, {
+        id: entity.id,
+        name: entity.name,
+        aliases: [...new Set([...(current?.aliases || []), ...(entity.aliases || [])])],
+      })
+    })
+  })
+  return [...entities.values()]
+}
+
+const answerReferenceSectionPattern = /\n{1,3}(?:#{1,6}\s*|\*\*\s*)?(?:检索依据|参考资料|引用来源|参考文献)(?:\s*\*\*)?\s*[：:]?\s*\n[\s\S]*$/
+
+function normalizeAssistantAnswer(content: string) {
+  return normalizeQuizContent(content).replace(answerReferenceSectionPattern, '').trimEnd()
+}
+
 function Conversation({
   onAddMistake,
   onConfirmPhoto,
@@ -1753,6 +1775,7 @@ function Conversation({
   onRecommendationAnother,
   onRecommendationStart,
   onRecommendationHint,
+  onOpenEntity,
 }: {
   onAddMistake: (draft: MistakeCandidateDraft) => void
   onConfirmPhoto: (content: string) => void
@@ -1763,6 +1786,7 @@ function Conversation({
   onRecommendationAnother: (reference: QuestionReference, continuationTaskId?: string, focus?: ConversationFocus) => void
   onRecommendationStart: (recommendation: QuestionRecommendation) => void
   onRecommendationHint: (reference: QuestionReference, level: 'direction' | 'formula') => void
+  onOpenEntity: (entityId: string) => void
 }) {
   const { message: toast } = AntApp.useApp()
   const messages = useChatStore((state) => state.messages)
@@ -1997,7 +2021,11 @@ function Conversation({
                     onMouseUp={() => window.setTimeout(captureAnnotationSelection, 0)}
                     onTouchEnd={() => window.setTimeout(captureAnnotationSelection, 0)}
                   >
-                    <MathMarkdown content={normalizeQuizContent(message.content)} />
+                    <MathMarkdown
+                      content={normalizeAssistantAnswer(message.content)}
+                      entityLinks={messageEntityLinks(message.sources)}
+                      onEntityClick={onOpenEntity}
+                    />
                   </div>
                 )
                 : <div className="user-message-content"><MathMarkdown content={message.content} /></div>
@@ -2424,9 +2452,11 @@ const buildNeo4jForceLayout = (
 function HierarchicalKnowledgeGraphView({
   graph,
   displayName,
+  requestedEntityId,
 }: {
   graph: KnowledgeGraph
   displayName: string
+  requestedEntityId?: string
 }) {
   const [view, setView] = useState<'sections' | 'entities'>('entities')
   const [coreOnly, setCoreOnly] = useState(false)
@@ -2601,6 +2631,23 @@ function HierarchicalKnowledgeGraphView({
     resetNeo4jViewport()
   }, [graph.knowledge_base])
 
+  useEffect(() => {
+    if (!requestedEntityId || !entityMap.has(requestedEntityId)) return
+    setView('entities')
+    setEntityType('all')
+    setCoreOnly(false)
+    setEntityQuery('')
+    setSelectedId(requestedEntityId)
+    setSelectedEdgeKey('')
+    resetNeo4jViewport()
+    window.setTimeout(() => {
+      document.querySelector('.neo4j-inspector')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      })
+    }, 120)
+  }, [entityMap, requestedEntityId])
+
   const evidenceIds = selectedEdge?.evidence_ids
     || (selected?.type === 'section' ? selected.evidence_ids : [])
     || []
@@ -2774,16 +2821,18 @@ function KnowledgeGraphView({
   loading,
   knowledgeBase,
   displayName,
+  requestedEntityId,
 }: {
   graph?: KnowledgeGraph
   loading: boolean
   knowledgeBase: string
   displayName: string
+  requestedEntityId?: string
 }) {
   if (loading) return <div className="workspace-empty"><LoaderCircle className="spin" /><strong>正在整理知识图谱…</strong></div>
   if (graph && graph.knowledge_base !== knowledgeBase) return <div className="workspace-empty"><ShieldCheck /><strong>正在切换知识库图谱…</strong><p>旧知识库数据已隐藏，等待当前选择加载完成。</p></div>
   if (!graph?.nodes.length) return <div className="workspace-empty"><Network /><strong>当前知识库还没有图谱数据</strong><p>重建知识库后会从教材正文与电路图中抽取知识实体和原始关系。</p></div>
-  if (graph.schema_version?.startsWith('4.')) return <HierarchicalKnowledgeGraphView graph={graph} displayName={displayName} />
+  if (graph.schema_version?.startsWith('4.')) return <HierarchicalKnowledgeGraphView graph={graph} displayName={displayName} requestedEntityId={requestedEntityId} />
   return <LegacyKnowledgeGraphView graph={graph} loading={false} />
 }
 
@@ -5370,6 +5419,7 @@ function ModelSettingsModal({
 
 function StudentPageContent() {
   const [activeView, setActiveView] = useState<WorkspaceView>('chat')
+  const [selectedGraphEntityId, setSelectedGraphEntityId] = useState('')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [kbModalOpen, setKbModalOpen] = useState(false)
   const [modelModalOpen, setModelModalOpen] = useState(false)
@@ -6230,6 +6280,10 @@ function StudentPageContent() {
                     onRecommendationAnother={recommendAnother}
                     onRecommendationStart={startRecommendationAnswer}
                     onRecommendationHint={requestRecommendationHint}
+                    onOpenEntity={(entityId) => {
+                      setSelectedGraphEntityId(entityId)
+                      setActiveView('graph')
+                    }}
                   />
                 )}
               </div>
@@ -6249,6 +6303,7 @@ function StudentPageContent() {
             loading={graphLoading}
             knowledgeBase={knowledgeBase}
             displayName={currentKbDisplayName}
+            requestedEntityId={selectedGraphEntityId}
           />
         ) : activeView === 'question-bank' ? (
           <QuestionBankView

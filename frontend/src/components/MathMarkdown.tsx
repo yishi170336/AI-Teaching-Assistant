@@ -12,14 +12,85 @@ const katexPlugins: Parameters<typeof ReactMarkdown>[0]['rehypePlugins'] = [
   [rehypeKatex, { strict: false, throwOnError: false, trust: false }],
 ]
 
-export default function MathMarkdown({ content }: { content: string }) {
+export type KnowledgeEntityLink = {
+  id: string
+  name: string
+  aliases?: string[]
+}
+
+const entityLinkPrefix = '#knowledge-entity='
+const protectedMarkdownPattern = /(```[\s\S]*?```|`[^`\n]*`|\$\$[\s\S]*?\$\$|\$[^$\n]*\$|!?\[[^\]]*\]\([^)]+\))/g
+
+function escapeRegularExpression(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** Link only names supplied by the retriever, while leaving Markdown and LaTeX intact. */
+export function linkKnowledgeEntities(content: string, entities: KnowledgeEntityLink[] = []) {
+  const terms = new Map<string, { id: string; text: string }>()
+  entities.forEach((entity) => {
+    const values = [entity.name, ...(entity.aliases || [])]
+    values.forEach((rawValue) => {
+      const text = String(rawValue || '').trim()
+      if (text.length < 2 || /^[$\\]/.test(text)) return
+      const key = text.toLocaleLowerCase('zh-CN')
+      if (!terms.has(key)) terms.set(key, { id: entity.id, text })
+    })
+  })
+  const candidates = [...terms.values()].sort((left, right) => right.text.length - left.text.length)
+  if (!candidates.length) return content
+  const pattern = new RegExp(candidates.map((item) => escapeRegularExpression(item.text)).join('|'), 'giu')
+  const linkedEntityIds = new Set<string>()
+  return content.split(protectedMarkdownPattern).map((segment, index) => {
+    if (index % 2 === 1) return segment
+    return segment.replace(pattern, (match) => {
+      const entity = terms.get(match.toLocaleLowerCase('zh-CN'))
+      if (!entity || linkedEntityIds.has(entity.id)) return match
+      linkedEntityIds.add(entity.id)
+      return `[${match}](${entityLinkPrefix}${encodeURIComponent(entity.id)})`
+    })
+  }).join('')
+}
+
+export default function MathMarkdown({
+  content,
+  entityLinks = [],
+  onEntityClick,
+}: {
+  content: string
+  entityLinks?: KnowledgeEntityLink[]
+  onEntityClick?: (entityId: string) => void
+}) {
+  const linkedContent = linkKnowledgeEntities(content, entityLinks)
   return (
     <div className="math-markdown">
       <ReactMarkdown
         remarkPlugins={markdownPlugins}
         rehypePlugins={katexPlugins}
+        components={{
+          a: ({ href, children }) => {
+            if (href?.startsWith(entityLinkPrefix) && onEntityClick) {
+              const entityId = decodeURIComponent(href.slice(entityLinkPrefix.length))
+              return (
+                <a
+                  href={href}
+                  className="knowledge-entity-link"
+                  title="在知识图谱中查看该实体"
+                  onClick={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    onEntityClick(entityId)
+                  }}
+                >
+                  {children}
+                </a>
+              )
+            }
+            return <a href={href}>{children}</a>
+          },
+        }}
       >
-        {normalizeLatex(content)}
+        {normalizeLatex(linkedContent)}
       </ReactMarkdown>
     </div>
   )

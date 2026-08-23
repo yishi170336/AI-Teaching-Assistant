@@ -1032,6 +1032,29 @@ class Schema4Retriever:
             use_half=True,
         )
 
+    def _attach_matched_entities(
+        self, hits: list[RetrievalHit]
+    ) -> list[RetrievalHit]:
+        """Expose canonical graph identities needed for deterministic UI links."""
+
+        for hit in hits:
+            matched: list[dict[str, Any]] = []
+            for entity_id in dict.fromkeys(hit.matched_entity_ids or []):
+                entity = self.entities.get(str(entity_id))
+                if not entity or not _compact(entity.get("name")):
+                    continue
+                matched.append({
+                    "id": str(entity_id),
+                    "name": _compact(entity.get("name")),
+                    "aliases": [
+                        _compact(value)
+                        for value in entity.get("aliases", [])
+                        if _compact(value)
+                    ],
+                })
+            hit.matched_entities = matched
+        return hits
+
     def retrieve(
         self,
         knowledge_base_id: str,
@@ -1062,7 +1085,9 @@ class Schema4Retriever:
         entity_ids = {str(item.get("id", "")) for item in entities}
         facts = self._fact_candidates(query, section_ids, entity_ids, limits["facts"])
         relationships = relationships[: limits["relationships"]]
-        sources = self._select_evidence_hits(hits, limits["sources"], query)
+        sources = self._attach_matched_entities(
+            self._select_evidence_hits(hits, limits["sources"], query)
+        )
         selected_entities = entities[: limits["entities"]]
         alignment_candidates: list[dict[str, Any]] = []
         if feature in {"mistake_alignment", "homework_alignment"}:
@@ -1099,6 +1124,10 @@ class Schema4Retriever:
         query_embedding = self._encode_query(query)
         entities = self._entity_candidates(query, query_embedding)
         relationships = self._relationship_candidates(entities, 8, query)
-        return self._select_evidence_hits(
-            self._combined_candidates(query, query_embedding, entities, relationships), k, query
+        return self._attach_matched_entities(
+            self._select_evidence_hits(
+                self._combined_candidates(query, query_embedding, entities, relationships),
+                k,
+                query,
+            )
         )

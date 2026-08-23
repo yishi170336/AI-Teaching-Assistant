@@ -308,7 +308,7 @@ def test_general_answer_skips_course_retrieval_and_bound_question():
     assert retrieved["sources"] == []
 
 
-def test_backend_rebuilds_reference_section_from_valid_inline_citations():
+def test_backend_removes_model_reference_section_without_appending_a_list():
     hits = [_retrieval_hit(index) for index in range(1, 5)]
     model_response = (
         "结论由第四条资料支持 [资料4]。\n\n"
@@ -319,9 +319,8 @@ def test_backend_rebuilds_reference_section_from_valid_inline_citations():
     response, cited_sources = _finalize_answer_citations(model_response, hits)
 
     assert "模型自行生成的错误清单" not in response
-    assert response.endswith(
-        "- [资料4] 教材.pdf · 第二章 基本放大电路 · 2.4 测试章节 · 第 64 页"
-    )
+    assert response == "结论由第四条资料支持 [资料4]。"
+    assert "检索依据" not in response
     assert [source["id"] for source in cited_sources] == ["chunk-4"]
     assert cited_sources[0]["citation_index"] == 4
 
@@ -338,7 +337,7 @@ def test_physical_assignment_conflicts_allow_condition_dependent_values():
     assert _physical_assignment_conflicts(answer) == []
 
 
-def test_legacy_unit_section_is_corrected_in_context_sources_and_reference_list():
+def test_legacy_unit_section_is_corrected_in_context_and_source_metadata():
     hit = RetrievalHit(
         chunk=TextChunk(
             id="legacy-summary",
@@ -363,7 +362,7 @@ def test_legacy_unit_section_is_corrected_in_context_sources_and_reference_list(
 
     response, sources = _finalize_answer_citations("结论。[资料1]", [hit])
     assert "1.0 mA" not in response
-    assert "第五章 反馈放大电路 · 本章小结 · 第 300 页" in response
+    assert response == "结论。[资料1]"
     assert sources[0]["section"] == "本章小结"
 
 
@@ -495,7 +494,7 @@ def test_grounding_filter_accepts_grounded_structured_knowledge():
     assert scope["graph_role"] == "grounded_structured_evidence"
 
 
-def test_streaming_suppresses_model_reference_list_and_emits_backend_list_once():
+def test_streaming_suppresses_model_reference_list_without_appending_a_list():
     class FakeCitationModel:
         model = "fake-citation-model"
 
@@ -525,7 +524,8 @@ def test_streaming_suppresses_model_reference_list_and_emits_backend_list_once()
 
     assert streamed == result["response"]
     assert "模型错误清单" not in streamed
-    assert streamed.count("### 检索依据") == 1
+    assert "### 检索依据" not in streamed
+    assert streamed.endswith("[资料2]。")
     assert result["cited_sources"][0]["citation_index"] == 2
 
 
@@ -953,9 +953,8 @@ def test_learning_plan_reports_the_sources_referenced_in_its_answer():
     result, deltas = asyncio.run(scenario())
 
     assert [source["citation_index"] for source in result["cited_sources"]] == [2, 4]
-    assert "[资料2] 教材.pdf" in result["response"]
-    assert "[资料4] 教材.pdf" in result["response"]
-    assert "### 检索依据" in "".join(deltas)
+    assert result["response"] == "先复习静态工作点[资料2]，再完成失真分析[资料4]。"
+    assert "### 检索依据" not in "".join(deltas)
 
 
 def test_router_uses_model_to_select_learning_plan_intent():

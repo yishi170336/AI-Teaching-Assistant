@@ -32,6 +32,28 @@ def test_online_retriever_has_no_image_query_parameter():
     assert "image_score" not in RetrievalHit.__dataclass_fields__
 
 
+def test_retriever_exposes_canonical_entities_for_answer_links():
+    retriever = object.__new__(Schema4Retriever)
+    retriever.entities = {
+        "entity:diode": {
+            "id": "entity:diode",
+            "name": "二极管",
+            "aliases": ["Diode", "半导体二极管"],
+        },
+    }
+    hit = _hit("diode", "ocr:block:diode", 0.9, "graph_entity")
+    hit.matched_entity_ids = ["entity:diode", "entity:missing"]
+
+    result = retriever._attach_matched_entities([hit])
+
+    assert result == [hit]
+    assert hit.source_dict()["matched_entities"] == [{
+        "id": "entity:diode",
+        "name": "二极管",
+        "aliases": ["Diode", "半导体二极管"],
+    }]
+
+
 def test_textual_course_image_chunks_are_deduplicated_by_evidence():
     values = [
         (0, _hit("first", "ocr:block:1", 0.9)),

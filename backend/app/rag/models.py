@@ -57,6 +57,7 @@ class RetrievalHit:
     section_id: str = ""
     evidence_ids: list[str] | None = None
     matched_entity_ids: list[str] | None = None
+    matched_entities: list[dict[str, Any]] | None = None
 
     @property
     def display_section(self) -> str:
@@ -89,5 +90,6 @@ class RetrievalHit:
             "section_id": self.section_id,
             "evidence_ids": list(self.evidence_ids or []),
             "matched_entity_ids": list(self.matched_entity_ids or []),
+            "matched_entities": [dict(item) for item in self.matched_entities or []],
         }
 
