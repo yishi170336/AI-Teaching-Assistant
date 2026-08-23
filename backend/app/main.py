@@ -55,6 +55,7 @@ from backend.app.schemas import (
     AnswerReportCreateRequest,
     ChatRequest,
     HomeworkFromQuestionBankRequest,
+    HomeworkLearningReportCreateRequest,
     HomeworkQuestionUpdateRequest,
     HomeworkSubmissionAnswer,
     KnowledgeBaseRebuildRequest,
@@ -70,6 +71,7 @@ from backend.app.schemas import (
     QuestionReferenceActionRequest,
     ScheduleItemCreateRequest,
     ScheduleItemStatusRequest,
+    StudentProfileUpdateRequest,
 )
 from backend.app.services.memory import ConversationMemory
 from backend.app.services.answer_reports import (
@@ -100,6 +102,13 @@ from backend.app.services.homework import (
     process_homework,
     process_question_bank,
     retag_question_bank,
+)
+from backend.app.services.homework_learning_reports import (
+    HomeworkLearningReportStore,
+    StudentProfileStore,
+    aggregate_report_snapshots,
+    build_report_snapshot,
+    generate_homework_learning_report,
 )
 from backend.app.services.question_recommendations import QuestionRecommendationService
 from backend.app.services.knowledge_explanations import (
@@ -156,7 +165,10 @@ knowledge_explanation_store = KnowledgeExplanationStore()
 knowledge_explanations = KnowledgeExplanationService(knowledge_explanation_store)
 practice_attempts = PracticeAttemptStore()
 answer_reports = AnswerReportStore()
+student_profiles = StudentProfileStore()
+homework_learning_reports = HomeworkLearningReportStore()
 knowledge_explanation_tasks: dict[str, asyncio.Task[Any]] = {}
+homework_learning_report_tasks: dict[str, asyncio.Task[Any]] = {}
 
 
 class QuestionBankTaskRegistry:
@@ -225,6 +237,68 @@ def _run_question_bank_processing(
                 homework_store.delete_question_bank_files(bank_id)
         except Exception:
             logger.exception("Unable to clean deleted question-bank files for %s", bank_id)
+
+
+def _all_teacher_submissions() -> list[dict[str, Any]]:
+    return [
+        submission
+        for homework in homework_store.list_homeworks(role="teacher")
+        for submission in homework.get("submissions", [])
+        if isinstance(submission, dict)
+    ]
+
+
+def _ensure_assignment_learning_report(submission_id: str) -> tuple[dict[str, Any] | None, bool]:
+    try:
+        submission = homework_store.get_raw_submission(submission_id)
+        if submission.get("status") != "graded" or not submission.get("review", {}).get("passed"):
+            return None, False
+        homework = homework_store.get_raw_homework(str(submission.get("homework_id", "")))
+        profile = student_profiles.ensure(
+            str(submission.get("student_id", "")),
+            str(submission.get("student_name", "")),
+        )
+        snapshot = build_report_snapshot(homework, submission)
+        metrics = aggregate_report_snapshots([snapshot])
+        title = f"{homework.get('title') or '作业'} · 学情报告"
+        return homework_learning_reports.ensure_assignment(
+            student_id=str(profile["student_id"]),
+            title=title,
+            snapshot=snapshot,
+            metrics=metrics,
+        )
+    except (FileNotFoundError, ValueError):
+        logger.warning(
+            "Unable to create assignment learning report for %s",
+            submission_id,
+            exc_info=True,
+        )
+        return None, False
+
+
+def _grade_submission_and_generate_report(submission_id: str) -> None:
+    grade_submission(homework_store, submission_id)
+    report, _ = _ensure_assignment_learning_report(submission_id)
+    if report and report.get("status") == "pending":
+        generate_homework_learning_report(homework_learning_reports, str(report["id"]))
+
+
+def _schedule_homework_learning_report(report_id: str) -> None:
+    current = homework_learning_report_tasks.get(report_id)
+    if current is not None and not current.done():
+        return
+
+    async def runner() -> None:
+        try:
+            await asyncio.to_thread(
+                generate_homework_learning_report,
+                homework_learning_reports,
+                report_id,
+            )
+        finally:
+            homework_learning_report_tasks.pop(report_id, None)
+
+    homework_learning_report_tasks[report_id] = asyncio.create_task(runner())
 
 
 def _focus_identifier(seed: str) -> str:
@@ -506,6 +580,26 @@ async def lifespan(_: FastAPI):
     knowledge_bases.load_existing()
     knowledge_explanation_store.recover_interrupted()
     await memory.connect()
+    try:
+        await asyncio.to_thread(
+            homework_store.backfill_homework_knowledge,
+            mistake_knowledge.align,
+            mistake_knowledge.infer_points,
+        )
+    except Exception:
+        logger.exception("Unable to backfill homework knowledge metadata during startup")
+    submissions = await asyncio.to_thread(_all_teacher_submissions)
+    await asyncio.to_thread(student_profiles.sync_submissions, submissions)
+    homework_learning_reports.recover_interrupted()
+    for submission in submissions:
+        if submission.get("status") != "graded" or not submission.get("review", {}).get("passed"):
+            continue
+        report, _ = await asyncio.to_thread(
+            _ensure_assignment_learning_report,
+            str(submission.get("id", "")),
+        )
+        if report and report.get("status") == "pending":
+            _schedule_homework_learning_report(str(report["id"]))
     yield
     question_bank_tasks.cancel_all()
     pending_explanations = list(knowledge_explanation_tasks.values())
@@ -513,6 +607,11 @@ async def lifespan(_: FastAPI):
         task.cancel()
     if pending_explanations:
         await asyncio.gather(*pending_explanations, return_exceptions=True)
+    pending_reports = list(homework_learning_report_tasks.values())
+    for task in pending_reports:
+        task.cancel()
+    if pending_reports:
+        await asyncio.gather(*pending_reports, return_exceptions=True)
     await ollama.close()
     await memory.close()
     knowledge_bases.close_all()
@@ -2761,6 +2860,176 @@ async def teacher_status() -> dict[str, Any]:
     }
 
 
+@app.get("/api/teacher/students")
+async def list_teacher_students() -> dict[str, Any]:
+    submissions = await asyncio.to_thread(_all_teacher_submissions)
+    profiles = await asyncio.to_thread(student_profiles.list, submissions)
+    return {"students": profiles}
+
+
+@app.patch("/api/teacher/students/{student_id}")
+async def update_teacher_student(
+    student_id: str,
+    request: StudentProfileUpdateRequest,
+) -> dict[str, Any]:
+    try:
+        profile = await asyncio.to_thread(
+            student_profiles.update,
+            student_id,
+            request.display_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "student": profile}
+
+
+@app.get("/api/teacher/learning-reports")
+async def list_teacher_learning_reports(student_id: str = "") -> dict[str, Any]:
+    try:
+        homeworks = await asyncio.to_thread(homework_store.list_homeworks, role="teacher")
+        await asyncio.to_thread(
+            homework_learning_reports.mark_missing_sources,
+            {str(item.get("id", "")) for item in homeworks},
+        )
+        reports = await asyncio.to_thread(
+            homework_learning_reports.list,
+            student_id=student_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"reports": reports}
+
+
+@app.post("/api/teacher/learning-reports")
+async def create_teacher_learning_report(
+    request: HomeworkLearningReportCreateRequest,
+) -> dict[str, Any]:
+    snapshots: list[dict[str, Any]] = []
+    try:
+        for submission_id in request.submission_ids:
+            submission = await asyncio.to_thread(
+                homework_store.get_raw_submission,
+                submission_id,
+            )
+            if submission.get("student_id") != request.student_id:
+                raise ValueError("累计报告不能混合不同学生的作业")
+            if submission.get("status") != "graded" or not submission.get("review", {}).get("passed"):
+                raise RuntimeError("累计报告只能使用复核通过的作业")
+            homework = await asyncio.to_thread(
+                homework_store.get_raw_homework,
+                str(submission.get("homework_id", "")),
+            )
+            snapshots.append(build_report_snapshot(homework, submission))
+        profile = await asyncio.to_thread(student_profiles.ensure, request.student_id)
+        metrics = aggregate_report_snapshots(snapshots)
+        report = await asyncio.to_thread(
+            homework_learning_reports.create,
+            report_type="stage",
+            student_id=request.student_id,
+            title=request.title or f"{profile.get('display_name', '学生')} · 阶段学情报告",
+            snapshots=snapshots,
+            metrics=metrics,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _schedule_homework_learning_report(str(report["id"]))
+    return {"ok": True, "report": report}
+
+
+@app.get("/api/teacher/learning-reports/{report_id}")
+async def get_teacher_learning_report(report_id: str) -> dict[str, Any]:
+    try:
+        report = await asyncio.to_thread(homework_learning_reports.get, report_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if report is None:
+        raise HTTPException(status_code=404, detail="学情报告不存在")
+    return {"report": report}
+
+
+@app.delete("/api/teacher/learning-reports/{report_id}")
+async def delete_teacher_learning_report(report_id: str) -> dict[str, Any]:
+    try:
+        deleted = await asyncio.to_thread(homework_learning_reports.delete, report_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="学情报告不存在")
+    return {"ok": True}
+
+
+@app.post("/api/teacher/learning-reports/{report_id}/retry")
+async def retry_teacher_learning_report(report_id: str) -> dict[str, Any]:
+    try:
+        report = await asyncio.to_thread(homework_learning_reports.retry, report_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _schedule_homework_learning_report(report_id)
+    return {"ok": True, "report": report}
+
+
+@app.post("/api/teacher/learning-reports/{report_id}/publish")
+async def publish_teacher_learning_report(report_id: str) -> dict[str, Any]:
+    try:
+        report = await asyncio.to_thread(homework_learning_reports.publish, report_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True, "report": report}
+
+
+@app.post("/api/teacher/learning-reports/{report_id}/withdraw")
+async def withdraw_teacher_learning_report(report_id: str) -> dict[str, Any]:
+    try:
+        report = await asyncio.to_thread(homework_learning_reports.withdraw, report_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True, "report": report}
+
+
+@app.get("/api/student/learning-reports")
+async def list_student_learning_reports(student_id: str) -> dict[str, Any]:
+    try:
+        reports = await asyncio.to_thread(
+            homework_learning_reports.list,
+            student_id=student_id,
+            published_only=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"reports": reports}
+
+
+@app.get("/api/student/learning-reports/{report_id}")
+async def get_student_learning_report(report_id: str, student_id: str) -> dict[str, Any]:
+    try:
+        report = await asyncio.to_thread(homework_learning_reports.get, report_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if (
+        report is None
+        or report.get("student_id") != student_id
+        or report.get("status") != "published"
+    ):
+        raise HTTPException(status_code=404, detail="学情报告不存在")
+    return {"report": report}
+
+
 async def _read_bounded_upload(upload: UploadFile, max_bytes: int, label: str) -> bytes:
     content = bytearray()
     while chunk := await upload.read(1024 * 1024):
@@ -2809,7 +3078,13 @@ async def create_homework(
         )
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    background_tasks.add_task(process_homework, homework_store, str(homework["id"]))
+    background_tasks.add_task(
+        process_homework,
+        homework_store,
+        str(homework["id"]),
+        knowledge_aligner=mistake_knowledge.align,
+        semantic_knowledge_inferer=mistake_knowledge.infer_points,
+    )
     return {
         "ok": True,
         "homework": homework,
@@ -3488,7 +3763,13 @@ async def reprocess_homework(
         processing_progress=0,
         processing_message="等待重新识别",
     )
-    background_tasks.add_task(process_homework, homework_store, homework_id)
+    background_tasks.add_task(
+        process_homework,
+        homework_store,
+        homework_id,
+        knowledge_aligner=mistake_knowledge.align,
+        semantic_knowledge_inferer=mistake_knowledge.infer_points,
+    )
     return {"ok": True, "message": "已重新开始识别作业"}
 
 
@@ -3500,6 +3781,11 @@ async def delete_homework(homework_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail="作业不存在")
+    remaining = await asyncio.to_thread(homework_store.list_homeworks, role="teacher")
+    await asyncio.to_thread(
+        homework_learning_reports.mark_missing_sources,
+        {str(item.get("id", "")) for item in remaining},
+    )
     return {"ok": True}
 
 
@@ -3575,10 +3861,12 @@ async def submit_homework(
         for upload in uploads:
             await upload.close()
     try:
+        profile = await asyncio.to_thread(student_profiles.ensure, student_id)
         submission = await asyncio.to_thread(
             homework_store.create_submission,
             homework_id=homework_id,
             student_id=student_id,
+            student_name=str(profile.get("display_name", "")),
             files=saved,
             answers=parsed_answers,
             file_question_ids=parsed_file_question_ids,
@@ -3612,7 +3900,7 @@ async def start_homework_submission_grading(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    background_tasks.add_task(grade_submission, homework_store, submission_id)
+    background_tasks.add_task(_grade_submission_and_generate_report, submission_id)
     return {
         "ok": True,
         "submission": submission,

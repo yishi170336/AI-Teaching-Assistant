@@ -130,6 +130,47 @@ class AnswerReportCreateRequest(BaseModel):
         return value.strip()
 
 
+class StudentProfileUpdateRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=80)
+
+    @field_validator("display_name")
+    @classmethod
+    def strip_display_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("学生姓名不能为空")
+        return value
+
+
+class HomeworkLearningReportCreateRequest(BaseModel):
+    student_id: str = Field(min_length=1, max_length=96)
+    submission_ids: list[str] = Field(min_length=2, max_length=50)
+    title: str = Field(default="", max_length=120)
+
+    @field_validator("student_id")
+    @classmethod
+    def safe_learning_report_student_id(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", value):
+            raise ValueError("学生标识不合法")
+        return value
+
+    @field_validator("submission_ids")
+    @classmethod
+    def safe_learning_report_submission_ids(cls, values: list[str]) -> list[str]:
+        normalized = list(dict.fromkeys(value.strip() for value in values))
+        if len(normalized) < 2 or any(
+            not re.fullmatch(r"[a-f0-9]{32}", value) for value in normalized
+        ):
+            raise ValueError("累计报告至少需要两份有效作业提交")
+        return normalized
+
+    @field_validator("title")
+    @classmethod
+    def strip_learning_report_title(cls, value: str) -> str:
+        return value.strip()
+
+
 class SourceInfo(BaseModel):
     id: str
     source: str

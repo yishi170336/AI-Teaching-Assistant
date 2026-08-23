@@ -672,6 +672,97 @@ export type Homework = {
   submission?: HomeworkSubmission | null
 }
 
+export type StudentProfile = {
+  student_id: string
+  display_name: string
+  first_seen_at: string
+  last_seen_at: string
+  submission_count: number
+  graded_count: number
+  pending_count: number
+  average_score_rate: number | null
+  created_at: string
+  updated_at: string
+}
+
+export type HomeworkLearningMetric = {
+  question_count: number
+  scored_count: number
+  score: number
+  max_score: number
+  score_rate: number | null
+  status: 'mastered' | 'developing' | 'needs_support' | 'insufficient_evidence'
+  question_ids: string[]
+  submission_ids: string[]
+  knowledge_point?: string
+  question_type?: string
+}
+
+export type HomeworkLearningReportMetrics = {
+  assignment_count: number
+  question_count: number
+  scored_count: number
+  unscored_count: number
+  correct_count: number
+  partial_count: number
+  incorrect_count: number
+  total_score: number
+  max_score: number
+  score_rate: number | null
+  question_types: HomeworkLearningMetric[]
+  knowledge_points: HomeworkLearningMetric[]
+  unaligned_question_count: number
+  trend: {
+    status: 'insufficient_data' | 'improving' | 'declining' | 'stable'
+    change: number | null
+    items: Array<{ submission_id: string; homework_title: string; graded_at: string; score_rate: number }>
+  }
+}
+
+export type HomeworkLearningAdvice = {
+  text: string
+  question_ids: string[]
+  submission_ids: string[]
+}
+
+export type HomeworkLearningReportSummary = {
+  id: string
+  schema_version: string
+  report_type: 'assignment' | 'stage'
+  status: 'pending' | 'generating' | 'draft' | 'published' | 'failed' | 'blocked'
+  quality_status: 'pending' | 'passed' | 'blocked'
+  student_id: string
+  title: string
+  submission_ids: string[]
+  homework_ids: string[]
+  metrics: HomeworkLearningReportMetrics
+  diagnosis: {
+    summary?: string
+    strengths?: HomeworkLearningAdvice[]
+    gaps?: HomeworkLearningAdvice[]
+    teaching_actions?: HomeworkLearningAdvice[]
+    student_actions?: HomeworkLearningAdvice[]
+  }
+  review: {
+    passed?: boolean
+    confidence?: number
+    issues?: string[]
+    repair_instructions?: string[]
+    review_model?: string
+  }
+  processing_error: string
+  source_available?: boolean
+  published_at: string
+  created_at: string
+  updated_at: string
+}
+
+export type HomeworkLearningReport = HomeworkLearningReportSummary & {
+  source_snapshots: Array<Record<string, unknown>>
+  prompt_version: string
+  run_id: string
+}
+
 export type QuestionBank = {
   id: string
   title: string
@@ -1997,6 +2088,97 @@ export async function startHomeworkSubmissionGrading(
   )
   const result = await homeworkResponse<{ submission: HomeworkSubmission }>(response, '开始批改失败')
   return result.submission
+}
+
+export async function fetchTeacherStudents(): Promise<StudentProfile[]> {
+  const response = await fetch('/api/teacher/students')
+  const result = await homeworkResponse<{ students: StudentProfile[] }>(response, '学生档案读取失败')
+  return result.students || []
+}
+
+export async function updateTeacherStudent(
+  studentId: string,
+  displayName: string,
+): Promise<StudentProfile> {
+  const response = await fetch(`/api/teacher/students/${encodeURIComponent(studentId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ display_name: displayName }),
+  })
+  const result = await homeworkResponse<{ student: StudentProfile }>(response, '学生姓名保存失败')
+  return result.student
+}
+
+export async function fetchTeacherLearningReports(
+  studentId = '',
+): Promise<HomeworkLearningReportSummary[]> {
+  const query = new URLSearchParams()
+  if (studentId) query.set('student_id', studentId)
+  const response = await fetch(`/api/teacher/learning-reports${query.size ? `?${query}` : ''}`)
+  const result = await homeworkResponse<{ reports: HomeworkLearningReportSummary[] }>(response, '学情报告读取失败')
+  return result.reports || []
+}
+
+export async function fetchTeacherLearningReport(reportId: string): Promise<HomeworkLearningReport> {
+  const response = await fetch(`/api/teacher/learning-reports/${encodeURIComponent(reportId)}`)
+  const result = await homeworkResponse<{ report: HomeworkLearningReport }>(response, '学情报告读取失败')
+  return result.report
+}
+
+export async function createTeacherLearningReport(fields: {
+  studentId: string
+  submissionIds: string[]
+  title?: string
+}): Promise<HomeworkLearningReport> {
+  const response = await fetch('/api/teacher/learning-reports', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      student_id: fields.studentId,
+      submission_ids: fields.submissionIds,
+      title: fields.title || '',
+    }),
+  })
+  const result = await homeworkResponse<{ report: HomeworkLearningReport }>(response, '累计报告创建失败')
+  return result.report
+}
+
+export async function runTeacherLearningReportAction(
+  reportId: string,
+  action: 'retry' | 'publish' | 'withdraw',
+): Promise<HomeworkLearningReportSummary> {
+  const response = await fetch(
+    `/api/teacher/learning-reports/${encodeURIComponent(reportId)}/${action}`,
+    { method: 'POST' },
+  )
+  const result = await homeworkResponse<{ report: HomeworkLearningReportSummary }>(response, '学情报告操作失败')
+  return result.report
+}
+
+export async function deleteTeacherLearningReport(reportId: string): Promise<void> {
+  const response = await fetch(`/api/teacher/learning-reports/${encodeURIComponent(reportId)}`, {
+    method: 'DELETE',
+  })
+  await homeworkResponse(response, '学情报告删除失败')
+}
+
+export async function fetchStudentLearningReports(
+  studentId: string,
+): Promise<HomeworkLearningReportSummary[]> {
+  const response = await fetch(`/api/student/learning-reports?student_id=${encodeURIComponent(studentId)}`)
+  const result = await homeworkResponse<{ reports: HomeworkLearningReportSummary[] }>(response, '教师学情报告读取失败')
+  return result.reports || []
+}
+
+export async function fetchStudentLearningReport(
+  studentId: string,
+  reportId: string,
+): Promise<HomeworkLearningReport> {
+  const response = await fetch(
+    `/api/student/learning-reports/${encodeURIComponent(reportId)}?student_id=${encodeURIComponent(studentId)}`,
+  )
+  const result = await homeworkResponse<{ report: HomeworkLearningReport }>(response, '教师学情报告读取失败')
+  return result.report
 }
 
 function presentationFilename(disposition: string | null): string {

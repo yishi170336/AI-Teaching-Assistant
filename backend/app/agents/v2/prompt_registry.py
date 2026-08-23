@@ -54,6 +54,8 @@ _ROLE_NAMES = {
     "page_auditor": "知识讲解单页审查 Agent",
     "visual_layout_designer": "知识信息图布局 Agent",
     "image_prompt_compiler": "知识信息图提示词编译 Agent",
+    "homework_report_writer": "作业学情报告 Agent",
+    "homework_report_auditor": "学情报告独立审查 Agent",
 }
 
 
@@ -92,6 +94,12 @@ PROMPT_SPECS: dict[str, PromptSpec] = {
     "page_auditor": _spec("page_auditor", "request", "retrieval", "draft"),
     "visual_layout_designer": _spec("visual_layout_designer", "draft"),
     "image_prompt_compiler": _spec("image_prompt_compiler", "draft"),
+    "homework_report_writer": _spec(
+        "homework_report_writer", "task_contract", "reference", "review"
+    ),
+    "homework_report_auditor": _spec(
+        "homework_report_auditor", "task_contract", "reference", "draft"
+    ),
 }
 
 

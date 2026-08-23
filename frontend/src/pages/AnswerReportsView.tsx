@@ -6,6 +6,7 @@ import {
   Empty,
   Input,
   Popconfirm,
+  Segmented,
   Select,
   Spin,
   Tag,
@@ -21,6 +22,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import MathMarkdown, { InlineMath } from '../components/MathMarkdown'
+import HomeworkLearningReportDocument from '../components/HomeworkLearningReportDocument'
 import {
   AnswerReport,
   AnswerReportSummary,
@@ -29,6 +31,10 @@ import {
   fetchAnswerReport,
   fetchAnswerReports,
   fetchPracticeAttempts,
+  fetchStudentLearningReport,
+  fetchStudentLearningReports,
+  HomeworkLearningReport,
+  HomeworkLearningReportSummary,
   PracticeAttempt,
 } from '../lib/api'
 
@@ -355,16 +361,21 @@ export default function AnswerReportsView({ studentId }: { studentId: string }) 
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [openingId, setOpeningId] = useState('')
+  const [reportMode, setReportMode] = useState<'practice' | 'teacher'>('practice')
+  const [teacherReports, setTeacherReports] = useState<HomeworkLearningReportSummary[]>([])
+  const [activeTeacherReport, setActiveTeacherReport] = useState<HomeworkLearningReport>()
 
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const [nextAttempts, nextReports] = await Promise.all([
+      const [nextAttempts, nextReports, nextTeacherReports] = await Promise.all([
         fetchPracticeAttempts(studentId),
         fetchAnswerReports(studentId),
+        fetchStudentLearningReports(studentId),
       ])
       setAttempts(nextAttempts)
       setReports(nextReports)
+      setTeacherReports(nextTeacherReports)
       setSelectedIds((current) => current.filter((id) => nextAttempts.some((item) => item.id === id)))
       setPracticeSessionId((current) => (
         current === 'all' || nextAttempts.some((item) => item.practice_session_id === current)
@@ -383,6 +394,7 @@ export default function AnswerReportsView({ studentId }: { studentId: string }) 
     setSelectedIds([])
     setPracticeSessionId('all')
     setTitle('')
+    setActiveTeacherReport(undefined)
     void refresh()
   }, [refresh])
 
@@ -455,6 +467,17 @@ export default function AnswerReportsView({ studentId }: { studentId: string }) 
     }
   }
 
+  const openTeacherReport = async (reportId: string) => {
+    setOpeningId(reportId)
+    try {
+      setActiveTeacherReport(await fetchStudentLearningReport(studentId, reportId))
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '教师学情报告读取失败')
+    } finally {
+      setOpeningId('')
+    }
+  }
+
   const printReport = () => {
     if (!activeReport) return
     const previous = document.title
@@ -471,12 +494,20 @@ export default function AnswerReportsView({ studentId }: { studentId: string }) 
       <div className="answer-report-toolbar no-print">
         <div>
           <span>可复核、可追溯</span>
-          <h1>学生答案分析报告</h1>
-          <p>从已完成的刷题批改中选择单题或多题。报告保存题目与答案快照，历史查看不会重新调用模型。</p>
+          <h1>答案分析报告</h1>
+          <p>{reportMode === 'practice' ? '从已完成的自主练习批改中生成可追溯报告。' : '查看教师审核并发布的单次作业与累计学情报告。'}</p>
         </div>
         <Button icon={<RefreshCw size={15} />} onClick={() => void refresh()}>刷新记录</Button>
       </div>
 
+      <Segmented
+        className="answer-report-mode-switch no-print"
+        value={reportMode}
+        options={[{ label: `自主练习报告（${reports.length}）`, value: 'practice' }, { label: `教师学情报告（${teacherReports.length}）`, value: 'teacher' }]}
+        onChange={(value) => setReportMode(value as 'practice' | 'teacher')}
+      />
+
+      {reportMode === 'practice' ? <>
       <div className="answer-report-workbench no-print">
         <section className="answer-report-picker">
           <div className="answer-report-panel-head">
@@ -549,6 +580,23 @@ export default function AnswerReportsView({ studentId }: { studentId: string }) 
           <BarChart3 size={34} />
           <strong>选择历史报告或生成一份新报告</strong>
           <span>综合分析和逐题证据将在这里展示。</span>
+        </div>
+      )}
+      </> : (
+        <div className="teacher-report-student-workbench">
+          <aside className="teacher-report-student-list no-print">
+            <header><History size={18} /><div><strong>教师已发布报告</strong><span>{teacherReports.length} 份</span></div></header>
+            {teacherReports.length ? teacherReports.map((report) => (
+              <button type="button" className={activeTeacherReport?.id === report.id ? 'active' : ''} key={report.id} onClick={() => void openTeacherReport(report.id)}>
+                <div><strong>{report.title}</strong><span>{displayTime(report.published_at || report.updated_at)} · {report.report_type === 'assignment' ? '单次作业' : `${report.metrics.assignment_count} 份累计`}</span></div>
+                <Tag color="success">已发布</Tag>
+                {openingId === report.id && <Spin size="small" />}
+              </button>
+            )) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="教师尚未发布学情报告" />}
+          </aside>
+          <main className="teacher-report-student-preview">
+            {activeTeacherReport ? <HomeworkLearningReportDocument report={activeTeacherReport} studentName="我的学情" /> : <div className="answer-report-empty-preview no-print"><BarChart3 size={34} /><strong>选择一份教师学情报告</strong><span>报告发布后会在这里长期保留。</span></div>}
+          </main>
         </div>
       )}
     </section>

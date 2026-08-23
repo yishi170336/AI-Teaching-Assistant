@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Button, Checkbox, Empty, Input, Modal, Popconfirm, Progress, Segmented, Select, Spin, Tag, Upload, message } from 'antd'
 import type { UploadFile } from 'antd'
 import {
   AlertTriangle,
   ArrowLeft,
+  BarChart3,
   BookOpenCheck,
   BookMarked,
   BrainCircuit,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   Clock3,
   Eye,
@@ -24,6 +26,8 @@ import {
   RefreshCw,
   Send,
   ShieldCheck,
+  LayoutDashboard,
+  UsersRound,
   Sparkles,
   Trash2,
   UploadCloud,
@@ -39,13 +43,19 @@ import {
   deleteQuestionBankQuestion,
   deleteHomework,
   fetchHomeworks,
+  fetchTeacherLearningReport,
+  fetchTeacherLearningReports,
+  fetchTeacherStudents,
   fetchQuestionBanks,
   Homework,
   HomeworkQuestion,
   HomeworkQuestionUpdate,
   HomeworkSubmission,
+  HomeworkLearningReport,
+  HomeworkLearningReportSummary,
   publishHomework,
   QuestionBank,
+  runTeacherLearningReportAction,
   retagQuestionBank,
   reprocessQuestionBank,
   reprocessHomework,
@@ -53,8 +63,11 @@ import {
   setQuestionBankRecommendationEnabled,
   updateDocumentQuestion,
   uploadDocumentQuestionAsset,
+  StudentProfile,
 } from '../lib/api'
 import HomeworkPaper from '../components/HomeworkPaper'
+import HomeworkLearningReportDocument from '../components/HomeworkLearningReportDocument'
+import TeacherLearningAnalytics from '../components/TeacherLearningAnalytics'
 import MathMarkdown, { InlineMath } from '../components/MathMarkdown'
 import { groupQuestionBankQuestions } from '../lib/questionBankGrouping'
 
@@ -87,6 +100,15 @@ const submissionStatus = {
   review_required: { label: '需要教师复查', color: 'warning' },
   error: { label: '批改失败', color: 'error' },
 } as const
+
+const learningReportStatus: Record<HomeworkLearningReportSummary['status'], string> = {
+  pending: '等待生成',
+  generating: '生成并复核中',
+  draft: '等待教师发布',
+  published: '已发布',
+  failed: '生成失败',
+  blocked: '质量门阻断',
+}
 
 const questionBankStatus = {
   processing: { label: '提取中', color: 'processing', icon: <LoaderCircle className="spin" size={13} /> },
@@ -136,6 +158,10 @@ function QuestionManagementList({
   onEditQuestion: (question: HomeworkQuestion) => void
   onDeleteQuestion?: (questionId: string) => void
 }) {
+  const [expanded, setExpanded] = useState(false)
+  const answerCount = questions.filter((question) => Boolean(
+    question.answer || question.answer_subquestions?.length || question.answer_figures?.length,
+  )).length
   const questionLayout = groupByChapter
     ? groupQuestionBankQuestions(questions, sourceOrigin, bankLabel, documentKind)
     : { grouped: false, paper: false, groups: [{ key: 'all-questions', title: '', questions }] }
@@ -170,12 +196,12 @@ function QuestionManagementList({
     </article>
   ))
   return (
-    <section className="question-bank-question-manager">
-      <header className="teacher-section-heading">
-        <div><span>QUESTION MANAGEMENT</span><h3>题目管理</h3></div>
-        <small>可修正文题、答案、图注，或补充和替换图片</small>
-      </header>
-      {questions.length ? (
+    <section className={`question-bank-question-manager teacher-collapsible-section ${expanded ? 'expanded' : ''}`}>
+      <button className="teacher-collapse-heading" type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+        <div><span>QUESTION MANAGEMENT</span><h3>题目管理</h3><small>{questions.length} 道题 · {answerCount}/{questions.length} 道答案完整</small></div>
+        <span>{expanded ? '收起' : '展开编辑'}<ChevronDown size={17} /></span>
+      </button>
+      {expanded && (questions.length ? (
         questionLayout.grouped ? (
           <div className="question-bank-manage-groups">
             {questionLayout.groups.map((group) => (
@@ -186,7 +212,7 @@ function QuestionManagementList({
             ))}
           </div>
         ) : <div className="question-bank-manage-list">{renderQuestions(questions)}</div>
-      ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无题目" />}
+      ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无题目" />)}
     </section>
   )
 }
@@ -199,6 +225,7 @@ function QuestionPreview({
   onEditQuestion: (question: HomeworkQuestion) => void
 }) {
   const [mode, setMode] = useState<'questions' | 'answers'>('questions')
+  const [expanded, setExpanded] = useState(false)
   const printPaper = (nextMode: 'questions' | 'answers') => {
     setMode(nextMode)
     window.setTimeout(() => window.print(), 80)
@@ -206,12 +233,12 @@ function QuestionPreview({
   return (
     <>
       <QuestionManagementList questions={homework.questions} onEditQuestion={onEditQuestion} />
-      <section className="teacher-question-section">
-      <header className="teacher-section-heading">
-        <div>
-          <span>STRUCTURED HOMEWORK</span>
-          <h3>结构化作业预览</h3>
-        </div>
+      <section className={`teacher-question-section teacher-collapsible-section ${expanded ? 'expanded' : ''}`}>
+      <button className="teacher-collapse-heading" type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+        <div><span>STRUCTURED HOMEWORK</span><h3>结构化作业预览</h3><small>{homework.question_count} 道题 · 满分 {homework.max_score || '未设置'} 分</small></div>
+        <span>{expanded ? '收起' : '展开预览'}<ChevronDown size={17} /></span>
+      </button>
+      {expanded && <>
         <div className="homework-paper-actions">
           <Segmented
             value={mode}
@@ -221,9 +248,9 @@ function QuestionPreview({
           <Button icon={<Printer size={14} />} onClick={() => printPaper('questions')}>打印作业内容</Button>
           <Button icon={<Printer size={14} />} onClick={() => printPaper('answers')}>打印参考答案</Button>
         </div>
-      </header>
       <p className="homework-reflow-note">仅保留题号、题干、小问、选项、题图和参考答案；教材讲解、目录与无关内容不会进入作业。</p>
       <HomeworkPaper homework={homework} mode={mode} printable />
+      </>}
       </section>
     </>
   )
@@ -231,25 +258,41 @@ function QuestionPreview({
 
 function SubmissionPanel({
   submission,
+  studentName,
+  report,
   starting,
   onStartGrading,
+  onOpenReport,
+  onReportAction,
 }: {
   submission: HomeworkSubmission
+  studentName?: string
+  report?: HomeworkLearningReportSummary
   starting: boolean
   onStartGrading: (submissionId: string) => void
+  onOpenReport: (reportId: string) => void
+  onReportAction: (reportId: string, action: 'retry' | 'publish' | 'withdraw') => void
 }) {
+  const [expandedItems, setExpandedItems] = useState<string[]>([])
   const status = submissionStatus[submission.status]
   const grading = submission.grading
   const deterministicReview = submission.review?.review_model === 'deterministic-rules'
   const scorePercent = grading?.max_score
     ? Math.round((grading.total_score / grading.max_score) * 100)
     : 0
+  const gradingCounts = grading?.items.reduce((counts, item) => {
+    if (item.max_score <= 0) counts.unscored += 1
+    else if (item.score >= item.max_score) counts.correct += 1
+    else if (item.score > 0) counts.partial += 1
+    else counts.incorrect += 1
+    return counts
+  }, { correct: 0, partial: 0, incorrect: 0, unscored: 0 }) || { correct: 0, partial: 0, incorrect: 0, unscored: 0 }
   return (
     <article className={`teacher-submission-card status-${submission.status}`}>
       <header>
         <div className="submission-student-mark"><GraduationCap size={18} /></div>
         <div>
-          <strong>{submission.student_name || '学生 1'}</strong>
+          <strong>{studentName || submission.student_name || '学生 1'}</strong>
           <span>{formatTime(submission.created_at)} 提交 · {submission.answers?.length || 0} 道结构化答案 · {submission.answer_images.length} 张图片</span>
         </div>
         <div className="submission-status-actions">
@@ -304,7 +347,7 @@ function SubmissionPanel({
         )}
         {grading && (
           <div className="grading-result">
-            <div className="grading-score">
+            <div className="grading-overview-card">
               <Progress
                 type="circle"
                 percent={grading.max_score > 0 ? scorePercent : 100}
@@ -312,24 +355,36 @@ function SubmissionPanel({
                 size={88}
                 strokeColor="#0f766e"
               />
-              <div><strong>{grading.max_score > 0 ? `${grading.total_score} / ${grading.max_score}` : '本作业不计分'}</strong><span><InlineMath content={grading.summary || '自动批改已完成'} /></span></div>
+              <div className="grading-overview-copy"><span>本次作业得分</span><strong>{grading.max_score > 0 ? `${grading.total_score} / ${grading.max_score}` : '本作业不计分'}</strong><InlineMath content={grading.summary || '自动批改已完成'} /></div>
+              <div className="grading-count-grid">
+                <span className="correct"><strong>{gradingCounts.correct}</strong>正确</span>
+                <span className="partial"><strong>{gradingCounts.partial}</strong>部分正确</span>
+                <span className="incorrect"><strong>{gradingCounts.incorrect}</strong>错误</span>
+                <span><strong>{gradingCounts.unscored}</strong>不计分</span>
+              </div>
             </div>
-            <div className="grading-items">
-              {grading.items.map((item) => (
-                <div key={`${item.question_id}-${item.number}`}>
-                  <span>第 {item.number} 题</span>
-                  <strong>{item.max_score > 0 ? `${item.score} / ${item.max_score} 分` : '不计分'}</strong>
-                  <MathMarkdown content={
-                    item.subquestion_results?.length
-                      ? item.subquestion_results.map((part) => (
-                        part.max_score > 0
-                          ? `（${part.label}）${part.answered ? `${part.score}/${part.max_score}分` : `未作答，0/${part.max_score}分`}`
-                          : `（${part.label}）${part.answered ? '已作答（不计分）' : '未作答（不计分）'}`
-                      )).join('；') + `。${item.feedback || item.evidence}`
-                      : item.feedback || item.evidence
-                  } />
-                </div>
-              ))}
+            <div className="grading-question-list">
+              {grading.items.map((item) => {
+                const expanded = expandedItems.includes(item.question_id)
+                const itemStatus = item.max_score <= 0 ? 'unscored' : item.score >= item.max_score ? 'correct' : item.score > 0 ? 'partial' : 'incorrect'
+                return (
+                  <article className={`grading-question-item ${itemStatus}`} key={`${item.question_id}-${item.number}`}>
+                    <button type="button" onClick={() => setExpandedItems((current) => expanded ? current.filter((id) => id !== item.question_id) : [...current, item.question_id])}>
+                      <span className="grading-question-number">第 {item.number} 题</span>
+                      <span className="grading-question-state">{itemStatus === 'correct' ? '正确' : itemStatus === 'partial' ? '部分正确' : itemStatus === 'incorrect' ? '错误' : '不计分'}</span>
+                      <strong>{item.max_score > 0 ? `${item.score} / ${item.max_score} 分` : '不计分'}</strong>
+                      <ChevronDown size={15} />
+                    </button>
+                    {expanded && <div className="grading-question-detail">
+                      <section><span>学生答案</span><MathMarkdown content={item.student_answer || '未识别到作答'} /></section>
+                      {item.subquestion_results?.length ? <section><span>小问得分</span>{item.subquestion_results.map((part) => <MathMarkdown key={part.label} content={`（${part.label}）${part.answered ? part.student_answer || '已作答' : '未作答'} · ${part.score}/${part.max_score} 分 · ${part.feedback}`} />)}</section> : null}
+                      <section><span>完整评语</span><MathMarkdown content={item.feedback || '无'} /></section>
+                      <section><span>评分依据</span><MathMarkdown content={item.evidence || '无'} /></section>
+                      {submission.answer_images.filter((asset) => asset.question_id === item.question_id).length > 0 && <div className="grading-question-images">{submission.answer_images.filter((asset) => asset.question_id === item.question_id).map((asset) => <a href={asset.url} target="_blank" rel="noreferrer" key={asset.file}><img src={asset.url} alt={`第 ${item.number} 题作答`} /></a>)}</div>}
+                    </div>}
+                  </article>
+                )
+              })}
             </div>
           </div>
         )}
@@ -342,6 +397,20 @@ function SubmissionPanel({
               {submission.review.issues.map((issue) => <MathMarkdown key={issue} content={issue} />)}
               {submission.review.recommendation && <MathMarkdown content={submission.review.recommendation} />}
             </div>
+          </div>
+        )}
+        {submission.status === 'review_required' && (
+          <div className="submission-report-blocked"><AlertTriangle size={17} /><div><strong>学情报告已阻止生成</strong><span>请先重新批改并通过独立复核。</span></div></div>
+        )}
+        {submission.status === 'graded' && submission.review?.passed && (
+          <div className="submission-learning-report-status">
+            <div><BarChart3 size={18} /><div><strong>学情报告</strong><span>{report ? (report.status === 'published' ? '已发布给学生' : report.status === 'draft' ? '已通过质量门，等待教师发布' : report.status === 'generating' || report.status === 'pending' ? '正在生成并独立复核' : report.processing_error || '报告需要处理') : '等待创建报告'}</span></div></div>
+            {report && <div>
+              {(report.status === 'draft' || report.status === 'published') && <Button size="small" onClick={() => onOpenReport(report.id)}>查看报告</Button>}
+              {report.status === 'draft' && report.quality_status === 'passed' && <Button size="small" type="primary" onClick={() => onReportAction(report.id, 'publish')}>发布给学生</Button>}
+              {report.status === 'published' && <Button size="small" onClick={() => onReportAction(report.id, 'withdraw')}>撤回</Button>}
+              {(report.status === 'failed' || report.status === 'blocked' || report.status === 'draft') && <Button size="small" icon={<RefreshCw size={12} />} onClick={() => onReportAction(report.id, 'retry')}>重新生成</Button>}
+            </div>}
           </div>
         )}
       </div>
@@ -711,8 +780,17 @@ function QuestionEditorModal({
 }
 
 export default function TeacherPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedView = searchParams.get('view') || 'overview'
+  const activeView = ['overview', 'assignments', 'question-banks', 'analytics'].includes(requestedView)
+    ? requestedView as 'overview' | 'assignments' | 'question-banks' | 'analytics'
+    : 'overview'
   const [homeworks, setHomeworks] = useState<Homework[]>([])
   const [questionBanks, setQuestionBanks] = useState<QuestionBank[]>([])
+  const [students, setStudents] = useState<StudentProfile[]>([])
+  const [learningReports, setLearningReports] = useState<HomeworkLearningReportSummary[]>([])
+  const [learningLoading, setLearningLoading] = useState(true)
+  const [selectedLearningReport, setSelectedLearningReport] = useState<HomeworkLearningReport | null>(null)
   const [loading, setLoading] = useState(true)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [createMode, setCreateMode] = useState<'upload' | 'bank'>('upload')
@@ -765,22 +843,39 @@ export default function TeacherPage() {
     }
   }, [])
 
+  const loadLearningData = useCallback(async () => {
+    try {
+      const [nextStudents, nextReports] = await Promise.all([
+        fetchTeacherStudents(),
+        fetchTeacherLearningReports(),
+      ])
+      setStudents(nextStudents)
+      setLearningReports(nextReports)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '学情数据读取失败')
+    } finally {
+      setLearningLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
-    void Promise.all([loadHomeworks(true), loadQuestionBanks()])
-  }, [loadHomeworks, loadQuestionBanks])
+    void Promise.all([loadHomeworks(true), loadQuestionBanks(), loadLearningData()])
+  }, [loadHomeworks, loadQuestionBanks, loadLearningData])
 
   const hasRunningTask = questionBanks.some((bank) => bank.status === 'processing' || bank.tagging_status === 'processing')
     || homeworks.some((homework) =>
       homework.status === 'processing'
       || homework.submissions?.some((submission) => submission.status === 'grading'),
     )
+    || learningReports.some((report) => report.status === 'pending' || report.status === 'generating')
   useEffect(() => {
     const timer = window.setInterval(() => {
       void loadHomeworks()
       void loadQuestionBanks()
+      void loadLearningData()
     }, hasRunningTask ? 2800 : 6000)
     return () => window.clearInterval(timer)
-  }, [hasRunningTask, loadHomeworks, loadQuestionBanks])
+  }, [hasRunningTask, loadHomeworks, loadQuestionBanks, loadLearningData])
 
   const detail = homeworks.find((homework) => homework.id === detailId) || null
   const bankDetail = questionBanks.find((bank) => bank.id === bankDetailId) || null
@@ -797,7 +892,45 @@ export default function TeacherPage() {
       ).length,
       0,
     ),
-  }), [homeworks])
+    students: students.length,
+    pendingReports: learningReports.filter(
+      (report) => report.status === 'draft' || report.status === 'failed' || report.status === 'blocked',
+    ).length,
+  }), [homeworks, learningReports, students.length])
+  const studentNames = useMemo(
+    () => new Map(students.map((student) => [student.student_id, student.display_name])),
+    [students],
+  )
+  const submissionReports = useMemo(() => new Map(
+    learningReports
+      .filter((report) => report.report_type === 'assignment')
+      .flatMap((report) => report.submission_ids.map((submissionId) => [submissionId, report] as const)),
+  ), [learningReports])
+
+  const changeView = (view: 'overview' | 'assignments' | 'question-banks' | 'analytics') => {
+    const next = new URLSearchParams(searchParams)
+    next.set('view', view)
+    setSearchParams(next, { replace: true })
+  }
+
+  const openLearningReport = async (reportId: string) => {
+    try {
+      setSelectedLearningReport(await fetchTeacherLearningReport(reportId))
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '学情报告读取失败')
+    }
+  }
+
+  const runLearningReportAction = async (reportId: string, action: 'retry' | 'publish' | 'withdraw') => {
+    try {
+      await runTeacherLearningReportAction(reportId, action)
+      message.success(action === 'publish' ? '报告已发布给学生' : action === 'withdraw' ? '报告已撤回' : '报告已重新生成')
+      setSelectedLearningReport(null)
+      await loadLearningData()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '学情报告操作失败')
+    }
+  }
 
   const resetUpload = () => {
     setUploadOpen(false)
@@ -970,7 +1103,7 @@ export default function TeacherPage() {
       <header className="teacher-topbar">
         <div className="brand-row teacher-brand">
           <span className="teacher-brand-icon"><BrainCircuit size={22} /></span>
-          <div><strong>CircuitMind</strong><span>教师作业中心</span></div>
+          <div><strong>CircuitMind</strong><span>教师教学工作台</span></div>
         </div>
         <div className="teacher-topbar-actions">
           <span><i /> 双模型作业链路已启用</span>
@@ -978,7 +1111,15 @@ export default function TeacherPage() {
         </div>
       </header>
 
+      <nav className="teacher-workspace-nav" aria-label="教师工作区">
+        <button type="button" className={activeView === 'overview' ? 'active' : ''} onClick={() => changeView('overview')}><LayoutDashboard size={17} /><span>总览</span></button>
+        <button type="button" className={activeView === 'assignments' ? 'active' : ''} onClick={() => changeView('assignments')}><BookOpenCheck size={17} /><span>作业管理</span></button>
+        <button type="button" className={activeView === 'question-banks' ? 'active' : ''} onClick={() => changeView('question-banks')}><LibraryBig size={17} /><span>题库管理</span></button>
+        <button type="button" className={activeView === 'analytics' ? 'active' : ''} onClick={() => changeView('analytics')}><BarChart3 size={17} /><span>学情分析</span>{stats.pendingReports > 0 && <i>{stats.pendingReports}</i>}</button>
+      </nav>
+
       <main className="teacher-main">
+        {activeView === 'overview' && <>
         <section className="teacher-welcome">
           <div>
             <span className="teacher-eyebrow"><Sparkles size={14} /> AI HOMEWORK STUDIO</span>
@@ -1000,9 +1141,26 @@ export default function TeacherPage() {
           <article><span><Send size={18} /></span><div><strong>{stats.published}</strong><small>已发布</small></div></article>
           <article><span><FileCheck2 size={18} /></span><div><strong>{stats.submissions}</strong><small>学生提交</small></div></article>
           <article className={stats.attention ? 'needs-attention' : ''}><span><ShieldCheck size={18} /></span><div><strong>{stats.attention}</strong><small>待教师处理</small></div></article>
+          <article><span><UsersRound size={18} /></span><div><strong>{stats.students}</strong><small>学生档案</small></div></article>
+          <article className={stats.pendingReports ? 'needs-attention' : ''}><span><BarChart3 size={18} /></span><div><strong>{stats.pendingReports}</strong><small>待处理报告</small></div></article>
         </section>
 
-        <section className="question-bank-library">
+        <section className="teacher-overview-grid">
+          <article>
+            <header><div><span>RECENT ASSIGNMENTS</span><h2>最近作业</h2></div><Button type="link" onClick={() => changeView('assignments')}>查看全部</Button></header>
+            {homeworks.slice(0, 4).map((homework) => <button type="button" key={homework.id} onClick={() => setDetailId(homework.id)}><span><FileText size={16} /></span><div><strong>{homework.title}</strong><small>{homework.question_count} 题 · {homework.submission_count || 0} 份提交</small></div><Tag color={homeworkStatus[homework.status].color}>{homeworkStatus[homework.status].label}</Tag></button>)}
+            {!homeworks.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无作业" />}
+          </article>
+          <article>
+            <header><div><span>TO REVIEW</span><h2>待处理事项</h2></div><Button type="link" onClick={() => changeView('analytics')}>进入学情分析</Button></header>
+            {homeworks.flatMap((homework) => (homework.submissions || []).filter((submission) => submission.status === 'submitted' || submission.status === 'review_required').map((submission) => ({ homework, submission }))).slice(0, 4).map(({ homework, submission }) => <button type="button" key={submission.id} onClick={() => setDetailId(homework.id)}><span><ShieldCheck size={16} /></span><div><strong>{studentNames.get(submission.student_id) || submission.student_name}</strong><small>{homework.title} · {submissionStatus[submission.status].label}</small></div><ChevronRight size={15} /></button>)}
+            {learningReports.filter((report) => report.status === 'draft' || report.status === 'failed' || report.status === 'blocked').slice(0, 4).map((report) => <button type="button" key={report.id} onClick={() => changeView('analytics')}><span><BarChart3 size={16} /></span><div><strong>{studentNames.get(report.student_id) || report.student_id}</strong><small>{report.title} · {learningReportStatus[report.status]}</small></div><ChevronRight size={15} /></button>)}
+            {!stats.attention && !stats.pendingReports && <div className="teacher-overview-clear"><CheckCircle2 size={23} /><strong>当前没有待处理事项</strong><span>批改复核和报告发布均已完成</span></div>}
+          </article>
+        </section>
+        </>}
+
+        {activeView === 'question-banks' && <section className="question-bank-library">
           <header className="teacher-section-heading">
             <div><span>QUESTION BANK</span><h2>长期题库</h2></div>
             <div className="question-bank-heading-actions">
@@ -1065,12 +1223,16 @@ export default function TeacherPage() {
               })}
             </div>
           )}
-        </section>
+        </section>}
 
-        <section className="homework-library">
+        {activeView === 'assignments' && <section className="homework-library">
           <header className="teacher-section-heading">
             <div><span>ASSIGNMENTS</span><h2>作业列表</h2></div>
-            <Button icon={<RefreshCw size={14} />} onClick={() => void Promise.all([loadHomeworks(true), loadQuestionBanks()])}>刷新</Button>
+            <div className="question-bank-heading-actions">
+              <Button icon={<RefreshCw size={14} />} onClick={() => void Promise.all([loadHomeworks(true), loadQuestionBanks()])}>刷新</Button>
+              <Button icon={<BookMarked size={14} />} onClick={() => { setCreateMode('bank'); setUploadOpen(true) }}>从题库选题</Button>
+              <Button type="primary" icon={<Plus size={14} />} onClick={() => { setCreateMode('upload'); setUploadOpen(true) }}>创建作业</Button>
+            </div>
           </header>
           {loading ? (
             <div className="teacher-loading"><Spin /><span>正在读取作业…</span></div>
@@ -1110,7 +1272,17 @@ export default function TeacherPage() {
               })}
             </div>
           )}
-        </section>
+        </section>}
+
+        {activeView === 'analytics' && (
+          <TeacherLearningAnalytics
+            students={students}
+            reports={learningReports}
+            homeworks={homeworks}
+            loading={learningLoading}
+            onRefresh={async () => { await Promise.all([loadHomeworks(), loadLearningData()]) }}
+          />
+        )}
       </main>
 
       <Modal
@@ -1368,17 +1540,36 @@ export default function TeacherPage() {
             )}
 
             <section className="teacher-submission-section">
-              <header className="teacher-section-heading"><div><span>SUBMISSIONS</span><h3>学生提交与批改</h3></div><small>当前演示为 1 名学生</small></header>
+              <header className="teacher-section-heading"><div><span>SUBMISSIONS</span><h3>学生提交与批改</h3></div><small>复核通过后自动生成单次学情报告</small></header>
               {detail.submissions?.length ? detail.submissions.map((submission) => (
                 <SubmissionPanel
                   key={submission.id}
                   submission={submission}
+                  studentName={studentNames.get(submission.student_id)}
+                  report={submissionReports.get(submission.id)}
                   starting={gradingSubmissionId === submission.id}
                   onStartGrading={(submissionId) => void startSubmissionGrading(submissionId)}
+                  onOpenReport={(reportId) => void openLearningReport(reportId)}
+                  onReportAction={(reportId, action) => void runLearningReportAction(reportId, action)}
                 />
               )) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="学生尚未提交答案" />}
             </section>
           </div>
+        )}
+      </Modal>
+      <Modal
+        open={Boolean(selectedLearningReport)}
+        footer={null}
+        width={1040}
+        className="learning-report-modal"
+        destroyOnHidden
+        onCancel={() => setSelectedLearningReport(null)}
+      >
+        {selectedLearningReport && (
+          <HomeworkLearningReportDocument
+            report={selectedLearningReport}
+            studentName={studentNames.get(selectedLearningReport.student_id)}
+          />
         )}
       </Modal>
       <QuestionEditorModal

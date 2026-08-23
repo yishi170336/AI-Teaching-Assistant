@@ -19,6 +19,8 @@ data/mistake_book*.json
 data/mistake_candidates.json
 data/practice_attempts.json
 data/answer_reports.json
+data/homework_learning_reports.json
+data/student_profiles.json
 data/mistakes/
 data/student_schedule.json
 data/presentations/

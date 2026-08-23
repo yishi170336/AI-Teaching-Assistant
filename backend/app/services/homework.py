@@ -1385,6 +1385,90 @@ class HomeworkStore:
                 self._write(state)
         return changed
 
+    def backfill_homework_knowledge(
+        self,
+        knowledge_aligner: Callable[[str, list[str]], dict[str, Any]],
+        semantic_inferer: Callable[[str, str], list[str]] | None = None,
+    ) -> bool:
+        """Persist Schema 4 knowledge alignment for legacy homework questions.
+
+        This works from the already structured question text and never re-runs OCR.
+        """
+        with self._lock:
+            state = self._read()
+            pending = [
+                (
+                    str(homework.get("id", "")),
+                    str(homework.get("knowledge_base") or "default"),
+                    json.loads(json.dumps(question, ensure_ascii=False)),
+                )
+                for homework in state["homeworks"]
+                if homework.get("status") in {"draft", "published"}
+                for question in homework.get("questions", [])
+                if isinstance(question, dict)
+                and (
+                    not isinstance(question.get("knowledge_points"), list)
+                    or not question.get("knowledge_points")
+                    or not isinstance(question.get("knowledge_tags"), list)
+                )
+            ]
+        if not pending:
+            return False
+
+        metadata: dict[tuple[str, str], dict[str, Any]] = {}
+        for homework_id, knowledge_base, question in pending:
+            points = _fallback_question_knowledge_points(question)
+            if not points and semantic_inferer is not None:
+                try:
+                    points = semantic_inferer(
+                        knowledge_base,
+                        _question_knowledge_text(question),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Legacy homework semantic inference failed for %s",
+                        question.get("id"),
+                        exc_info=True,
+                    )
+            try:
+                alignment = knowledge_aligner(knowledge_base, points)
+            except Exception:
+                logger.warning(
+                    "Legacy homework graph alignment failed for %s",
+                    question.get("id"),
+                    exc_info=True,
+                )
+                alignment = _unmatched_knowledge_alignment(points)
+            metadata[(homework_id, str(question.get("id", "")))] = {
+                "knowledge_points": points,
+                "knowledge_tags": alignment.get("knowledge_tags", []),
+                "location": alignment.get(
+                    "location",
+                    _unmatched_knowledge_alignment(points)["location"],
+                ),
+                "prerequisites": alignment.get("prerequisites", []),
+            }
+
+        changed = False
+        with self._lock:
+            state = self._read()
+            for homework in state["homeworks"]:
+                homework_changed = False
+                for question in homework.get("questions", []):
+                    values = metadata.get(
+                        (str(homework.get("id", "")), str(question.get("id", "")))
+                    )
+                    if values is None:
+                        continue
+                    question.update(values)
+                    homework_changed = True
+                    changed = True
+                if homework_changed:
+                    homework["updated_at"] = _now()
+            if changed:
+                self._write(state)
+        return changed
+
     @staticmethod
     def _question_collection(record_kind: str) -> str:
         if record_kind == "homework":
@@ -2130,6 +2214,7 @@ class HomeworkStore:
         files: list[tuple[str, str | None, bytes]],
         answers: list[dict[str, Any]] | None = None,
         file_question_ids: list[str] | None = None,
+        student_name: str = "",
     ) -> dict[str, Any]:
         raw = self.get_raw_homework(homework_id)
         if raw.get("status") != "published":
@@ -2258,7 +2343,7 @@ class HomeworkStore:
             "id": submission_id,
             "homework_id": homework_id,
             "student_id": student_id,
-            "student_name": "学生 1",
+            "student_name": _clean_text(student_name, 80) or "学生 1",
             "status": "submitted",
             "answers": normalized_answers,
             "answer_images": images,
@@ -5149,9 +5234,9 @@ def process_homework(
                 "source_segments": segments,
             })
         warnings.extend(_prune_cross_question_answer_leakage(questions))
-        if is_question_bank:
-            if is_paper_question_bank:
-                _sanitize_paper_question_metadata(questions)
+        if is_question_bank and is_paper_question_bank:
+            _sanitize_paper_question_metadata(questions)
+        if is_question_bank or knowledge_aligner is not None or semantic_knowledge_inferer is not None:
             ensure_not_cancelled()
             points_by_id, knowledge_warnings = _extract_question_knowledge_points(
                 client,
