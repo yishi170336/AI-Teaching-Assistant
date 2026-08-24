@@ -15,6 +15,7 @@ Constraints
 - question_evidence 是单题事实；metrics.question_types 和 metrics.knowledge_points 是跨题汇总。审查绑定了 question_id 的结论时逐题核对，禁止用题型或知识点汇总得分率代替单题得分。
 - 某组明确列出的题目可以全部为 0 分，同时其所在题型的总体得分率大于 0；这不构成矛盾。
 - 已通过批改复核的 feedback 和 grading_evidence 属于有效证据；草稿准确复述其中的具体错误时不得判为无依据。
+- question_id 和 submission_id 出现在任何展示 text 中属于格式错误；它们只能存在于结构化 ID 字段。
 - 只有文字与对应逐题事实、分组汇总或趋势条件真实冲突时才能判为不通过，不得因表述风格偏好阻断报告。
 - 不得替草稿辩护，不得自行改写为最终报告。
 - 只输出审查结论与可定位的修复意见，不输出思维链。

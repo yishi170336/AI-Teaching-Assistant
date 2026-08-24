@@ -9,6 +9,15 @@ export function normalizeLatex(input: string): string {
     // adjacent display blocks (`$$...$$\n$$...$$`).
     .replace(/(?<!\$)\${3}(?!\$)/g, '$$')
 
+  // Legacy report JSON may have consumed the `\t` in `\theta`, leaving
+  // `heta` inside an otherwise valid math span. Repair only inside math so
+  // ordinary prose is never changed.
+  text = text.replace(/\$\$[\s\S]*?\$\$|\$(?:\\.|[^$\n])*?\$/g, (block) => (
+    block
+      .replace(/(?<!\\)\bheta(?=\b|[_^{])/g, '\\theta')
+      .replace(/(?<!\\)\bau(?=\b|[_^{])/g, '\\tau')
+  ))
+
   // Display math is not valid inside a Markdown table cell. Models may still
   // emit `说明：$$...$$` on a table row; GFM then leaves the delimiters and
   // LaTeX commands visible. Keep genuinely line-isolated display blocks, but

@@ -10,6 +10,7 @@ from backend.app.services import homework_learning_reports as reports_module
 from backend.app.services.homework_learning_reports import (
     HomeworkLearningReportStore,
     StudentProfileStore,
+    _normalize_diagnosis,
     aggregate_report_snapshots,
     build_report_snapshot,
     generate_homework_learning_report,
@@ -166,6 +167,31 @@ def test_report_writer_and_independent_auditor_create_publishable_draft(
     assert '"feedback": "工作点计算结果需要复核"' in auditor.prompts[0]
     assert "不能用汇总得分率否定" in auditor.prompts[0]
     assert store.publish(report["id"])["status"] == "published"
+
+
+def test_diagnosis_hides_internal_ids_and_repairs_json_escaped_latex() -> None:
+    question_id = "1" * 32
+    submission_id = "2" * 32
+    malformed_theta = "\theta"
+    result = _normalize_diagnosis(
+        {
+            "summary": f"第一个结论（{question_id}）",
+            "student_actions": [{
+                "text": f"重做 {question_id}，修正 $1 + j\\frac{{{malformed_theta}_L}}{{{malformed_theta}}}$。",
+                "question_ids": [question_id],
+                "submission_ids": [submission_id],
+            }],
+        },
+        {question_id},
+        {submission_id},
+        {question_id: "第2题"},
+    )
+    action = result["student_actions"][0]
+    assert question_id not in result["summary"]
+    assert question_id not in action["text"]
+    assert "第2题" in action["text"]
+    assert r"\theta_L" in action["text"]
+    assert r"\theta}" in action["text"]
 
 
 def test_report_cannot_publish_when_quality_gate_did_not_pass(tmp_path: Path) -> None:

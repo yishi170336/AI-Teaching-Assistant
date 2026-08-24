@@ -23,6 +23,16 @@ STUDENT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,96}")
 REPORT_ID_PATTERN = re.compile(r"[a-f0-9]{32}")
 REPORT_STATUSES = {"pending", "generating", "draft", "published", "failed", "blocked"}
 
+_JSON_LATEX_ESCAPE_REPAIRS = {
+    "\beta": r"\beta",
+    "\frac": r"\frac",
+    "\rho": r"\rho",
+    "\tau": r"\tau",
+    "\text": r"\text",
+    "\theta": r"\theta",
+    "\times": r"\times",
+}
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -552,8 +562,62 @@ def aggregate_report_snapshots(snapshots: list[dict[str, Any]]) -> dict[str, Any
     }
 
 
-def _normalize_diagnosis(value: dict[str, Any], valid_question_ids: set[str], valid_submission_ids: set[str]) -> dict[str, Any]:
-    result: dict[str, Any] = {"summary": _clean(value.get("summary"), 3000)}
+def _question_label_map(snapshots: list[dict[str, Any]]) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    fallback_index = 0
+    for snapshot in snapshots:
+        for question in snapshot.get("questions", []):
+            if not isinstance(question, dict) or not question.get("question_id"):
+                continue
+            fallback_index += 1
+            number = _clean(question.get("number"), 80)
+            if not number:
+                label = f"第{fallback_index}题"
+            elif number.startswith("第") and "题" in number:
+                label = number
+            else:
+                label = f"第{number}题"
+            labels[str(question["question_id"])] = label
+    return labels
+
+
+def _normalize_report_text(
+    value: Any,
+    limit: int,
+    question_labels: dict[str, str],
+    valid_submission_ids: set[str],
+) -> str:
+    text = str(value or "")
+    # JSON permits control escapes such as \t and \f.  A model that writes a
+    # single LaTeX backslash can therefore turn ``\theta`` into a tab followed
+    # by ``heta``.  Repair the known commands before whitespace cleanup.
+    for malformed, latex in _JSON_LATEX_ESCAPE_REPAIRS.items():
+        text = text.replace(malformed, latex)
+
+    def replace_internal_id(match: re.Match[str]) -> str:
+        identifier = match.group(0)
+        if identifier in question_labels:
+            return question_labels[identifier]
+        if identifier in valid_submission_ids:
+            return "本次作业"
+        return ""
+
+    text = REPORT_ID_PATTERN.sub(replace_internal_id, text)
+    text = re.sub(r"（\s*）|\(\s*\)", "", text)
+    text = re.sub(r"([,，、])\s*([）)])", r"\2", text)
+    return _clean(text, limit)
+
+
+def _normalize_diagnosis(
+    value: dict[str, Any],
+    valid_question_ids: set[str],
+    valid_submission_ids: set[str],
+    question_labels: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    labels = question_labels or {}
+    result: dict[str, Any] = {
+        "summary": _normalize_report_text(value.get("summary"), 3000, labels, valid_submission_ids)
+    }
     for key in ("strengths", "gaps", "teaching_actions", "student_actions"):
         normalized = []
         raw_items = value.get(key, [])
@@ -571,7 +635,7 @@ def _normalize_diagnosis(value: dict[str, Any], valid_question_ids: set[str], va
                 if str(candidate) in valid_submission_ids
             ]
             normalized.append({
-                "text": _clean(item.get("text"), 1000),
+                "text": _normalize_report_text(item.get("text"), 1000, labels, valid_submission_ids),
                 "question_ids": list(dict.fromkeys(question_ids)),
                 "submission_ids": list(dict.fromkeys(submission_ids)),
             })
@@ -681,6 +745,7 @@ def generate_homework_learning_report(
             if question.get("question_id")
         }
         valid_submission_ids = set(str(value) for value in report.get("submission_ids", []))
+        question_labels = _question_label_map(snapshots)
         question_evidence = _build_question_evidence(snapshots)
         input_payload = {
             "metrics": metrics,
@@ -689,6 +754,7 @@ def generate_homework_learning_report(
         }
         writer_task = """根据确定性成绩指标和逐题批改证据，生成简洁、可执行的学情诊断。
 不得改写、重新计算或质疑 metrics 中的数字。每条优势、薄弱点和建议必须引用输入中真实存在的 question_ids 与 submission_ids。
+question_id 和 submission_id 只能写入对应的结构化 ID 字段，禁止出现在面向教师或学生展示的 text 中；如需指代题目，使用题号。
 证据不足的知识点不得表述为已经掌握或明确薄弱。
 question_evidence 是逐题事实；metrics.question_types 和 metrics.knowledge_points 是分组汇总。描述具体题目时必须依据 question_evidence，描述整个题型时才使用分组汇总。
 只有 feedback 或 grading_evidence 明确记录具体错误时，才能在报告中复述该错误。"""
@@ -707,7 +773,12 @@ question_evidence 是逐题事实；metrics.question_types 和 metrics.knowledge
         )
         run_audits.stage(audit, {"stage": "generate", "agent": "homework_report_writer"}, model="qwen3.7-flash")
         raw_diagnosis = writer_client.complete_json(prompt)
-        diagnosis = _normalize_diagnosis(raw_diagnosis, valid_question_ids, valid_submission_ids)
+        diagnosis = _normalize_diagnosis(
+            raw_diagnosis,
+            valid_question_ids,
+            valid_submission_ids,
+            question_labels,
+        )
 
         def audit_diagnosis(candidate: dict[str, Any]) -> dict[str, Any]:
             audit_prompt = render_agent_prompt(
@@ -764,7 +835,12 @@ question_evidence 是逐题事实；metrics.question_types 和 metrics.knowledge
             )
             run_audits.stage(audit, {"stage": "repair", "agent": "homework_report_writer"}, model="qwen3.7-flash")
             raw_diagnosis = writer_client.complete_json(repair_prompt)
-            diagnosis = _normalize_diagnosis(raw_diagnosis, valid_question_ids, valid_submission_ids)
+            diagnosis = _normalize_diagnosis(
+                raw_diagnosis,
+                valid_question_ids,
+                valid_submission_ids,
+                question_labels,
+            )
             run_audits.stage(audit, {"stage": "review", "agent": "homework_report_auditor"}, model="qwen3.7-flash")
             review = audit_diagnosis(diagnosis)
 

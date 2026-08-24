@@ -1,4 +1,4 @@
-import { Button, Progress, Tag } from 'antd'
+import { Button, Progress, Tag, Tooltip } from 'antd'
 import { AlertTriangle, BookOpenCheck, CheckCircle2, Printer, ShieldCheck, TrendingDown, TrendingUp } from 'lucide-react'
 import type { HomeworkLearningAdvice, HomeworkLearningMetric, HomeworkLearningReport } from '../lib/api'
 import MathMarkdown from './MathMarkdown'
@@ -7,7 +7,7 @@ const masteryLabels: Record<HomeworkLearningMetric['status'], { label: string; c
   mastered: { label: '掌握良好', color: 'success' },
   developing: { label: '正在巩固', color: 'processing' },
   needs_support: { label: '需要加强', color: 'warning' },
-  insufficient_evidence: { label: '证据不足', color: 'default' },
+  insufficient_evidence: { label: '暂不判断', color: 'default' },
 }
 
 function AdviceList({ title, items }: { title: string; items?: HomeworkLearningAdvice[] }) {
@@ -72,11 +72,20 @@ export default function HomeworkLearningReportDocument({
           <div className="learning-report-mastery-grid">
             {metrics.knowledge_points.map((item) => {
               const status = masteryLabels[item.status]
+              const insufficient = item.status === 'insufficient_evidence'
               return (
                 <article key={item.knowledge_point}>
-                  <div><strong>{item.knowledge_point}</strong><Tag color={status.color}>{status.label}</Tag></div>
+                  <div>
+                    <strong>{item.knowledge_point}</strong>
+                    <Tooltip title={insufficient ? '同一知识点至少需要 2 道可计分题，当前样本不足以判断是否真正掌握。' : undefined}>
+                      <Tag color={status.color}>{insufficient ? `仅 ${item.scored_count} 题，${status.label}` : status.label}</Tag>
+                    </Tooltip>
+                  </div>
                   <Progress percent={Math.round((item.score_rate || 0) * 100)} showInfo={item.score_rate !== null} strokeColor="#14b8a6" />
-                  <small>{item.scored_count} 道有效证据题 · {item.score}/{item.max_score} 分</small>
+                  <small>
+                    {item.scored_count} 道有效证据题 · {item.score}/{item.max_score} 分
+                    {insufficient ? ' · 至少 2 题后判断掌握状态' : ''}
+                  </small>
                 </article>
               )
             })}
