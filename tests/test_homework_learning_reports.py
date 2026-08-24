@@ -39,11 +39,16 @@ def snapshot(index: int, score: float, *, point: str = "二极管") -> dict:
         "max_score": 10,
         "questions": [{
             "question_id": question_id,
+            "number": str(index),
             "question_type": "calculation",
+            "prompt": "计算二极管工作点",
             "knowledge_points": [point],
             "score": score,
             "max_score": 10,
             "is_correct": score == 10,
+            "student_answer": "列出计算过程",
+            "feedback": "工作点计算结果需要复核",
+            "evidence": "学生列式与参考结果不一致",
         }],
     }
 
@@ -155,6 +160,11 @@ def test_report_writer_and_independent_auditor_create_publishable_draft(
     assert result is not None
     assert result["status"] == "draft"
     assert result["quality_status"] == "passed"
+    assert '"question_evidence"' in writer.prompts[0]
+    assert '"question_evidence"' in auditor.prompts[0]
+    assert '"result_status": "partial"' in auditor.prompts[0]
+    assert '"feedback": "工作点计算结果需要复核"' in auditor.prompts[0]
+    assert "不能用汇总得分率否定" in auditor.prompts[0]
     assert store.publish(report["id"])["status"] == "published"
 
 

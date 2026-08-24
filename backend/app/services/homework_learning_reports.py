@@ -579,6 +579,51 @@ def _normalize_diagnosis(value: dict[str, Any], valid_question_ids: set[str], va
     return result
 
 
+def _build_question_evidence(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build the per-question ledger used by the independent auditor.
+
+    Type and knowledge metrics are cross-question aggregates.  Keeping an
+    explicit ledger prevents an aggregate score rate from being mistaken for
+    the score of every cited question.
+    """
+    evidence: list[dict[str, Any]] = []
+    for snapshot in snapshots:
+        submission_id = str(snapshot.get("submission_id", ""))
+        for question in snapshot.get("questions", []):
+            if not isinstance(question, dict) or not question.get("question_id"):
+                continue
+            score = _float(question.get("score"))
+            maximum = _float(question.get("max_score"))
+            if maximum <= 0:
+                result_status, score_rate = "not_scored", None
+            elif score <= 0:
+                result_status, score_rate = "incorrect", 0.0
+            elif score >= maximum:
+                result_status, score_rate = "correct", 1.0
+            else:
+                result_status, score_rate = "partial", round(score / maximum, 4)
+            evidence.append({
+                "question_id": str(question.get("question_id")),
+                "submission_id": submission_id,
+                "number": _clean(question.get("number"), 80),
+                "question_type": _clean(question.get("question_type"), 40),
+                "prompt": _clean(question.get("prompt"), 700),
+                "knowledge_points": [
+                    _clean(point, 120)
+                    for point in question.get("knowledge_points", [])[:8]
+                    if _clean(point, 120)
+                ],
+                "score": score,
+                "max_score": maximum,
+                "score_rate": score_rate,
+                "result_status": result_status,
+                "student_answer": _clean(question.get("student_answer"), 700),
+                "feedback": _clean(question.get("feedback"), 1000),
+                "grading_evidence": _clean(question.get("evidence"), 1000),
+            })
+    return evidence
+
+
 def generate_homework_learning_report(
     store: HomeworkLearningReportStore,
     report_id: str,
@@ -636,10 +681,17 @@ def generate_homework_learning_report(
             if question.get("question_id")
         }
         valid_submission_ids = set(str(value) for value in report.get("submission_ids", []))
-        input_payload = {"metrics": metrics, "sources": snapshots}
+        question_evidence = _build_question_evidence(snapshots)
+        input_payload = {
+            "metrics": metrics,
+            "question_evidence": question_evidence,
+            "sources": snapshots,
+        }
         writer_task = """根据确定性成绩指标和逐题批改证据，生成简洁、可执行的学情诊断。
 不得改写、重新计算或质疑 metrics 中的数字。每条优势、薄弱点和建议必须引用输入中真实存在的 question_ids 与 submission_ids。
-证据不足的知识点不得表述为已经掌握或明确薄弱。"""
+证据不足的知识点不得表述为已经掌握或明确薄弱。
+question_evidence 是逐题事实；metrics.question_types 和 metrics.knowledge_points 是分组汇总。描述具体题目时必须依据 question_evidence，描述整个题型时才使用分组汇总。
+只有 feedback 或 grading_evidence 明确记录具体错误时，才能在报告中复述该错误。"""
         writer_schema = (
             '{"summary":string,"strengths":[{"text":string,"question_ids":string[],"submission_ids":string[]}],'
             '"gaps":[{"text":string,"question_ids":string[],"submission_ids":string[]}],'
@@ -663,12 +715,18 @@ def generate_homework_learning_report(
                 task="独立检查学情诊断是否忠于确定性指标、是否存在无证据结论，并给出结构化修复意见。",
                 input_json=json.dumps({
                     "metrics": metrics,
+                    "question_evidence": question_evidence,
                     "valid_question_ids": sorted(valid_question_ids),
                     "valid_submission_ids": sorted(valid_submission_ids),
                     "draft": candidate,
                 }, ensure_ascii=False),
                 output_schema='{"passed":boolean,"confidence":number,"issues":string[],"repair_instructions":string[]}',
-                authority_extra="不得修改指标或代替 Writer 重写报告；只审查事实、证据 ID 与建议边界。",
+                authority_extra=(
+                    "不得修改指标或代替 Writer 重写报告；只审查事实、证据 ID 与建议边界。"
+                    "question_evidence 是逐题权威事实；metrics.question_types 与 metrics.knowledge_points "
+                    "只是跨题汇总，不能用汇总得分率否定已引用 question_id 的单题得分。"
+                    "已经通过批改复核的 feedback 与 grading_evidence 是允许复述的具体错误证据。"
+                ),
             )
             result = auditor_client.complete_json(audit_prompt)
             issues = [_clean(item, 500) for item in result.get("issues", []) if _clean(item, 500)]
