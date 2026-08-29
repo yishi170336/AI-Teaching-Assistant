@@ -4,3 +4,9 @@ data/homework/1dbe9ab699d74d01bbfec59bec32cb71/source.pdf filter=lfs diff=lfs me
 data/homework/286b91f56a7a4c958e31fa7d750f67bb/source.pdf filter=lfs diff=lfs merge=lfs -text
 data/homework/ea761a484f474f91baa637750d761b6f/source.pdf filter=lfs diff=lfs merge=lfs -text
 data/homework/51bb75fbafc44e0ca1550f19481aea94/source.pdf filter=lfs diff=lfs merge=lfs -text
+data/vector_stores/kb-mrtgvd45-nw4rim1/*.jsonl filter=lfs diff=lfs merge=lfs -text
+data/vector_stores/kb-mrtgvd45-nw4rim1/book_knowledge_document.json filter=lfs diff=lfs merge=lfs -text
+data/vector_stores/kb-mrtgvd45-nw4rim1/semantic_knowledge_graph.json filter=lfs diff=lfs merge=lfs -text
+data/vector_stores/kb-mrtgvd45-nw4rim1/*.faiss filter=lfs diff=lfs merge=lfs -text
+data/vector_stores/kb-mrtgvd45-nw4rim1/*.npy filter=lfs diff=lfs merge=lfs -text
+data/vector_stores/kb-mrtgvd45-nw4rim1/artifacts/**/*.png filter=lfs diff=lfs merge=lfs -text

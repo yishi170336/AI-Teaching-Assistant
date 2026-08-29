@@ -1,0 +1,52 @@
+{
+  "schema_version": "4.0-hierarchical-summary-entity-graph",
+  "cache_version": "4.0-hierarchical-summary-entity-graph",
+  "prompt_version": "4.0.2",
+  "source_hashes": {
+    "电子电路基础.pdf": "fead0b9a377cdd6f79bd0b1636ae59d53bbfece162e965a172cc27dd41a3d39c"
+  },
+  "graph_model": "qwen3.7-flash",
+  "embedding_model": "E:\\Work\\AI助教\\models\\Qwen3-Embedding-0.6B",
+  "embedding_dimension": 1024,
+  "embedding_runtime": {
+    "initial": {
+      "requested_device": "cuda:0",
+      "device": "cuda:0",
+      "fp16": true,
+      "memory_limit_mib": 5119,
+      "peak_allocated_mib": 1464.6,
+      "peak_reserved_mib": 1542.0
+    },
+    "final": {
+      "requested_device": "cuda:0",
+      "device": "cuda:0",
+      "fp16": true,
+      "memory_limit_mib": 5119,
+      "peak_allocated_mib": 1749.42,
+      "peak_reserved_mib": 1890.0
+    }
+  },
+  "stage_caches": [
+    "section_summaries.jsonl",
+    "section_entities.jsonl",
+    "section_relationships.jsonl",
+    "entity_aggregations.jsonl",
+    "dedup_confirmations.jsonl"
+  ],
+  "canonicalization_audit": "canonicalization_audit.json",
+  "exercise_filter": {
+    "policy_version": "1.0-exercise-section-noise",
+    "removed_section_ids": [
+      "section:e52317afb67d:chapter-5f2604c742",
+      "section:e52317afb67d:struct-1393abff1b6b",
+      "section:e52317afb67d:struct-2ad3e5bff6a4",
+      "section:e52317afb67d:struct-497e2129bcfb",
+      "section:e52317afb67d:struct-599275546306",
+      "section:e52317afb67d:struct-5ac582efb755",
+      "section:e52317afb67d:struct-8e1d5a20704b",
+      "section:e52317afb67d:struct-a10f21bc5aca",
+      "section:e52317afb67d:struct-bb2bd20228d1",
+      "section:e52317afb67d:struct-cf1f39ec8c3c"
+    ]
+  }
+}

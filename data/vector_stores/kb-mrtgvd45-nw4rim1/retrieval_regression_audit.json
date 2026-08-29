@@ -1,0 +1,472 @@
+{
+  "schema_version": "1.0-fixed-course-retrieval-ab",
+  "status": "passed",
+  "cases": 6,
+  "regressions": 0,
+  "candidate_average_term_coverage": 1.0,
+  "baseline_average_term_coverage": 1.0,
+  "results": [
+    {
+      "id": "section-retrieval",
+      "category": "章节检索",
+      "query": "PN结形成时空间电荷区、扩散运动和漂移运动之间有什么关系？",
+      "expected_terms": [
+        "PN结",
+        "空间电荷区",
+        "扩散",
+        "漂移"
+      ],
+      "candidate": {
+        "hits": 12,
+        "term_coverage": 1.0,
+        "matched_terms": [
+          "PN结",
+          "空间电荷区",
+          "扩散",
+          "漂移"
+        ],
+        "top_sources": [
+          {
+            "chunk_id": "1af04982d5ec83cb",
+            "source": "电子电路基础.pdf",
+            "section": "1.2.1 PN 结及其单向导电性",
+            "page_start": 22,
+            "score": 0.766298
+          },
+          {
+            "chunk_id": "113b769a091bedb5",
+            "source": "电子电路基础.pdf",
+            "section": "1.2.1 PN 结及其单向导电性",
+            "page_start": 22,
+            "score": 0.751043
+          },
+          {
+            "chunk_id": "3dd86349f5d78e04",
+            "source": "电子电路基础.pdf",
+            "section": "1.2.1 PN 结及其单向导电性",
+            "page_start": 22,
+            "score": 0.649897
+          }
+        ]
+      },
+      "baseline": {
+        "hits": 12,
+        "term_coverage": 1.0,
+        "matched_terms": [
+          "PN结",
+          "空间电荷区",
+          "扩散",
+          "漂移"
+        ],
+        "top_sources": [
+          {
+            "chunk_id": "element-e24395cbf5cc51f99af8b2cc94a1f2d0",
+            "source": "电子电路基础.pdf",
+            "section": "1.2.1 PN结的形成",
+            "page_start": 23,
+            "score": 0.719418
+          },
+          {
+            "chunk_id": "bfc886272bc836ad",
+            "source": "电子电路基础.pdf",
+            "section": "1.2 PN结",
+            "page_start": 24,
+            "score": 0.707576
+          },
+          {
+            "chunk_id": "0464b3b1b7decc6d",
+            "source": "电子电路基础.pdf",
+            "section": "1.2.1 PN结的形成",
+            "page_start": 23,
+            "score": 0.654591
+          }
+        ]
+      },
+      "regressed": false
+    },
+    {
+      "id": "formula-question",
+      "category": "公式问答",
+      "query": "二极管伏安特性方程表示什么，各参数有什么含义？",
+      "expected_terms": [
+        "二极管",
+        "伏安特性",
+        "正向"
+      ],
+      "candidate": {
+        "hits": 12,
+        "term_coverage": 1.0,
+        "matched_terms": [
+          "二极管",
+          "伏安特性",
+          "正向"
+        ],
+        "top_sources": [
+          {
+            "chunk_id": "ae9937639e211e12",
+            "source": "电子电路基础.pdf",
+            "section": "1.2.3 二极管的伏安特性",
+            "page_start": 27,
+            "score": 0.638116
+          },
+          {
+            "chunk_id": "d7f25e97f1620359",
+            "source": "电子电路基础.pdf",
+            "section": "习题",
+            "page_start": 47,
+            "score": 0.533301
+          },
+          {
+            "chunk_id": "a0351a6834da14a0",
+            "source": "电子电路基础.pdf",
+            "section": "1.3.2 二极管的模型",
+            "page_start": 35,
+            "score": 0.438707
+          }
+        ]
+      },
+      "baseline": {
+        "hits": 12,
+        "term_coverage": 1.0,
+        "matched_terms": [
+          "二极管",
+          "伏安特性",
+          "正向"
+        ],
+        "top_sources": [
+          {
+            "chunk_id": "element-7a35fed85e5a50b5ba8f193d966aa174",
+            "source": "电子电路基础.pdf",
+            "section": "1.3.1 二极管的伏安特性",
+            "page_start": 36,
+            "score": 0.571954
+          },
+          {
+            "chunk_id": "element-2b018c98dd2654f2b67e832422cc3830",
+            "source": "电子电路基础.pdf",
+            "section": "1.3.1 二极管的伏安特性",
+            "page_start": 36,
+            "score": 0.506245
+          },
+          {
+            "chunk_id": "element-ea5c2b904c755083b0362184b84149a7",
+            "source": "电子电路基础.pdf",
+            "section": "1.3.1 二极管的伏安特性",
+            "page_start": 36,
+            "score": 0.476935
+          }
+        ]
+      },
+      "regressed": false
+    },
+    {
+      "id": "table-question",
+      "category": "表格问答",
+      "query": "N型半导体与P型半导体的多数载流子和少数载流子如何对比？",
+      "expected_terms": [
+        "N型半导体",
+        "P型半导体",
+        "多数载流子",
+        "少数载流子"
+      ],
+      "candidate": {
+        "hits": 12,
+        "term_coverage": 1.0,
+        "matched_terms": [
+          "N型半导体",
+          "P型半导体",
+          "多数载流子",
+          "少数载流子"
+        ],
+        "top_sources": [
+          {
+            "chunk_id": "e5a1bfa7a2637446",
+            "source": "电子电路基础.pdf",
+            "section": "1.1.2 掺杂产生的两种半导体",
+            "page_start": 20,
+            "score": 0.8
+          },
+          {
+            "chunk_id": "61bb4d83ce7cda24",
+            "source": "电子电路基础.pdf",
+            "section": "1.1.2 掺杂产生的两种半导体",
+            "page_start": 20,
+            "score": 0.625893
+          },
+          {
+            "chunk_id": "element-61ed63600dce541babf49b145896c1be",
+            "source": "电子电路基础.pdf",
+            "section": "1.1.2 掺杂产生的两种半导体",
+            "page_start": 20,
+            "score": 0.604387
+          }
+        ]
+      },
+      "baseline": {
+        "hits": 12,
+        "term_coverage": 1.0,
+        "matched_terms": [
+          "N型半导体",
+          "P型半导体",
+          "多数载流子",
+          "少数载流子"
+        ],
+        "top_sources": [
+          {
+            "chunk_id": "c6536eeabf555d40",
+            "source": "电子电路基础.pdf",
+            "section": "1.1.1 PN结",
+            "page_start": 21,
+            "score": 0.675141
+          },
+          {
+            "chunk_id": "9c9bc82915d4d0a9",
+            "source": "电子电路基础.pdf",
+            "section": "1.1.2 掺杂产生的两种半导体",
+            "page_start": 20,
+            "score": 0.657539
+          },
+          {
+            "chunk_id": "element-fb092ee7b00958ac9a2e85e884465f4f",
+            "source": "电子电路基础.pdf",
+            "section": "1.1.2 掺杂产生的两种半导体",
+            "page_start": 20,
+            "score": 0.559651
+          }
+        ]
+      },
+      "regressed": false
+    },
+    {
+      "id": "course-image-question",
+      "category": "课程图片",
+      "query": "共射放大电路图中基极、集电极和发射极周围元件分别起什么作用？",
+      "expected_terms": [
+        "共射",
+        "基极",
+        "集电极",
+        "发射极"
+      ],
+      "candidate": {
+        "hits": 12,
+        "term_coverage": 1.0,
+        "matched_terms": [
+          "共射",
+          "基极",
+          "集电极",
+          "发射极"
+        ],
+        "top_sources": [
+          {
+            "chunk_id": "72e369038a3a6ffb",
+            "source": "电子电路基础.pdf",
+            "section": "习题",
+            "page_start": 142,
+            "score": 0.393571
+          },
+          {
+            "chunk_id": "f16db285cb26f21d",
+            "source": "电子电路基础.pdf",
+            "section": "习题",
+            "page_start": 142,
+            "score": 0.389093
+          },
+          {
+            "chunk_id": "element-ed2b38dc567a58ad81e6bcb77f49a7ca",
+            "source": "电子电路基础.pdf",
+            "section": "习题",
+            "page_start": 144,
+            "score": 0.385714
+          }
+        ]
+      },
+      "baseline": {
+        "hits": 12,
+        "term_coverage": 1.0,
+        "matched_terms": [
+          "共射",
+          "基极",
+          "集电极",
+          "发射极"
+        ],
+        "top_sources": [
+          {
+            "chunk_id": "element-e8f74cca9f165a65909a84ee9edd1d10",
+            "source": "电子电路基础.pdf",
+            "section": "2.3 基本共射放大电路的工作原理及分析方法",
+            "page_start": 78,
+            "score": 0.653074
+          },
+          {
+            "chunk_id": "element-53f213f32a865a3ab4e536ad530a5792",
+            "source": "电子电路基础.pdf",
+            "section": "2.3.1 基本共射放大电路的工作原理",
+            "page_start": 72,
+            "score": 0.503317
+          },
+          {
+            "chunk_id": "element-9959c9b7297b5d4bbb58560be94bb491",
+            "source": "电子电路基础.pdf",
+            "section": "2.3 基本共射放大电路的工作原理及分析方法",
+            "page_start": 76,
+            "score": 0.457805
+          }
+        ]
+      },
+      "regressed": false
+    },
+    {
+      "id": "alias-question",
+      "category": "别名检索",
+      "query": "p-n结在正向偏置时为什么能够导通？",
+      "expected_terms": [
+        "PN结",
+        "正向偏置",
+        "导通"
+      ],
+      "candidate": {
+        "hits": 12,
+        "term_coverage": 1.0,
+        "matched_terms": [
+          "PN结",
+          "正向偏置",
+          "导通"
+        ],
+        "top_sources": [
+          {
+            "chunk_id": "3dd86349f5d78e04",
+            "source": "电子电路基础.pdf",
+            "section": "1.2.1 PN 结及其单向导电性",
+            "page_start": 22,
+            "score": 0.698927
+          },
+          {
+            "chunk_id": "7ff8b65b57d60d4b",
+            "source": "电子电路基础.pdf",
+            "section": "1.2.1 PN 结及其单向导电性",
+            "page_start": 22,
+            "score": 0.605665
+          },
+          {
+            "chunk_id": "element-f7028eae02b253008e9254d863c8f2fa",
+            "source": "电子电路基础.pdf",
+            "section": "1.2.1 PN 结及其单向导电性",
+            "page_start": 25,
+            "score": 0.579969
+          }
+        ]
+      },
+      "baseline": {
+        "hits": 12,
+        "term_coverage": 1.0,
+        "matched_terms": [
+          "PN结",
+          "正向偏置",
+          "导通"
+        ],
+        "top_sources": [
+          {
+            "chunk_id": "element-4a2fa1edaf0c5c66aa0507da63732d45",
+            "source": "电子电路基础.pdf",
+            "section": "2.1.1 晶体管的工作原理",
+            "page_start": 52,
+            "score": 0.510493
+          },
+          {
+            "chunk_id": "element-0e7f6b593b815de0823f6d60cf2ac981",
+            "source": "电子电路基础.pdf",
+            "section": "1.2 半导体二极管的工作原理及特性",
+            "page_start": 25,
+            "score": 0.464884
+          },
+          {
+            "chunk_id": "eece617ef83a34d1",
+            "source": "电子电路基础.pdf",
+            "section": "7.2.2 晶体管开关特性",
+            "page_start": 393,
+            "score": 0.458327
+          }
+        ]
+      },
+      "regressed": false
+    },
+    {
+      "id": "cross-section-relation",
+      "category": "跨章节关系",
+      "query": "静态工作点如何影响晶体管放大电路的非线性失真？",
+      "expected_terms": [
+        "静态工作点",
+        "晶体管",
+        "放大",
+        "失真"
+      ],
+      "candidate": {
+        "hits": 12,
+        "term_coverage": 1.0,
+        "matched_terms": [
+          "静态工作点",
+          "晶体管",
+          "放大",
+          "失真"
+        ],
+        "top_sources": [
+          {
+            "chunk_id": "d1ebbb721be770f7",
+            "source": "电子电路基础.pdf",
+            "section": "习题",
+            "page_start": 142,
+            "score": 0.659429
+          },
+          {
+            "chunk_id": "element-bbcc2e30ac5f5b76a800678c4f65593d",
+            "source": "电子电路基础.pdf",
+            "section": "习题",
+            "page_start": 146,
+            "score": 0.65913
+          },
+          {
+            "chunk_id": "22bb6e59142e4367",
+            "source": "电子电路基础.pdf",
+            "section": "2.10 计算机仿真例题",
+            "page_start": 137,
+            "score": 0.609466
+          }
+        ]
+      },
+      "baseline": {
+        "hits": 12,
+        "term_coverage": 1.0,
+        "matched_terms": [
+          "静态工作点",
+          "晶体管",
+          "放大",
+          "失真"
+        ],
+        "top_sources": [
+          {
+            "chunk_id": "787d8405ceb5e629",
+            "source": "电子电路基础.pdf",
+            "section": "2.3.1 基本共射放大电路的工作原理",
+            "page_start": 72,
+            "score": 0.810909
+          },
+          {
+            "chunk_id": "581df1bbc70b7ccf",
+            "source": "电子电路基础.pdf",
+            "section": "2.3.2 直流通路与交流通路",
+            "page_start": 73,
+            "score": 0.468686
+          },
+          {
+            "chunk_id": "15fb49a452975968",
+            "source": "电子电路基础.pdf",
+            "section": "2.8.2 互补功率放大电路",
+            "page_start": 120,
+            "score": 0.425065
+          }
+        ]
+      },
+      "regressed": false
+    }
+  ]
+}

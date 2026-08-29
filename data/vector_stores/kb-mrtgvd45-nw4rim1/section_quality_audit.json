@@ -1,0 +1,17 @@
+{
+  "status": "passed",
+  "audited_pages": 465,
+  "sectioned_pages": 406,
+  "structural_heading_pages": 76,
+  "section_transitions": 144,
+  "verified_heading_pages": 146,
+  "inherited_heading_pages": 260,
+  "heading_crop_pages": 1,
+  "toc_corrected_pages": 8,
+  "inconsistent_section_numbers": 0,
+  "critical_issues": 0,
+  "hard_invariant_issues": 0,
+  "failure_threshold": 8,
+  "issues": [],
+  "repaired_section_provenance": 6
+}

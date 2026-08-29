@@ -1,0 +1,31 @@
+{
+  "schema_version": "4.0-hierarchical-summary-entity-graph",
+  "status": "passed",
+  "critical_issues": 0,
+  "warning_issues": 0,
+  "metrics": {
+    "sections": 202,
+    "content_sections": 185,
+    "entities": 1137,
+    "relationships": 1268,
+    "text_units": 185,
+    "attribute_facts": 2873,
+    "text_unit_fact_coverage": 1.0,
+    "multimodal_element_fact_coverage": 0.9959595959595959,
+    "dangling_relationships": 0,
+    "self_relationships": 0,
+    "isolated_entities": 0,
+    "invalid_evidence_references": 0,
+    "invalid_summary_claims": 0,
+    "ungrounded_entities": 0,
+    "ungrounded_relationships": 0,
+    "invalid_embedding_refs": 0,
+    "vector_mismatch": 0,
+    "missing_section_summaries": 0,
+    "missing_summary_evidence": 0,
+    "oversized_section_summaries": 0,
+    "canonical_alias_conflicts": 0,
+    "duplicate_entity_ids": 0,
+    "duplicate_canonical_names": 0
+  }
+}

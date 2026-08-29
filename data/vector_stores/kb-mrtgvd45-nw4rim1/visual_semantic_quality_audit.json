@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.1-qwen3.7-json-repair",
+  "status": "passed",
+  "circuits": 305,
+  "course_image_summaries": 863,
+  "table_summaries": 39,
+  "formula_vision_violations": 0,
+  "critical_issues": 0,
+  "warning_issues": 0,
+  "issues": []
+}

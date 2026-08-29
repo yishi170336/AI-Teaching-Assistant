@@ -1,0 +1,4497 @@
+{
+  "schema_version": "4.0-hierarchical-summary-entity-graph",
+  "entities_before": 1998,
+  "entities_after": 1225,
+  "duplicate_entity_rows_merged": 693,
+  "exact_name_rows_merged": 773,
+  "aliases_removed": 95,
+  "conflicts_after": 0,
+  "events": [
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "频率特性",
+      "target_entity_id": "entity:44b40d2b972165b68b5b",
+      "source_entity_ids": [
+        "entity:170c9c1aadefa61733c6",
+        "entity:44b40d2b972165b68b5b"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "课程概念",
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "模拟集成电路",
+      "target_entity_id": "entity:c0bad802702326f78f37",
+      "source_entity_ids": [
+        "entity:c0bad802702326f78f37",
+        "entity:2a27fa413eb60a24977d"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "电路与系统",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "数字电路",
+      "target_entity_id": "entity:42aa239ec8b39d9fa92c",
+      "source_entity_ids": [
+        "entity:e91d91ce1bda88f9377d",
+        "entity:42aa239ec8b39d9fa92c"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念",
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "OrCAD",
+      "target_entity_id": "entity:17c0daa5a28e8b7e317b",
+      "source_entity_ids": [
+        "entity:17c0daa5a28e8b7e317b",
+        "entity:841285429028f999e136"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "方法与模型",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "二极管电路",
+      "target_entity_id": "entity:10c1c6b3a3e180be54ef",
+      "source_entity_ids": [
+        "entity:10c1c6b3a3e180be54ef"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "双极型晶体管",
+      "target_entity_id": "entity:5ef549d7e955127e0126",
+      "source_entity_ids": [
+        "entity:5ef549d7e955127e0126"
+      ],
+      "source_rows": 11,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "放大电路",
+      "target_entity_id": "entity:23addbf97577f4b64e2a",
+      "source_entity_ids": [
+        "entity:23addbf97577f4b64e2a"
+      ],
+      "source_rows": 16,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "本征半导体",
+      "target_entity_id": "entity:427a7c7fac4090a02dd8",
+      "source_entity_ids": [
+        "entity:427a7c7fac4090a02dd8",
+        "entity:1df0efc0398cc751d70e",
+        "entity:2bf1db8b92f4de1c9cd6"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "材料与结构",
+        "课程概念",
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "载流子",
+      "target_entity_id": "entity:680eb700b7465d39a91e",
+      "source_entity_ids": [
+        "entity:680eb700b7465d39a91e",
+        "entity:74673eafc2d1e3e175e8"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "参数与物理量",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "PN结",
+      "target_entity_id": "entity:261751bb82bf40be1a3a",
+      "source_entity_ids": [
+        "entity:2396c061613755779254",
+        "entity:f3ed6c7d1fcff5c25678",
+        "entity:261751bb82bf40be1a3a"
+      ],
+      "source_rows": 9,
+      "type_variants": [
+        "器件与元件",
+        "材料与结构",
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "单向导电性",
+      "target_entity_id": "entity:5bc31d0e53a262788f17",
+      "source_entity_ids": [
+        "entity:5bc31d0e53a262788f17",
+        "entity:90d75268ec4fe5734784"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "物理过程与效应",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "伏安特性",
+      "target_entity_id": "entity:0c687db9e921dcbbcf12",
+      "source_entity_ids": [
+        "entity:0c687db9e921dcbbcf12"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "电容效应",
+      "target_entity_id": "entity:c739326688455b4b165f",
+      "source_entity_ids": [
+        "entity:c739326688455b4b165f"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "等效电阻",
+      "target_entity_id": "entity:a978034bbaecd6b342a2",
+      "source_entity_ids": [
+        "entity:a978034bbaecd6b342a2"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "集成电路",
+      "target_entity_id": "entity:014c6d521d1a4e0809b3",
+      "source_entity_ids": [
+        "entity:014c6d521d1a4e0809b3"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "性能指标",
+      "target_entity_id": "entity:6de643ca8854bc25fd23",
+      "source_entity_ids": [
+        "entity:6de643ca8854bc25fd23",
+        "entity:601f68ecefc41b3a1579"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "共射放大电路",
+      "target_entity_id": "entity:db7a99f4fa736215cb41",
+      "source_entity_ids": [
+        "entity:db7a99f4fa736215cb41"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "直流通路",
+      "target_entity_id": "entity:9ca4e05d7e31c11cfd7c",
+      "source_entity_ids": [
+        "entity:9ca4e05d7e31c11cfd7c",
+        "entity:bcd7753d4abe5090bb98"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "交流通路",
+      "target_entity_id": "entity:f52fbb8333efdbefb92b",
+      "source_entity_ids": [
+        "entity:f52fbb8333efdbefb92b",
+        "entity:99698b5e36f86391896f"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "电路与系统",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "图解法",
+      "target_entity_id": "entity:428d0ccb9e4f7cf91c01",
+      "source_entity_ids": [
+        "entity:428d0ccb9e4f7cf91c01"
+      ],
+      "source_rows": 8,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "晶体管单管放大电路",
+      "target_entity_id": "entity:495db1f53caea7df8adb",
+      "source_entity_ids": [
+        "entity:495db1f53caea7df8adb"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "差分放大电路",
+      "target_entity_id": "entity:b98f1db2e6491ef6e26e",
+      "source_entity_ids": [
+        "entity:b98f1db2e6491ef6e26e"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "功率放大电路",
+      "target_entity_id": "entity:a402eab67d3909faceab",
+      "source_entity_ids": [
+        "entity:a402eab67d3909faceab"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "多级放大电路",
+      "target_entity_id": "entity:bad90c3cbd7debf86743",
+      "source_entity_ids": [
+        "entity:bad90c3cbd7debf86743"
+      ],
+      "source_rows": 7,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "场效应晶体管",
+      "target_entity_id": "entity:0d7f05a542de37ba9d64",
+      "source_entity_ids": [
+        "entity:0d7f05a542de37ba9d64"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "小信号放大电路",
+      "target_entity_id": "entity:463a523eec5a0af18eb7",
+      "source_entity_ids": [
+        "entity:463a523eec5a0af18eb7"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "高频模型",
+      "target_entity_id": "entity:47bc9bd9409d2a7af317",
+      "source_entity_ids": [
+        "entity:47bc9bd9409d2a7af317"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "负反馈放大电路",
+      "target_entity_id": "entity:e4ae22eaa0f1e2b2b4e8",
+      "source_entity_ids": [
+        "entity:e4ae22eaa0f1e2b2b4e8"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "相位补偿",
+      "target_entity_id": "entity:c419f84a91e0489b02ab",
+      "source_entity_ids": [
+        "entity:c419f84a91e0489b02ab"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "集成运算放大器",
+      "target_entity_id": "entity:98c6d5ea6137ba471bf8",
+      "source_entity_ids": [
+        "entity:98c6d5ea6137ba471bf8",
+        "entity:9b643ef8b5cb343a1910"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "器件与元件",
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "模拟运算电路",
+      "target_entity_id": "entity:c0862ba013dbd4c533c0",
+      "source_entity_ids": [
+        "entity:c0862ba013dbd4c533c0"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "模拟乘法器",
+      "target_entity_id": "entity:2261e00087069838b36b",
+      "source_entity_ids": [
+        "entity:8a8c5081abf5435c3fa4",
+        "entity:2261e00087069838b36b"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "器件与元件",
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "有源滤波器",
+      "target_entity_id": "entity:d415649784f6d8356537",
+      "source_entity_ids": [
+        "entity:d415649784f6d8356537"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "电压比较器",
+      "target_entity_id": "entity:1bc071788d91bace6217",
+      "source_entity_ids": [
+        "entity:84bbe36acec5157f56e7",
+        "entity:1bc071788d91bace6217"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "电路与系统",
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "触发器",
+      "target_entity_id": "entity:312606b9bd2e56826ce0",
+      "source_entity_ids": [
+        "entity:312606b9bd2e56826ce0",
+        "entity:061770ef52034cf8ffba"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统",
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "555定时器",
+      "target_entity_id": "entity:b86bbb127863c8f4e807",
+      "source_entity_ids": [
+        "entity:b86bbb127863c8f4e807",
+        "entity:c5cb4db2e448fc727b5d"
+      ],
+      "source_rows": 8,
+      "type_variants": [
+        "器件与元件",
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "绝缘体",
+      "target_entity_id": "entity:f31f00f2c37425eb13fa",
+      "source_entity_ids": [
+        "entity:f31f00f2c37425eb13fa"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "自由电子",
+      "target_entity_id": "entity:4a4ac7c073e1582af5be",
+      "source_entity_ids": [
+        "entity:4a4ac7c073e1582af5be"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "空穴",
+      "target_entity_id": "entity:75d1e304fe8456449e96",
+      "source_entity_ids": [
+        "entity:f207035ef4a29198d659",
+        "entity:75d1e304fe8456449e96"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念",
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "半导体二极管",
+      "target_entity_id": "entity:5ec1e5b06ba344ec9630",
+      "source_entity_ids": [
+        "entity:5ec1e5b06ba344ec9630"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "漂移电流",
+      "target_entity_id": "entity:b56b694f6123d516a35b",
+      "source_entity_ids": [
+        "entity:b56b694f6123d516a35b"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "扩散电流",
+      "target_entity_id": "entity:2dbea0b90bc5d1f0082b",
+      "source_entity_ids": [
+        "entity:2dbea0b90bc5d1f0082b"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "浓度梯度",
+      "target_entity_id": "entity:dc2880dd44bbcb1bce05",
+      "source_entity_ids": [
+        "entity:dc2880dd44bbcb1bce05"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "空间电荷区",
+      "target_entity_id": "entity:9d851062dac892ea232e",
+      "source_entity_ids": [
+        "entity:9d851062dac892ea232e",
+        "entity:24eed204c95a0fcec655"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统",
+        "材料与结构"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "动态平衡",
+      "target_entity_id": "entity:b53f58c4b2fac13b4c3f",
+      "source_entity_ids": [
+        "entity:b53f58c4b2fac13b4c3f"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "负温度系数",
+      "target_entity_id": "entity:7f548cbfab7f2a989a2c",
+      "source_entity_ids": [
+        "entity:9a56640ac94bcead14e3",
+        "entity:7f548cbfab7f2a989a2c"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念",
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "硅管",
+      "target_entity_id": "entity:1f82cbae45951891fb33",
+      "source_entity_ids": [
+        "entity:1f82cbae45951891fb33"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "锗管",
+      "target_entity_id": "entity:6ea91b82395262704bff",
+      "source_entity_ids": [
+        "entity:6ea91b82395262704bff"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "结电容",
+      "target_entity_id": "entity:b093ad155341badf370f",
+      "source_entity_ids": [
+        "entity:b093ad155341badf370f",
+        "entity:622cbf99a0f3e6653663"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "参数与物理量",
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "反向饱和电流",
+      "target_entity_id": "entity:64586c1d19af41426447",
+      "source_entity_ids": [
+        "entity:64586c1d19af41426447"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "体电阻",
+      "target_entity_id": "entity:f8f0d97f2602c60f1cf8",
+      "source_entity_ids": [
+        "entity:f8f0d97f2602c60f1cf8"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "载流子复合",
+      "target_entity_id": "entity:8240249d916e84f05a4c",
+      "source_entity_ids": [
+        "entity:8240249d916e84f05a4c"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "阈值电压",
+      "target_entity_id": "entity:a180da39acab3c2b8284",
+      "source_entity_ids": [
+        "entity:a180da39acab3c2b8284"
+      ],
+      "source_rows": 7,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "击穿电压",
+      "target_entity_id": "entity:be2e5fc4fef4405bc31c",
+      "source_entity_ids": [
+        "entity:be2e5fc4fef4405bc31c"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "反向击穿",
+      "target_entity_id": "entity:70c63772bde7e009d060",
+      "source_entity_ids": [
+        "entity:70c63772bde7e009d060"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "雪崩击穿",
+      "target_entity_id": "entity:8191a170499cbd0733e9",
+      "source_entity_ids": [
+        "entity:8191a170499cbd0733e9"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "齐纳击穿",
+      "target_entity_id": "entity:30d6529feaac6047d475",
+      "source_entity_ids": [
+        "entity:30d6529feaac6047d475"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "势垒电容",
+      "target_entity_id": "entity:056877b00d9c941bcb37",
+      "source_entity_ids": [
+        "entity:056877b00d9c941bcb37",
+        "entity:4c9bf325a77ce95f7a16"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "参数与物理量",
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "扩散电容",
+      "target_entity_id": "entity:b8d5b705e62b3e5d39cd",
+      "source_entity_ids": [
+        "entity:b8d5b705e62b3e5d39cd"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "反向电流",
+      "target_entity_id": "entity:876b4831c873675a9d73",
+      "source_entity_ids": [
+        "entity:876b4831c873675a9d73"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "变容二极管",
+      "target_entity_id": "entity:e580f9c6cc3f529f41c9",
+      "source_entity_ids": [
+        "entity:e580f9c6cc3f529f41c9"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "稳压管",
+      "target_entity_id": "entity:15ec0fc01d903ae425b7",
+      "source_entity_ids": [
+        "entity:15ec0fc01d903ae425b7"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "动态电阻",
+      "target_entity_id": "entity:e2c1fb4ca0ea1d743c91",
+      "source_entity_ids": [
+        "entity:e2c1fb4ca0ea1d743c91"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "肖特基二极管",
+      "target_entity_id": "entity:78cbee114c3cc1257e16",
+      "source_entity_ids": [
+        "entity:78cbee114c3cc1257e16"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "二极管",
+      "target_entity_id": "entity:79b90d8a35c3329441ce",
+      "source_entity_ids": [
+        "entity:79b90d8a35c3329441ce"
+      ],
+      "source_rows": 8,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "叠加定理",
+      "target_entity_id": "entity:1d4a8fd31d31eb0389f2",
+      "source_entity_ids": [
+        "entity:b25b7606328f5c80ef68",
+        "entity:1d4a8fd31d31eb0389f2"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "方法与模型",
+        "物理定律与原理"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "伏安特性曲线",
+      "target_entity_id": "entity:0f719db9f1e6cd624544",
+      "source_entity_ids": [
+        "entity:1f9b58e5862f18768bf3",
+        "entity:0f719db9f1e6cd624544"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "课程概念",
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "简化模型",
+      "target_entity_id": "entity:ae624ed54ffcc2c330a6",
+      "source_entity_ids": [
+        "entity:ae624ed54ffcc2c330a6"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "恒压降模型",
+      "target_entity_id": "entity:23cb0f5f4a5c3069d88a",
+      "source_entity_ids": [
+        "entity:23cb0f5f4a5c3069d88a"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "分段线性模型",
+      "target_entity_id": "entity:88a33b3cc5e10c476ce4",
+      "source_entity_ids": [
+        "entity:88a33b3cc5e10c476ce4"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "限幅电路",
+      "target_entity_id": "entity:f7948ecf5f6bbf437ea0",
+      "source_entity_ids": [
+        "entity:f7948ecf5f6bbf437ea0"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "钳位电路",
+      "target_entity_id": "entity:cb554a3cbcca90bd70e9",
+      "source_entity_ids": [
+        "entity:cb554a3cbcca90bd70e9"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "电容",
+      "target_entity_id": "entity:8afb17c0bc611b757701",
+      "source_entity_ids": [
+        "entity:8afb17c0bc611b757701"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "逻辑门",
+      "target_entity_id": "entity:851152ba1b4491265ae1",
+      "source_entity_ids": [
+        "entity:851152ba1b4491265ae1"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "与门",
+      "target_entity_id": "entity:34cd99a2b5a950950f4e",
+      "source_entity_ids": [
+        "entity:34cd99a2b5a950950f4e",
+        "entity:3cc89211b2f9d53ee487"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统",
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "或门",
+      "target_entity_id": "entity:eecaa6edb029e4c871f3",
+      "source_entity_ids": [
+        "entity:eecaa6edb029e4c871f3",
+        "entity:493ae4b90f7c425f6c8f"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统",
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "直流扫描",
+      "target_entity_id": "entity:6a7e1a0839cb1ceb309a",
+      "source_entity_ids": [
+        "entity:6a7e1a0839cb1ceb309a"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "传输特性",
+      "target_entity_id": "entity:83cc5940340b0701e6ee",
+      "source_entity_ids": [
+        "entity:5f74f3dc6ca1c4abca4f",
+        "entity:83cc5940340b0701e6ee"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "课程概念",
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "限幅区",
+      "target_entity_id": "entity:6a39525f76dadca72826",
+      "source_entity_ids": [
+        "entity:6a39525f76dadca72826"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "理想模型",
+      "target_entity_id": "entity:c0fca4a95d5764fff213",
+      "source_entity_ids": [
+        "entity:c0fca4a95d5764fff213"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "小信号模型",
+      "target_entity_id": "entity:5bfa5153bc914a7d871e",
+      "source_entity_ids": [
+        "entity:5bfa5153bc914a7d871e"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "输出电压",
+      "target_entity_id": "entity:b54ad2e9a2d74a12f437",
+      "source_entity_ids": [
+        "entity:b54ad2e9a2d74a12f437"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "直流工作点",
+      "target_entity_id": "entity:f94303567216fccd974f",
+      "source_entity_ids": [
+        "entity:f94303567216fccd974f"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "NPN型晶体管",
+      "target_entity_id": "entity:e11c8b1187aa9ddce0c6",
+      "source_entity_ids": [
+        "entity:e11c8b1187aa9ddce0c6"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "发射极",
+      "target_entity_id": "entity:0148827d66d4a65263cd",
+      "source_entity_ids": [
+        "entity:0148827d66d4a65263cd"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "基极",
+      "target_entity_id": "entity:c2de64dca25842529055",
+      "source_entity_ids": [
+        "entity:c2de64dca25842529055"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "集电极",
+      "target_entity_id": "entity:941be2b1fe1549651f61",
+      "source_entity_ids": [
+        "entity:941be2b1fe1549651f61"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "发射结",
+      "target_entity_id": "entity:a3cec5b9438091297a6d",
+      "source_entity_ids": [
+        "entity:a3cec5b9438091297a6d"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "集电结",
+      "target_entity_id": "entity:dd6f9fab997280b109f5",
+      "source_entity_ids": [
+        "entity:dd6f9fab997280b109f5"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "共射组态",
+      "target_entity_id": "entity:f874c8c89c69d27c9ced",
+      "source_entity_ids": [
+        "entity:f874c8c89c69d27c9ced"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "输出特性",
+      "target_entity_id": "entity:9bd34cada86c39236a94",
+      "source_entity_ids": [
+        "entity:9bd34cada86c39236a94"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "饱和区",
+      "target_entity_id": "entity:cd3f24da1380e087c1d5",
+      "source_entity_ids": [
+        "entity:cf3d81584452b24626ad",
+        "entity:cd3f24da1380e087c1d5",
+        "entity:b9a66bf0d947f0d3b98b"
+      ],
+      "source_rows": 14,
+      "type_variants": [
+        "课程概念",
+        "电路与系统",
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "放大区",
+      "target_entity_id": "entity:aa63967ec62132ee9d44",
+      "source_entity_ids": [
+        "entity:aa63967ec62132ee9d44"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "截止区",
+      "target_entity_id": "entity:841a97a7199540885b62",
+      "source_entity_ids": [
+        "entity:6c2b6abea520b8909e79",
+        "entity:841a97a7199540885b62"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "课程概念",
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "击穿区",
+      "target_entity_id": "entity:18faed410d7a4b4b752f",
+      "source_entity_ids": [
+        "entity:18faed410d7a4b4b752f"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "穿透电流",
+      "target_entity_id": "entity:e06f73241211ad7edae2",
+      "source_entity_ids": [
+        "entity:e06f73241211ad7edae2"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "晶体管",
+      "target_entity_id": "entity:0597d9590486eb1684bc",
+      "source_entity_ids": [
+        "entity:0597d9590486eb1684bc"
+      ],
+      "source_rows": 13,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "共射极电流放大系数",
+      "target_entity_id": "entity:ffe207ecba8fd457cafe",
+      "source_entity_ids": [
+        "entity:ffe207ecba8fd457cafe"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "输出特性曲线",
+      "target_entity_id": "entity:28ad0de755584a3286e9",
+      "source_entity_ids": [
+        "entity:eb8deb9a1820f0c06ab3",
+        "entity:28ad0de755584a3286e9"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念",
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "安全工作区",
+      "target_entity_id": "entity:cb87de62711f4e5e4a63",
+      "source_entity_ids": [
+        "entity:cb87de62711f4e5e4a63"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "晶体管参数",
+      "target_entity_id": "entity:da5b7ddb0c416ea66ef3",
+      "source_entity_ids": [
+        "entity:154c45b7f474b5bfd503",
+        "entity:da5b7ddb0c416ea66ef3"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念",
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "电阻",
+      "target_entity_id": "entity:6a32ac82aa4143fa8125",
+      "source_entity_ids": [
+        "entity:6a32ac82aa4143fa8125"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "有源器件",
+      "target_entity_id": "entity:25d302facc072bc3710c",
+      "source_entity_ids": [
+        "entity:25d302facc072bc3710c"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "失真",
+      "target_entity_id": "entity:8ef6d0507bc58d6e706a",
+      "source_entity_ids": [
+        "entity:8ef6d0507bc58d6e706a"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "交流小信号",
+      "target_entity_id": "entity:de73ed4f0dad31400191",
+      "source_entity_ids": [
+        "entity:de73ed4f0dad31400191"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "正弦波",
+      "target_entity_id": "entity:9e255768de105edf11da",
+      "source_entity_ids": [
+        "entity:9e255768de105edf11da",
+        "entity:db1445fb4b022932c645"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "输入电阻",
+      "target_entity_id": "entity:ad1411368ed1d35c0f29",
+      "source_entity_ids": [
+        "entity:ad1411368ed1d35c0f29"
+      ],
+      "source_rows": 19,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "输出电阻",
+      "target_entity_id": "entity:d1adebbb43c064ab99ca",
+      "source_entity_ids": [
+        "entity:d1adebbb43c064ab99ca"
+      ],
+      "source_rows": 16,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "增益",
+      "target_entity_id": "entity:925027a038d708dc73fc",
+      "source_entity_ids": [
+        "entity:925027a038d708dc73fc"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "非线性失真",
+      "target_entity_id": "entity:f981359a47008bb13cd9",
+      "source_entity_ids": [
+        "entity:f981359a47008bb13cd9"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "正弦稳态分析",
+      "target_entity_id": "entity:a53de187e4fcaa84fef7",
+      "source_entity_ids": [
+        "entity:a53de187e4fcaa84fef7"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "电流源",
+      "target_entity_id": "entity:43a622dc080eab8f70de",
+      "source_entity_ids": [
+        "entity:af9392b7ab8a66fd2f1f",
+        "entity:43a622dc080eab8f70de"
+      ],
+      "source_rows": 8,
+      "type_variants": [
+        "器件与元件",
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "输入电压",
+      "target_entity_id": "entity:7a404579fc98a7bf2ce0",
+      "source_entity_ids": [
+        "entity:7a404579fc98a7bf2ce0"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "输出电流",
+      "target_entity_id": "entity:a30fe6a6ee630b6d2306",
+      "source_entity_ids": [
+        "entity:a30fe6a6ee630b6d2306"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "负载电阻",
+      "target_entity_id": "entity:85c6e354a15dcfd6955c",
+      "source_entity_ids": [
+        "entity:85c6e354a15dcfd6955c"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "静态工作点",
+      "target_entity_id": "entity:036996a429523cb8b058",
+      "source_entity_ids": [
+        "entity:036996a429523cb8b058",
+        "entity:7f93f2f000cd1bdfe1a2"
+      ],
+      "source_rows": 15,
+      "type_variants": [
+        "参数与物理量",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "动态参数",
+      "target_entity_id": "entity:d431febd24d3870c0705",
+      "source_entity_ids": [
+        "entity:d431febd24d3870c0705"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "共射电路",
+      "target_entity_id": "entity:a831a331aa985c27adfc",
+      "source_entity_ids": [
+        "entity:a831a331aa985c27adfc"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "动态范围",
+      "target_entity_id": "entity:5a6aca1478953a1f9d2a",
+      "source_entity_ids": [
+        "entity:5a6aca1478953a1f9d2a"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "等效电路法",
+      "target_entity_id": "entity:ec8eb5d8635213943935",
+      "source_entity_ids": [
+        "entity:ec8eb5d8635213943935"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "偏置电路",
+      "target_entity_id": "entity:885813fb2ab1d68554b9",
+      "source_entity_ids": [
+        "entity:885813fb2ab1d68554b9"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "共集放大电路",
+      "target_entity_id": "entity:56fe635ddc3fbf4a9a25",
+      "source_entity_ids": [
+        "entity:56fe635ddc3fbf4a9a25"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "输入级",
+      "target_entity_id": "entity:3d4e1a97069fb06464ac",
+      "source_entity_ids": [
+        "entity:3d4e1a97069fb06464ac"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "输出级",
+      "target_entity_id": "entity:ebcdb9633df6357c6dc6",
+      "source_entity_ids": [
+        "entity:ebcdb9633df6357c6dc6"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "交流等效电路",
+      "target_entity_id": "entity:e26725ebe2ff0654e8ed",
+      "source_entity_ids": [
+        "entity:e26725ebe2ff0654e8ed"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "电压增益",
+      "target_entity_id": "entity:3facc376f1dbd5139335",
+      "source_entity_ids": [
+        "entity:3facc376f1dbd5139335"
+      ],
+      "source_rows": 8,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "共集电路",
+      "target_entity_id": "entity:d3b8f721236567f83f76",
+      "source_entity_ids": [
+        "entity:d3b8f721236567f83f76"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "共基电路",
+      "target_entity_id": "entity:c403b877c060df3a67e6",
+      "source_entity_ids": [
+        "entity:c403b877c060df3a67e6"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "频带",
+      "target_entity_id": "entity:1257f73de16e7e99e15b",
+      "source_entity_ids": [
+        "entity:1257f73de16e7e99e15b"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "高频特性",
+      "target_entity_id": "entity:58c32d70538a949eeb94",
+      "source_entity_ids": [
+        "entity:58c32d70538a949eeb94",
+        "entity:166c571504ec6668e007"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "直流偏置",
+      "target_entity_id": "entity:86398d2edc8c21053f52",
+      "source_entity_ids": [
+        "entity:5144b15567a2e97fd79c",
+        "entity:86398d2edc8c21053f52"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "方法与模型",
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "基区宽度调制效应",
+      "target_entity_id": "entity:353bc8738767ee8963cd",
+      "source_entity_ids": [
+        "entity:353bc8738767ee8963cd"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "精度",
+      "target_entity_id": "entity:71efa121cd3b8128f57e",
+      "source_entity_ids": [
+        "entity:71efa121cd3b8128f57e"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "负反馈",
+      "target_entity_id": "entity:badd2d10a247f33fa2ef",
+      "source_entity_ids": [
+        "entity:badd2d10a247f33fa2ef",
+        "entity:d9af1964eb879a1a63fe"
+      ],
+      "source_rows": 11,
+      "type_variants": [
+        "方法与模型",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "偏置电流",
+      "target_entity_id": "entity:beb95d1b9958d60bf115",
+      "source_entity_ids": [
+        "entity:beb95d1b9958d60bf115"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "有源负载",
+      "target_entity_id": "entity:e52e0d785bde0ee2a78c",
+      "source_entity_ids": [
+        "entity:7f2af0f807cff7b77d6a",
+        "entity:e52e0d785bde0ee2a78c"
+      ],
+      "source_rows": 8,
+      "type_variants": [
+        "课程概念",
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "直流偏置电路",
+      "target_entity_id": "entity:b874172d446b795cf6b2",
+      "source_entity_ids": [
+        "entity:b874172d446b795cf6b2"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "差模信号",
+      "target_entity_id": "entity:085aade3fb860ddd6ee7",
+      "source_entity_ids": [
+        "entity:085aade3fb860ddd6ee7",
+        "entity:114028ab1d485c4be1b4"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "共模信号",
+      "target_entity_id": "entity:9959253f7a1754631a8b",
+      "source_entity_ids": [
+        "entity:9959253f7a1754631a8b",
+        "entity:3b880f4bbce42eb998cf"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "差模输入",
+      "target_entity_id": "entity:bc2b998a0c80054eef97",
+      "source_entity_ids": [
+        "entity:bc2b998a0c80054eef97"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "共模抑制比",
+      "target_entity_id": "entity:6740cc32e26cd47da41d",
+      "source_entity_ids": [
+        "entity:6740cc32e26cd47da41d"
+      ],
+      "source_rows": 10,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "差模电压增益",
+      "target_entity_id": "entity:4dc3ff87f06b2167ee44",
+      "source_entity_ids": [
+        "entity:4dc3ff87f06b2167ee44"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "失调",
+      "target_entity_id": "entity:7549dcd2613618dacd50",
+      "source_entity_ids": [
+        "entity:7549dcd2613618dacd50",
+        "entity:7dca2c380f015645c3d1"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "物理过程与效应",
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "输入失调电压",
+      "target_entity_id": "entity:de87a4d53960603badc5",
+      "source_entity_ids": [
+        "entity:de87a4d53960603badc5"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "集电极电阻",
+      "target_entity_id": "entity:d0ba3696b827c025c794",
+      "source_entity_ids": [
+        "entity:d0ba3696b827c025c794"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "输入失调电流",
+      "target_entity_id": "entity:19187cf0241f3fa9aca9",
+      "source_entity_ids": [
+        "entity:19187cf0241f3fa9aca9"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "温漂",
+      "target_entity_id": "entity:c25278121fc60faf5e8f",
+      "source_entity_ids": [
+        "entity:c25278121fc60faf5e8f",
+        "entity:bbe26984509b0b05356b"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "物理过程与效应",
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "多级放大器",
+      "target_entity_id": "entity:ca34711749b637db46d5",
+      "source_entity_ids": [
+        "entity:ca34711749b637db46d5"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "效率",
+      "target_entity_id": "entity:e239e4b8bc91a44da8d2",
+      "source_entity_ids": [
+        "entity:e239e4b8bc91a44da8d2"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "VBE倍增电路",
+      "target_entity_id": "entity:17296e6f5cb2ec8178bc",
+      "source_entity_ids": [
+        "entity:17296e6f5cb2ec8178bc"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "复合管",
+      "target_entity_id": "entity:763be379dd6f357cb56a",
+      "source_entity_ids": [
+        "entity:763be379dd6f357cb56a"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "二次击穿",
+      "target_entity_id": "entity:d96bd6aa19c5fe7e2b75",
+      "source_entity_ids": [
+        "entity:d96bd6aa19c5fe7e2b75"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "过流保护电路",
+      "target_entity_id": "entity:97dd0e314734eed41f4e",
+      "source_entity_ids": [
+        "entity:97dd0e314734eed41f4e"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "基本放大电路",
+      "target_entity_id": "entity:d9a344b64a302eb61728",
+      "source_entity_ids": [
+        "entity:d9a344b64a302eb61728"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "直接耦合放大电路",
+      "target_entity_id": "entity:546f4aa1653e096f4289",
+      "source_entity_ids": [
+        "entity:546f4aa1653e096f4289"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "阻容耦合",
+      "target_entity_id": "entity:610a61aa0cbe91e8c1cd",
+      "source_entity_ids": [
+        "entity:610a61aa0cbe91e8c1cd",
+        "entity:3ab397d4f9e08db7f10a"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型",
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "变压器耦合",
+      "target_entity_id": "entity:6b1a72904c1540bd85d4",
+      "source_entity_ids": [
+        "entity:6b1a72904c1540bd85d4",
+        "entity:ee6b805ebde0dfa15200"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型",
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "直接耦合",
+      "target_entity_id": "entity:859dbe173344a8a7b89d",
+      "source_entity_ids": [
+        "entity:859dbe173344a8a7b89d",
+        "entity:552a9f4b24ba881971c3"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "方法与模型",
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "零点漂移",
+      "target_entity_id": "entity:77452a7e70fee80ed33e",
+      "source_entity_ids": [
+        "entity:77452a7e70fee80ed33e"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "输入阻抗",
+      "target_entity_id": "entity:804bd5fcb5e6bda02cef",
+      "source_entity_ids": [
+        "entity:804bd5fcb5e6bda02cef"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "输出阻抗",
+      "target_entity_id": "entity:cc60bebe8baa65281943",
+      "source_entity_ids": [
+        "entity:cc60bebe8baa65281943"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "源电压增益",
+      "target_entity_id": "entity:af3a565993e8ee53b6b8",
+      "source_entity_ids": [
+        "entity:af3a565993e8ee53b6b8"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "通频带",
+      "target_entity_id": "entity:9b512c36c2b0e22d07a0",
+      "source_entity_ids": [
+        "entity:9b512c36c2b0e22d07a0"
+      ],
+      "source_rows": 7,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "上限频率",
+      "target_entity_id": "entity:62a7bfc209a2fa728c53",
+      "source_entity_ids": [
+        "entity:62a7bfc209a2fa728c53"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "差分放大器",
+      "target_entity_id": "entity:e7de71104507dcf99685",
+      "source_entity_ids": [
+        "entity:e7de71104507dcf99685"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "热敏电阻",
+      "target_entity_id": "entity:dd8765b7fdab334ebf46",
+      "source_entity_ids": [
+        "entity:dd8765b7fdab334ebf46"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "MOS场效应管",
+      "target_entity_id": "entity:c1c628a0ed83ae69e5ec",
+      "source_entity_ids": [
+        "entity:c1c628a0ed83ae69e5ec"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "N沟道",
+      "target_entity_id": "entity:28f1891c351d561d0c3a",
+      "source_entity_ids": [
+        "entity:28f1891c351d561d0c3a"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "P沟道",
+      "target_entity_id": "entity:5d2968e77ea8fc924379",
+      "source_entity_ids": [
+        "entity:5d2968e77ea8fc924379"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "增强型",
+      "target_entity_id": "entity:3f878cd6f1206643eec4",
+      "source_entity_ids": [
+        "entity:3f878cd6f1206643eec4",
+        "entity:2876e3e998497a4194cd"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统",
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "耗尽型",
+      "target_entity_id": "entity:756fe4292584e156e99f",
+      "source_entity_ids": [
+        "entity:756fe4292584e156e99f",
+        "entity:aad9f1d51db58193b09f"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统",
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "MOS管",
+      "target_entity_id": "entity:aeafefa2e4821fb95960",
+      "source_entity_ids": [
+        "entity:aeafefa2e4821fb95960"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "耗尽型MOS管",
+      "target_entity_id": "entity:3906eb96d9f229a44d93",
+      "source_entity_ids": [
+        "entity:3906eb96d9f229a44d93"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "夹断电压",
+      "target_entity_id": "entity:e6c2aa431e32aa5de42c",
+      "source_entity_ids": [
+        "entity:e6c2aa431e32aa5de42c"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "可变电阻区",
+      "target_entity_id": "entity:a36d4c1f09c8b870db64",
+      "source_entity_ids": [
+        "entity:a36d4c1f09c8b870db64",
+        "entity:3af48dc92bb71bba763f"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "电路与系统",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "微变跨导",
+      "target_entity_id": "entity:1bc5bfc2310d0866d801",
+      "source_entity_ids": [
+        "entity:1bc5bfc2310d0866d801"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "结型场效应管",
+      "target_entity_id": "entity:43f68da4db48091741fb",
+      "source_entity_ids": [
+        "entity:43f68da4db48091741fb"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "漏极",
+      "target_entity_id": "entity:491754f646ae5c2b24b3",
+      "source_entity_ids": [
+        "entity:aa0c66520c37b272c1ad",
+        "entity:491754f646ae5c2b24b3"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "器件与元件",
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "源极",
+      "target_entity_id": "entity:7a43bc1a47690e7f181a",
+      "source_entity_ids": [
+        "entity:c98b25fe97ade0bc3b1b",
+        "entity:7a43bc1a47690e7f181a"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "器件与元件",
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "导电沟道",
+      "target_entity_id": "entity:97cdf25745d16e75d31f",
+      "source_entity_ids": [
+        "entity:97cdf25745d16e75d31f"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "N沟道结型场效应管",
+      "target_entity_id": "entity:97d8d8f0255245598063",
+      "source_entity_ids": [
+        "entity:97d8d8f0255245598063"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "P沟道结型场效应管",
+      "target_entity_id": "entity:a14728db5d2954aa0c7f",
+      "source_entity_ids": [
+        "entity:a14728db5d2954aa0c7f"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "沟道长度调制效应",
+      "target_entity_id": "entity:5c41840d4377962fe3d3",
+      "source_entity_ids": [
+        "entity:5c41840d4377962fe3d3"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "转移特性",
+      "target_entity_id": "entity:978514f15fa56f195cfb",
+      "source_entity_ids": [
+        "entity:978514f15fa56f195cfb"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "VDMOS管",
+      "target_entity_id": "entity:1ff3221f08a73b6cfc72",
+      "source_entity_ids": [
+        "entity:1ff3221f08a73b6cfc72"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "跨导",
+      "target_entity_id": "entity:bfb4c3c255e8166c686e",
+      "source_entity_ids": [
+        "entity:bfb4c3c255e8166c686e"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "容抗",
+      "target_entity_id": "entity:dfdf6b4750b4a6ea2c29",
+      "source_entity_ids": [
+        "entity:dfdf6b4750b4a6ea2c29"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "场效应管",
+      "target_entity_id": "entity:41fe82bd5bc835cb2b27",
+      "source_entity_ids": [
+        "entity:41fe82bd5bc835cb2b27"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "分压式偏置",
+      "target_entity_id": "entity:a546df4eb869e9b1f30b",
+      "source_entity_ids": [
+        "entity:a546df4eb869e9b1f30b",
+        "entity:2b9aaa0910c72e74b85b"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统",
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "增强型MOS管",
+      "target_entity_id": "entity:d8b52bf8df67280d29c6",
+      "source_entity_ids": [
+        "entity:d8b52bf8df67280d29c6"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "漏极电流",
+      "target_entity_id": "entity:1f0f27ed0d1ad3c989a1",
+      "source_entity_ids": [
+        "entity:1f0f27ed0d1ad3c989a1"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "微变等效电路",
+      "target_entity_id": "entity:e5e06374d197bc870745",
+      "source_entity_ids": [
+        "entity:e5e06374d197bc870745"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "衬底调制效应",
+      "target_entity_id": "entity:64fcb334d37af38c4bec",
+      "source_entity_ids": [
+        "entity:64fcb334d37af38c4bec"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "恒流源",
+      "target_entity_id": "entity:faca17b6ad2acca8dff6",
+      "source_entity_ids": [
+        "entity:faca17b6ad2acca8dff6",
+        "entity:68a7f8b009d5d4c48ecb"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统",
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "镜像电流源",
+      "target_entity_id": "entity:fde131d6de33cfb1ea98",
+      "source_entity_ids": [
+        "entity:fde131d6de33cfb1ea98"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "集成度",
+      "target_entity_id": "entity:6b399ab715aafc805048",
+      "source_entity_ids": [
+        "entity:6b399ab715aafc805048"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "失调电压",
+      "target_entity_id": "entity:24c9c2fee68ebcb811a8",
+      "source_entity_ids": [
+        "entity:24c9c2fee68ebcb811a8"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "线性区",
+      "target_entity_id": "entity:c43b502de4a3f16f6ff3",
+      "source_entity_ids": [
+        "entity:c43b502de4a3f16f6ff3",
+        "entity:c08efa70bfb3e572c687"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "物理过程与效应",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "截止",
+      "target_entity_id": "entity:c00666847a6fdfc16c2f",
+      "source_entity_ids": [
+        "entity:c00666847a6fdfc16c2f"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "增强型PMOS",
+      "target_entity_id": "entity:659601f58bb49b8e6c50",
+      "source_entity_ids": [
+        "entity:659601f58bb49b8e6c50"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "单端输出",
+      "target_entity_id": "entity:6e24a2ddda216b0f5868",
+      "source_entity_ids": [
+        "entity:6e24a2ddda216b0f5868",
+        "entity:06ef50560279160502af"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统",
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "双端输出",
+      "target_entity_id": "entity:a7d1371df3f9fef20dcb",
+      "source_entity_ids": [
+        "entity:a7d1371df3f9fef20dcb",
+        "entity:169fca6be0283b91c9d1"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统",
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "模拟开关",
+      "target_entity_id": "entity:9f67699bb351ed9aa2ed",
+      "source_entity_ids": [
+        "entity:9f67699bb351ed9aa2ed"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "P沟道增强型MOS管",
+      "target_entity_id": "entity:1017e980ecffb94f75e1",
+      "source_entity_ids": [
+        "entity:1017e980ecffb94f75e1"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "共源组态",
+      "target_entity_id": "entity:2379e8207ef7a9aa15db",
+      "source_entity_ids": [
+        "entity:2379e8207ef7a9aa15db"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "耦合电容",
+      "target_entity_id": "entity:cfe2abbc6e18fca30c3c",
+      "source_entity_ids": [
+        "entity:cfe2abbc6e18fca30c3c"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "旁路电容",
+      "target_entity_id": "entity:ed90239ec3fc432d7f6a",
+      "source_entity_ids": [
+        "entity:ed90239ec3fc432d7f6a"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "零点",
+      "target_entity_id": "entity:4c36b0dc77eef57c2b86",
+      "source_entity_ids": [
+        "entity:4c36b0dc77eef57c2b86"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "极点",
+      "target_entity_id": "entity:0ff029dd57629f012b53",
+      "source_entity_ids": [
+        "entity:0ff029dd57629f012b53"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "波特图",
+      "target_entity_id": "entity:b110ba938657e8aaf132",
+      "source_entity_ids": [
+        "entity:b110ba938657e8aaf132"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "幅频特性",
+      "target_entity_id": "entity:bd80915d7efa04f8d021",
+      "source_entity_ids": [
+        "entity:bd80915d7efa04f8d021"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "附加相移",
+      "target_entity_id": "entity:6dc5700e09912300c7d4",
+      "source_entity_ids": [
+        "entity:6dc5700e09912300c7d4",
+        "entity:1720fb67a27f21ec0f94"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "物理过程与效应",
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "密勒定理",
+      "target_entity_id": "entity:6dc3e1972497a9416a1c",
+      "source_entity_ids": [
+        "entity:6dc3e1972497a9416a1c",
+        "entity:2a80fc4f961692139514"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "方法与模型",
+        "物理定律与原理"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "截止频率",
+      "target_entity_id": "entity:ef99c2616a578cfa861a",
+      "source_entity_ids": [
+        "entity:ef99c2616a578cfa861a"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "特征频率",
+      "target_entity_id": "entity:e2cbccc32be10d61ac60",
+      "source_entity_ids": [
+        "entity:e2cbccc32be10d61ac60"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "极间电容",
+      "target_entity_id": "entity:27c86fe106cc82ecf5fa",
+      "source_entity_ids": [
+        "entity:0fa1b8bb0878a7786565",
+        "entity:27c86fe106cc82ecf5fa"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量",
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "输入回路时间常数",
+      "target_entity_id": "entity:bcdd3727e8883847b737",
+      "source_entity_ids": [
+        "entity:bcdd3727e8883847b737"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "信号源内阻",
+      "target_entity_id": "entity:f653620740cb7e886987",
+      "source_entity_ids": [
+        "entity:f653620740cb7e886987",
+        "entity:e2a3234bc9a0b181c295"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "参数与物理量",
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "单管共射放大电路",
+      "target_entity_id": "entity:50e41b25d5c5986ff291",
+      "source_entity_ids": [
+        "entity:50e41b25d5c5986ff291"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "传输函数",
+      "target_entity_id": "entity:98a0187ef0aa2a7da88a",
+      "source_entity_ids": [
+        "entity:60c0bd05fc827674cda0",
+        "entity:98a0187ef0aa2a7da88a"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "课程概念",
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "幅频响应",
+      "target_entity_id": "entity:b560961359d0f70d2834",
+      "source_entity_ids": [
+        "entity:b560961359d0f70d2834"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "上限截止频率",
+      "target_entity_id": "entity:0593ea8ed451083bbf12",
+      "source_entity_ids": [
+        "entity:0593ea8ed451083bbf12"
+      ],
+      "source_rows": 7,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "高通滤波器",
+      "target_entity_id": "entity:fc41677a6a5063e9ee7b",
+      "source_entity_ids": [
+        "entity:fc41677a6a5063e9ee7b"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "时间常数",
+      "target_entity_id": "entity:f844f226f06d8517a31d",
+      "source_entity_ids": [
+        "entity:f844f226f06d8517a31d"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "下限截止频率",
+      "target_entity_id": "entity:868bd8637c347790eb08",
+      "source_entity_ids": [
+        "entity:868bd8637c347790eb08"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "等效电路",
+      "target_entity_id": "entity:bee06490f2351e8e0f53",
+      "source_entity_ids": [
+        "entity:bee06490f2351e8e0f53",
+        "entity:9c513ea04c151defcba6"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统",
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "带宽",
+      "target_entity_id": "entity:810478253018e4caf748",
+      "source_entity_ids": [
+        "entity:810478253018e4caf748"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "密勒效应",
+      "target_entity_id": "entity:7ad41f8f42141b18b793",
+      "source_entity_ids": [
+        "entity:7ad41f8f42141b18b793"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "上限截止角频率",
+      "target_entity_id": "entity:f07f0d05e94d62c080d1",
+      "source_entity_ids": [
+        "entity:f07f0d05e94d62c080d1"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "反馈放大电路",
+      "target_entity_id": "entity:568d69f915902ccda574",
+      "source_entity_ids": [
+        "entity:568d69f915902ccda574"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "反馈网络",
+      "target_entity_id": "entity:57c9b64d1197a252e1d7",
+      "source_entity_ids": [
+        "entity:57c9b64d1197a252e1d7"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "正负反馈",
+      "target_entity_id": "entity:969c4b482ff0c34fe886",
+      "source_entity_ids": [
+        "entity:969c4b482ff0c34fe886"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "闭环增益",
+      "target_entity_id": "entity:e3dbf28d66b04b213459",
+      "source_entity_ids": [
+        "entity:e3dbf28d66b04b213459"
+      ],
+      "source_rows": 8,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "开环增益",
+      "target_entity_id": "entity:b5ffbabe0920e49e68f8",
+      "source_entity_ids": [
+        "entity:b5ffbabe0920e49e68f8"
+      ],
+      "source_rows": 7,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "互阻增益",
+      "target_entity_id": "entity:2b6127b2bf722e825ae5",
+      "source_entity_ids": [
+        "entity:2b6127b2bf722e825ae5"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "电压取样",
+      "target_entity_id": "entity:bc1e6a318d892059a2f7",
+      "source_entity_ids": [
+        "entity:bc1e6a318d892059a2f7"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "电流取样",
+      "target_entity_id": "entity:054bd2c8ad32462483ad",
+      "source_entity_ids": [
+        "entity:054bd2c8ad32462483ad"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "瞬时极性法",
+      "target_entity_id": "entity:e0bd73f18f9aa0b01f13",
+      "source_entity_ids": [
+        "entity:e0bd73f18f9aa0b01f13"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "两级放大电路",
+      "target_entity_id": "entity:29e8951271e115ba2f31",
+      "source_entity_ids": [
+        "entity:29e8951271e115ba2f31"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "电压串联负反馈",
+      "target_entity_id": "entity:1387dc297a092fd10ac8",
+      "source_entity_ids": [
+        "entity:1387dc297a092fd10ac8",
+        "entity:91b58f8fe709fb180f51",
+        "entity:17e83cb3f5870aa66321"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "电路与系统",
+        "课程概念",
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "电压并联负反馈",
+      "target_entity_id": "entity:f885bab632f5523edce3",
+      "source_entity_ids": [
+        "entity:f885bab632f5523edce3",
+        "entity:e31b4eca0eecc462952f"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统",
+        "方法与模型"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "负载效应",
+      "target_entity_id": "entity:91c50d81bb50716905b4",
+      "source_entity_ids": [
+        "entity:91c50d81bb50716905b4"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "反馈深度",
+      "target_entity_id": "entity:2857eb937c29165a40d9",
+      "source_entity_ids": [
+        "entity:2857eb937c29165a40d9",
+        "entity:c32145fa5c1a5db512de"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "参数与物理量",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "反馈系数",
+      "target_entity_id": "entity:a46af18dac428fdbf7be",
+      "source_entity_ids": [
+        "entity:a46af18dac428fdbf7be"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "深度负反馈",
+      "target_entity_id": "entity:b537b8136c94faf0ba33",
+      "source_entity_ids": [
+        "entity:1c192e3bbce5a1d5bc03",
+        "entity:b537b8136c94faf0ba33",
+        "entity:abc4861c28cf5d2451b2"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "课程概念",
+        "方法与模型",
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "环路增益",
+      "target_entity_id": "entity:d067d0752576cb742d47",
+      "source_entity_ids": [
+        "entity:d067d0752576cb742d47"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "自激振荡",
+      "target_entity_id": "entity:c524a4d9b68d014e8c9f",
+      "source_entity_ids": [
+        "entity:c524a4d9b68d014e8c9f"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "正反馈",
+      "target_entity_id": "entity:7545d349789a2d501887",
+      "source_entity_ids": [
+        "entity:4ab38bbd75a90e7076cc",
+        "entity:699cf157324a9cc8b063",
+        "entity:7545d349789a2d501887"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "课程概念",
+        "方法与模型",
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "相位裕度",
+      "target_entity_id": "entity:24aabd898cc486bc5f81",
+      "source_entity_ids": [
+        "entity:24aabd898cc486bc5f81"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "主极点",
+      "target_entity_id": "entity:9a21757c10ea9f877948",
+      "source_entity_ids": [
+        "entity:9a21757c10ea9f877948"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "运放",
+      "target_entity_id": "entity:0edce1930558eb42a2eb",
+      "source_entity_ids": [
+        "entity:0edce1930558eb42a2eb"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "补偿电容",
+      "target_entity_id": "entity:d3dc9ccc7bd73b41020f",
+      "source_entity_ids": [
+        "entity:d3dc9ccc7bd73b41020f"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "交流负反馈",
+      "target_entity_id": "entity:b1690ee068879203e830",
+      "source_entity_ids": [
+        "entity:b1690ee068879203e830"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "调零电路",
+      "target_entity_id": "entity:55c7ed60e12429060efb",
+      "source_entity_ids": [
+        "entity:55c7ed60e12429060efb"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "同相输入端",
+      "target_entity_id": "entity:383e854414e5b3334f38",
+      "source_entity_ids": [
+        "entity:383e854414e5b3334f38"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "反相输入端",
+      "target_entity_id": "entity:0337df5fc6d243ba5b3e",
+      "source_entity_ids": [
+        "entity:0337df5fc6d243ba5b3e"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "差模输入电压",
+      "target_entity_id": "entity:1dd09625cf569ba9f3f5",
+      "source_entity_ids": [
+        "entity:1dd09625cf569ba9f3f5"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "开环差模电压增益",
+      "target_entity_id": "entity:e480c24325ee96b36bd8",
+      "source_entity_ids": [
+        "entity:e480c24325ee96b36bd8"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "差模输入电阻",
+      "target_entity_id": "entity:4e4c6fa476017d972fe0",
+      "source_entity_ids": [
+        "entity:4e4c6fa476017d972fe0"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "失调电流",
+      "target_entity_id": "entity:355c30b5e3de0f472ebf",
+      "source_entity_ids": [
+        "entity:355c30b5e3de0f472ebf"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "输入偏置电流",
+      "target_entity_id": "entity:c0cd05dbba5872fbf4c2",
+      "source_entity_ids": [
+        "entity:c0cd05dbba5872fbf4c2"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "非线性区",
+      "target_entity_id": "entity:a0e4e525e874cd7248f6",
+      "source_entity_ids": [
+        "entity:a0e4e525e874cd7248f6"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "虚短",
+      "target_entity_id": "entity:798b38efa37e79b873de",
+      "source_entity_ids": [
+        "entity:798b38efa37e79b873de"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "虚断",
+      "target_entity_id": "entity:a2690029d35e09b7def2",
+      "source_entity_ids": [
+        "entity:a2690029d35e09b7def2"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "同相放大电路",
+      "target_entity_id": "entity:d45a6c5e42ca42e0be5f",
+      "source_entity_ids": [
+        "entity:d45a6c5e42ca42e0be5f"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "转换速率",
+      "target_entity_id": "entity:8ff1e302684026c0034c",
+      "source_entity_ids": [
+        "entity:8ff1e302684026c0034c"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "集成运放",
+      "target_entity_id": "entity:64fedf3886e4622139ea",
+      "source_entity_ids": [
+        "entity:64fedf3886e4622139ea",
+        "entity:924293ed94563ce4fb12"
+      ],
+      "source_rows": 7,
+      "type_variants": [
+        "电路与系统",
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "单位增益带宽",
+      "target_entity_id": "entity:67cfab4af9a063c2c86e",
+      "source_entity_ids": [
+        "entity:67cfab4af9a063c2c86e"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "虚地",
+      "target_entity_id": "entity:a2aed8c6297cbf4bf8e2",
+      "source_entity_ids": [
+        "entity:a2aed8c6297cbf4bf8e2"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "电压跟随器",
+      "target_entity_id": "entity:e29fd9157c7449ef7ba4",
+      "source_entity_ids": [
+        "entity:e29fd9157c7449ef7ba4"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "反相放大电路",
+      "target_entity_id": "entity:9a4a1c0634deda5e71e0",
+      "source_entity_ids": [
+        "entity:9a4a1c0634deda5e71e0"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "反相放大器",
+      "target_entity_id": "entity:28c8b1bf57f4473b2ef3",
+      "source_entity_ids": [
+        "entity:28c8b1bf57f4473b2ef3"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "开环带宽",
+      "target_entity_id": "entity:f061a9406e4acf5274b6",
+      "source_entity_ids": [
+        "entity:f061a9406e4acf5274b6"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "运算电路",
+      "target_entity_id": "entity:85f8847c59a0326fa230",
+      "source_entity_ids": [
+        "entity:85f8847c59a0326fa230"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "二象限模拟乘法器",
+      "target_entity_id": "entity:bb9f3f20ee13ee3210c0",
+      "source_entity_ids": [
+        "entity:bb9f3f20ee13ee3210c0"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "滤波器",
+      "target_entity_id": "entity:70165720a4cfce385f78",
+      "source_entity_ids": [
+        "entity:70165720a4cfce385f78"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "低通滤波器",
+      "target_entity_id": "entity:ab06c6bd07d7264c9403",
+      "source_entity_ids": [
+        "entity:ab06c6bd07d7264c9403"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "通带增益",
+      "target_entity_id": "entity:5d1ec871a6447bd65397",
+      "source_entity_ids": [
+        "entity:5d1ec871a6447bd65397"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "品质因数",
+      "target_entity_id": "entity:678afd97ebcc27f23328",
+      "source_entity_ids": [
+        "entity:678afd97ebcc27f23328"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "滞回比较器",
+      "target_entity_id": "entity:b6f10a6fdaedfb7f828c",
+      "source_entity_ids": [
+        "entity:b6f10a6fdaedfb7f828c"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "电压传输特性",
+      "target_entity_id": "entity:9fa64d75f2c38fe62bc8",
+      "source_entity_ids": [
+        "entity:9fa64d75f2c38fe62bc8"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "高电平",
+      "target_entity_id": "entity:e447905986501f0c425e",
+      "source_entity_ids": [
+        "entity:e447905986501f0c425e"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "低电平",
+      "target_entity_id": "entity:79f4bff9390e42d6bb17",
+      "source_entity_ids": [
+        "entity:79f4bff9390e42d6bb17"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "积分电路",
+      "target_entity_id": "entity:ebe25353dcdd5e79e2af",
+      "source_entity_ids": [
+        "entity:ebe25353dcdd5e79e2af"
+      ],
+      "source_rows": 5,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "方波",
+      "target_entity_id": "entity:74b70aa113923603c4b1",
+      "source_entity_ids": [
+        "entity:74b70aa113923603c4b1",
+        "entity:fdc245002031d2b3ced3"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "参数与物理量",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "波形产生与处理电路",
+      "target_entity_id": "entity:183e12619c5d31a9f72b",
+      "source_entity_ids": [
+        "entity:183e12619c5d31a9f72b"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "门电路",
+      "target_entity_id": "entity:9418664b7c83271fe3ac",
+      "source_entity_ids": [
+        "entity:9418664b7c83271fe3ac",
+        "entity:550c12f793a118c2f234"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统",
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "双稳态触发器",
+      "target_entity_id": "entity:3ace081a809a421a6daa",
+      "source_entity_ids": [
+        "entity:3ace081a809a421a6daa"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "单稳态触发器",
+      "target_entity_id": "entity:3d8063455f0aed0677c9",
+      "source_entity_ids": [
+        "entity:3d8063455f0aed0677c9"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "施密特触发器",
+      "target_entity_id": "entity:ede033148f17ea6b1c0a",
+      "source_entity_ids": [
+        "entity:ede033148f17ea6b1c0a"
+      ],
+      "source_rows": 8,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "多谐振荡器",
+      "target_entity_id": "entity:cc40590a01134ac08997",
+      "source_entity_ids": [
+        "entity:cc40590a01134ac08997"
+      ],
+      "source_rows": 6,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "矩形脉冲",
+      "target_entity_id": "entity:6d81e19bfffc580bcb8b",
+      "source_entity_ids": [
+        "entity:a0c8ecc1f947e903e57a",
+        "entity:6d81e19bfffc580bcb8b"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "课程概念",
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "三角波发生器",
+      "target_entity_id": "entity:b2fe7d171099da0742c5",
+      "source_entity_ids": [
+        "entity:b2fe7d171099da0742c5"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "锯齿波",
+      "target_entity_id": "entity:cd31c4f7d8920e697cff",
+      "source_entity_ids": [
+        "entity:cd31c4f7d8920e697cff"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "非正弦波",
+      "target_entity_id": "entity:b144cbb26597e8f1c014",
+      "source_entity_ids": [
+        "entity:b144cbb26597e8f1c014"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "上升时间",
+      "target_entity_id": "entity:934cf21c393ce875757d",
+      "source_entity_ids": [
+        "entity:934cf21c393ce875757d"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "下降时间",
+      "target_entity_id": "entity:988c403d0bcfae9247e0",
+      "source_entity_ids": [
+        "entity:988c403d0bcfae9247e0"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "周期",
+      "target_entity_id": "entity:83d768feaada74c429aa",
+      "source_entity_ids": [
+        "entity:83d768feaada74c429aa"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "开通时间",
+      "target_entity_id": "entity:f498edf9c3376c4415b7",
+      "source_entity_ids": [
+        "entity:f498edf9c3376c4415b7"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "脉冲信号",
+      "target_entity_id": "entity:bf814f7b7d3042fb1888",
+      "source_entity_ids": [
+        "entity:bf814f7b7d3042fb1888",
+        "entity:c14527f0ed4788e7d392"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "定时电路",
+      "target_entity_id": "entity:f329ee241c17c957c9f6",
+      "source_entity_ids": [
+        "entity:f329ee241c17c957c9f6"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "稳态",
+      "target_entity_id": "entity:6ca212850281c35a1e13",
+      "source_entity_ids": [
+        "entity:3e68db8adb6a2a85a424",
+        "entity:6ca212850281c35a1e13"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念",
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "暂稳态",
+      "target_entity_id": "entity:c1956281462ded12f779",
+      "source_entity_ids": [
+        "entity:7aef909eb0ba17dab0dd",
+        "entity:c1956281462ded12f779"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "课程概念",
+        "物理过程与效应"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "触发脉冲",
+      "target_entity_id": "entity:f31c5e4cde8adbdcb491",
+      "source_entity_ids": [
+        "entity:f31c5e4cde8adbdcb491"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "RS触发器",
+      "target_entity_id": "entity:c10d08c1008cbc5c6df7",
+      "source_entity_ids": [
+        "entity:c10d08c1008cbc5c6df7"
+      ],
+      "source_rows": 4,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "微分型单稳态触发器",
+      "target_entity_id": "entity:ce4610faee822568dcda",
+      "source_entity_ids": [
+        "entity:ce4610faee822568dcda"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "振荡频率",
+      "target_entity_id": "entity:61c770a3c3408501815b",
+      "source_entity_ids": [
+        "entity:61c770a3c3408501815b"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "三角波",
+      "target_entity_id": "entity:4d4155505f0c868d48df",
+      "source_entity_ids": [
+        "entity:4d4155505f0c868d48df"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "课程概念"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "方波发生器",
+      "target_entity_id": "entity:0853902a198e18198cc1",
+      "source_entity_ids": [
+        "entity:0853902a198e18198cc1"
+      ],
+      "source_rows": 3,
+      "type_variants": [
+        "电路与系统"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "振荡周期",
+      "target_entity_id": "entity:95727e6ddad9bca50e24",
+      "source_entity_ids": [
+        "entity:95727e6ddad9bca50e24"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "参数与物理量"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "放电管",
+      "target_entity_id": "entity:8290be93fb90c3ba61ee",
+      "source_entity_ids": [
+        "entity:8290be93fb90c3ba61ee"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "比较器",
+      "target_entity_id": "entity:08bff8b638dd6f2db648",
+      "source_entity_ids": [
+        "entity:08bff8b638dd6f2db648",
+        "entity:734f19932634e95afa39"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "电路与系统",
+        "器件与元件"
+      ]
+    },
+    {
+      "action": "merge_exact_canonical_name",
+      "label": "PSpice",
+      "target_entity_id": "entity:ffe37e0b678e27d44a55",
+      "source_entity_ids": [
+        "entity:ffe37e0b678e27d44a55",
+        "entity:b9a1e4280d722a4d3e7c"
+      ],
+      "source_rows": 2,
+      "type_variants": [
+        "方法与模型",
+        "课程概念"
+      ]
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "晶体管",
+      "removed_from": "entity:5ef549d7e955127e0126",
+      "canonical_owner": "entity:0597d9590486eb1684bc"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "自由电子",
+      "removed_from": "entity:680eb700b7465d39a91e",
+      "canonical_owner": "entity:4a4ac7c073e1582af5be"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "空穴",
+      "removed_from": "entity:680eb700b7465d39a91e",
+      "canonical_owner": "entity:75d1e304fe8456449e96"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "基本共射放大电路",
+      "removed_from": "entity:db7a99f4fa736215cb41",
+      "canonical_owner": "entity:4827d9f6f8ebb1131645"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "差动放大电路",
+      "removed_from": "entity:b98f1db2e6491ef6e26e",
+      "canonical_owner": "entity:ff61e21cae03c2a1068f"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "差放",
+      "removed_from": "entity:b98f1db2e6491ef6e26e",
+      "canonical_owner": "entity:25f0a4ee909bd205e192"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "功放",
+      "removed_from": "entity:a402eab67d3909faceab",
+      "canonical_owner": "entity:79e4599c680ac5636527"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "JFET",
+      "removed_from": "entity:0d7f05a542de37ba9d64",
+      "canonical_owner": "entity:a412abfe3286e2c5e987"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "VDMOS",
+      "removed_from": "entity:0d7f05a542de37ba9d64",
+      "canonical_owner": "entity:3c2db55abadf69c0ca74"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "运放",
+      "removed_from": "entity:98c6d5ea6137ba471bf8",
+      "canonical_owner": "entity:0edce1930558eb42a2eb"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "OrCAD",
+      "removed_from": "entity:b54483c09b5cac36d8d5",
+      "canonical_owner": "entity:17c0daa5a28e8b7e317b"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "PSpice",
+      "removed_from": "entity:b54483c09b5cac36d8d5",
+      "canonical_owner": "entity:ffe37e0b678e27d44a55"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "N型半导体",
+      "removed_from": "entity:db7b195a41a24c7db91e",
+      "canonical_owner": "entity:1cc506d2714efd563f5f"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "P型半导体",
+      "removed_from": "entity:db7b195a41a24c7db91e",
+      "canonical_owner": "entity:fba7e809ab95561864b1"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "二极管",
+      "removed_from": "entity:5ec1e5b06ba344ec9630",
+      "canonical_owner": "entity:79b90d8a35c3329441ce"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "耗尽层",
+      "removed_from": "entity:9d851062dac892ea232e",
+      "canonical_owner": "entity:13c613ce7a6645627578"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "正向偏置",
+      "removed_from": "entity:c60ec0045b2634a81a08",
+      "canonical_owner": "entity:3bdb913216bebacf377d"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "反向偏置",
+      "removed_from": "entity:cc40c88daf1fea996959",
+      "canonical_owner": "entity:71e6f87300045d2c4425"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "PN结",
+      "removed_from": "entity:d58291e7d4ddf2ba4855",
+      "canonical_owner": "entity:261751bb82bf40be1a3a"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "稳压电路",
+      "removed_from": "entity:7653d586893be006c74c",
+      "canonical_owner": "entity:20d3e81713b3727e7fb2"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "静态工作点",
+      "removed_from": "entity:f94303567216fccd974f",
+      "canonical_owner": "entity:036996a429523cb8b058"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "输入阻抗",
+      "removed_from": "entity:ad1411368ed1d35c0f29",
+      "canonical_owner": "entity:804bd5fcb5e6bda02cef"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "输出阻抗",
+      "removed_from": "entity:d1adebbb43c064ab99ca",
+      "canonical_owner": "entity:cc60bebe8baa65281943"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "饱和失真",
+      "removed_from": "entity:f981359a47008bb13cd9",
+      "canonical_owner": "entity:fad35b759829b9277d20"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "截止失真",
+      "removed_from": "entity:f981359a47008bb13cd9",
+      "canonical_owner": "entity:c76a0bdeeaf0d80ce5e5"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "威尔逊电流源",
+      "removed_from": "entity:43a622dc080eab8f70de",
+      "canonical_owner": "entity:319dda9855e963b59860"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "直流通路",
+      "removed_from": "entity:bc6e163301ec4f9c00ae",
+      "canonical_owner": "entity:9ca4e05d7e31c11cfd7c"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "交流通路",
+      "removed_from": "entity:bc6e163301ec4f9c00ae",
+      "canonical_owner": "entity:f52fbb8333efdbefb92b"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "偏置电流",
+      "removed_from": "entity:4adefa5d45e1942f58a5",
+      "canonical_owner": "entity:beb95d1b9958d60bf115"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "共基电路",
+      "removed_from": "entity:658939007cb8373326e0",
+      "canonical_owner": "entity:c403b877c060df3a67e6"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "增益",
+      "removed_from": "entity:3facc376f1dbd5139335",
+      "canonical_owner": "entity:925027a038d708dc73fc"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "带宽",
+      "removed_from": "entity:1257f73de16e7e99e15b",
+      "canonical_owner": "entity:810478253018e4caf748"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "等效电路",
+      "removed_from": "entity:46c5ff95d74f34c60c92",
+      "canonical_owner": "entity:bee06490f2351e8e0f53"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "静态电流",
+      "removed_from": "entity:beb95d1b9958d60bf115",
+      "canonical_owner": "entity:3bea4e49879f66861a1b"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "偏置电路",
+      "removed_from": "entity:b874172d446b795cf6b2",
+      "canonical_owner": "entity:885813fb2ab1d68554b9"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "差放",
+      "removed_from": "entity:ff61e21cae03c2a1068f",
+      "canonical_owner": "entity:25f0a4ee909bd205e192"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "失调电压",
+      "removed_from": "entity:7549dcd2613618dacd50",
+      "canonical_owner": "entity:24c9c2fee68ebcb811a8"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "失调电流",
+      "removed_from": "entity:7549dcd2613618dacd50",
+      "canonical_owner": "entity:355c30b5e3de0f472ebf"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "温度漂移",
+      "removed_from": "entity:c25278121fc60faf5e8f",
+      "canonical_owner": "entity:3923f16df9007fbef7e3"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "功率放大器",
+      "removed_from": "entity:79e4599c680ac5636527",
+      "canonical_owner": "entity:59e88fcfad3b41236eee"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "差分放大电路",
+      "removed_from": "entity:27558b803c75b1e3c8c7",
+      "canonical_owner": "entity:b98f1db2e6491ef6e26e"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "带宽",
+      "removed_from": "entity:9b512c36c2b0e22d07a0",
+      "canonical_owner": "entity:810478253018e4caf748"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "频带",
+      "removed_from": "entity:9b512c36c2b0e22d07a0",
+      "canonical_owner": "entity:1257f73de16e7e99e15b"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "MOS管",
+      "removed_from": "entity:c1c628a0ed83ae69e5ec",
+      "canonical_owner": "entity:aeafefa2e4821fb95960"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "二氧化硅绝缘层",
+      "removed_from": "entity:8d1149a32513c8c9b9c6",
+      "canonical_owner": "entity:b72a0d2bfa97e2c7793e"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "导电沟道",
+      "removed_from": "entity:6c66f2643cada7c47e1a",
+      "canonical_owner": "entity:97cdf25745d16e75d31f"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "JFET",
+      "removed_from": "entity:43f68da4db48091741fb",
+      "canonical_owner": "entity:a412abfe3286e2c5e987"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "VDMOS",
+      "removed_from": "entity:1ff3221f08a73b6cfc72",
+      "canonical_owner": "entity:3c2db55abadf69c0ca74"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "结型场效应管",
+      "removed_from": "entity:a412abfe3286e2c5e987",
+      "canonical_owner": "entity:43f68da4db48091741fb"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "输入失调电压",
+      "removed_from": "entity:24c9c2fee68ebcb811a8",
+      "canonical_owner": "entity:de87a4d53960603badc5"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "线性范围",
+      "removed_from": "entity:2e70b4f64c0bffb9c9ac",
+      "canonical_owner": "entity:e1d1ed9cbeb0af8f6a8a"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "传输函数",
+      "removed_from": "entity:7698477a6a00db3bcdcb",
+      "canonical_owner": "entity:98a0187ef0aa2a7da88a"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "下限截止频率",
+      "removed_from": "entity:10bf2a6e8ea362e503cd",
+      "canonical_owner": "entity:868bd8637c347790eb08"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "小信号模型",
+      "removed_from": "entity:8bb3bbf8f1c9a7ee3605",
+      "canonical_owner": "entity:5bfa5153bc914a7d871e"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "频率",
+      "removed_from": "entity:1bdfa145baab22d92050",
+      "canonical_owner": "entity:4af1b7592546357ca730"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "工作频率",
+      "removed_from": "entity:4839a5bf1410123922e8",
+      "canonical_owner": "entity:1bdfa145baab22d92050"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "RC电路",
+      "removed_from": "entity:a7bd04d2108fedd941f5",
+      "canonical_owner": "entity:50d0f247dbf6d419d2a8"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "波特图",
+      "removed_from": "entity:e4c3ee761a842bc1cccf",
+      "canonical_owner": "entity:b110ba938657e8aaf132"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "上限截止频率",
+      "removed_from": "entity:f07f0d05e94d62c080d1",
+      "canonical_owner": "entity:0593ea8ed451083bbf12"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "正反馈",
+      "removed_from": "entity:969c4b482ff0c34fe886",
+      "canonical_owner": "entity:7545d349789a2d501887"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "负反馈",
+      "removed_from": "entity:969c4b482ff0c34fe886",
+      "canonical_owner": "entity:badd2d10a247f33fa2ef"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "直流反馈",
+      "removed_from": "entity:734aca867c915d3116b0",
+      "canonical_owner": "entity:c5083a410bf6c1071cb5"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "交流反馈",
+      "removed_from": "entity:734aca867c915d3116b0",
+      "canonical_owner": "entity:7cb428f9a4d67928ae69"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "OrCAD",
+      "removed_from": "entity:724df9f156ba3d7be7fa",
+      "canonical_owner": "entity:17c0daa5a28e8b7e317b"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "自激振荡",
+      "removed_from": "entity:8162827666b710eff9c4",
+      "canonical_owner": "entity:c524a4d9b68d014e8c9f"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "集成运放",
+      "removed_from": "entity:0edce1930558eb42a2eb",
+      "canonical_owner": "entity:64fedf3886e4622139ea"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "集成运放",
+      "removed_from": "entity:28cd4c40480bd0a4ac51",
+      "canonical_owner": "entity:64fedf3886e4622139ea"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "同相放大器",
+      "removed_from": "entity:d45a6c5e42ca42e0be5f",
+      "canonical_owner": "entity:b8e062006794fb25722c"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "运放",
+      "removed_from": "entity:64fedf3886e4622139ea",
+      "canonical_owner": "entity:0edce1930558eb42a2eb"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "运算放大器",
+      "removed_from": "entity:64fedf3886e4622139ea",
+      "canonical_owner": "entity:15fb8e4eb096501359af"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "差分放大器",
+      "removed_from": "entity:25f0a4ee909bd205e192",
+      "canonical_owner": "entity:e7de71104507dcf99685"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "开环增益",
+      "removed_from": "entity:8cedf51c32f16dc31c37",
+      "canonical_owner": "entity:b5ffbabe0920e49e68f8"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "有源滤波器",
+      "removed_from": "entity:70165720a4cfce385f78",
+      "canonical_owner": "entity:d415649784f6d8356537"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "施密特触发器",
+      "removed_from": "entity:b6f10a6fdaedfb7f828c",
+      "canonical_owner": "entity:ede033148f17ea6b1c0a"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "振荡周期",
+      "removed_from": "entity:83d768feaada74c429aa",
+      "canonical_owner": "entity:95727e6ddad9bca50e24"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "空间电荷区",
+      "removed_from": "entity:d64bd088ff51b0f5c353",
+      "canonical_owner": "entity:9d851062dac892ea232e"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "逻辑非门",
+      "removed_from": "entity:de78839ccb1287a0ca5f",
+      "canonical_owner": "entity:9cf40d60f0fa988b49e8"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "施密特触发器",
+      "removed_from": "entity:486f1ff684be357ee240",
+      "canonical_owner": "entity:ede033148f17ea6b1c0a"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "充电时间常数",
+      "removed_from": "entity:c1519f26fe67e7735ea5",
+      "canonical_owner": "entity:bcdc188bf2a989590702"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "RS触发器",
+      "removed_from": "entity:91ecd0f9bed87f7aa6f1",
+      "canonical_owner": "entity:c10d08c1008cbc5c6df7"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "输出脉宽",
+      "removed_from": "entity:7ad126bd62bbda7083cd",
+      "canonical_owner": "entity:a54cfb9a52fe29fb804f"
+    },
+    {
+      "action": "remove_alias_owned_as_canonical_name",
+      "label": "SPICE",
+      "removed_from": "entity:ffe37e0b678e27d44a55",
+      "canonical_owner": "entity:0671f5568a827318c78b"
+    },
+    {
+      "action": "assign_shared_alias_to_best_supported_entity",
+      "label": "BJT",
+      "removed_from": "entity:cb5d0b1deab3147ba86e",
+      "retained_by": "entity:5ef549d7e955127e0126"
+    },
+    {
+      "action": "assign_shared_alias_to_best_supported_entity",
+      "label": "p-n 结",
+      "removed_from": "entity:c929c199075a4cbcdd5d",
+      "retained_by": "entity:261751bb82bf40be1a3a"
+    },
+    {
+      "action": "assign_shared_alias_to_best_supported_entity",
+      "label": "IGBT",
+      "removed_from": "entity:0d7f05a542de37ba9d64",
+      "retained_by": "entity:a3c6057340e1233612f1"
+    },
+    {
+      "action": "assign_shared_alias_to_best_supported_entity",
+      "label": "FET",
+      "removed_from": "entity:0d7f05a542de37ba9d64",
+      "retained_by": "entity:41fe82bd5bc835cb2b27"
+    },
+    {
+      "action": "assign_shared_alias_to_best_supported_entity",
+      "label": "双向限幅电路",
+      "removed_from": "entity:674732be30e63cb63c89",
+      "retained_by": "entity:f7948ecf5f6bbf437ea0"
+    },
+    {
+      "action": "assign_shared_alias_to_best_supported_entity",
+      "label": "Q点",
+      "removed_from": "entity:f94303567216fccd974f",
+      "retained_by": "entity:036996a429523cb8b058"
+    },
+    {
+      "action": "assign_shared_alias_to_best_supported_entity",
+      "label": "NPN管",
+      "removed_from": "entity:93982a90b73128331842",
+      "retained_by": "entity:e11c8b1187aa9ddce0c6"
+    },
+    {
+      "action": "assign_shared_alias_to_best_supported_entity",
+      "label": "共射",
+      "removed_from": "entity:f874c8c89c69d27c9ced",
+      "retained_by": "entity:a831a331aa985c27adfc"
+    },
+    {
+      "action": "assign_shared_alias_to_best_supported_entity",
+      "label": "共集",
+      "removed_from": "entity:7cadc455fe24ffa3a984",
+      "retained_by": "entity:d3b8f721236567f83f76"
+    },
+    {
+      "action": "assign_shared_alias_to_best_supported_entity",
+      "label": "共基",
+      "removed_from": "entity:12f6f99d24276e3debb4",
+      "retained_by": "entity:c403b877c060df3a67e6"
+    },
+    {
+      "action": "assign_shared_alias_to_best_supported_entity",
+      "label": "NJFET",
+      "removed_from": "entity:db3b9a58f62176a77abb",
+      "retained_by": "entity:97d8d8f0255245598063"
+    },
+    {
+      "action": "assign_shared_alias_to_best_supported_entity",
+      "label": "PJFET",
+      "removed_from": "entity:db3b9a58f62176a77abb",
+      "retained_by": "entity:a14728db5d2954aa0c7f"
+    },
+    {
+      "action": "assign_shared_alias_to_best_supported_entity",
+      "label": "反相器",
+      "removed_from": "entity:39c05c67cc128fa91833",
+      "retained_by": "entity:98a78f1504bf96678820"
+    }
+  ]
+}

@@ -36,3 +36,17 @@ data/neo4j/
 RAG_Resources/knowledge_bases/*/
 data/vector_stores/
 data/homework/
+
+# Publish the validated Schema 4 "电子电路" snapshot, while keeping every
+# other generated vector store local. Historical backups and build logs are
+# intentionally excluded from the snapshot.
+!data/vector_stores/
+data/vector_stores/*
+!data/vector_stores/kb-mrtgvd45-nw4rim1/
+!data/vector_stores/kb-mrtgvd45-nw4rim1/**
+data/vector_stores/kb-mrtgvd45-nw4rim1/backups/
+data/vector_stores/kb-mrtgvd45-nw4rim1/artifacts-archived-*/
+data/vector_stores/kb-mrtgvd45-nw4rim1/*.log
+data/vector_stores/kb-mrtgvd45-nw4rim1/*.tmp
+data/vector_stores/kb-mrtgvd45-nw4rim1/*.before-*
+data/vector_stores/kb-mrtgvd45-nw4rim1/*.local-before-api.*
