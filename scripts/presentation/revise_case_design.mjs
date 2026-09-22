@@ -7,7 +7,7 @@ import {createRequire} from 'node:module';
 const root=process.cwd();
 const runtime=process.env.CASE_RUNTIME_MODULES || 'C:/Users/86151/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules';
 process.env.RUNTIME_NODE_MODULES ||= runtime;
-const skill='C:/Users/86151/.codex/plugins/cache/openai-primary-runtime/presentations/26.909.61513/skills/presentations';
+const skill='C:/Users/86151/.codex/plugins/cache/openai-primary-runtime/presentations/26.904.11930/skills/presentations';
 const require=createRequire(path.join(runtime,'case_revision.cjs'));
 const sharp=require('sharp');
 const {Presentation,PresentationFile,FileBlob}=await import(pathToFileURL(path.join(runtime,'@oai/artifact-tool/dist/artifact_tool.mjs')));
@@ -96,7 +96,17 @@ if(process.argv.includes('--framework-preview')){
  if(subtitle){subtitle.text='镜像电流源工作原理';subtitle.text.style={typeface:'微软雅黑',fontSize:23,color:C.grey,alignment:'right',verticalAlignment:'middle',wrap:'none',autoFit:'none',insets:{left:0,right:0,top:0,bottom:0}};}
  // The user's final selection is the complete generated lecture page.
  // Embed the exact selected PNG, with its full content and original aspect ratio.
- await pic(s,path.join(assets,'mirror-selected-page.png'),43,489,572,187,'用户选定的完整基本镜像电流源讲解页：电路拓扑、镜像原理与线性工作区约束');
+ await pic(s,path.join(assets,'mirror-selected-page.png'),45,489,332,187,'用户选定的完整基本镜像电流源讲解页：电路拓扑、镜像原理与线性工作区约束');
+ const explanationPoints=[
+  ['电路拓扑','标清参考与输出支路'],
+  ['镜像机理','关联电路结构与公式'],
+  ['工作边界','提示放大区工作条件'],
+ ];
+ explanationPoints.forEach(([heading,body],i)=>{
+  const y=492+i*62;
+  text(s,heading,392,y,220,28,25,C.navy,true);
+  text(s,body,392,y+29,220,28,24,C.grey);
+ });
  await sharp(path.join(build,'mistakes-full.png')).extract({left:295,top:346,width:440,height:53}).png().toFile(path.join(assets,'mistake-knowledge.png'));
  await sharp(path.join(build,'planning-new-full.png')).extract({left:318,top:309,width:638,height:78}).png().toFile(path.join(assets,'planning-mastered.png'));
  text(s,'错题依据',674,491,105,27,24,C.navy,true);
