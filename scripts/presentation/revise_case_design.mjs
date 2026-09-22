@@ -98,9 +98,9 @@ if(process.argv.includes('--framework-preview')){
  // Embed the exact selected PNG, with its full content and original aspect ratio.
  await pic(s,path.join(assets,'mirror-selected-page.png'),45,489,332,187,'用户选定的完整基本镜像电流源讲解页：电路拓扑、镜像原理与线性工作区约束');
  const explanationPoints=[
-  ['电路拓扑','标清参考与输出支路'],
-  ['镜像机理','关联电路结构与公式'],
-  ['工作边界','提示放大区工作条件'],
+  ['按需生成','围绕学习问题组织'],
+  ['图文融合','图示与文字协同讲解'],
+  ['重点突出','关键内容分区呈现'],
  ];
  explanationPoints.forEach(([heading,body],i)=>{
   const y=492+i*62;
