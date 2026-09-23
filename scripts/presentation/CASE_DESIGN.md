@@ -58,3 +58,21 @@ builder, inspect its previews, and then run it with `--finalize`.
 matching validation receipt files must not already exist. Only source
 code and this documentation are committed; screenshots, model traces and deck
 assets remain private.
+
+## Thevenin lecture page
+
+`export_thevenin_explanation_prompt.py` runs the same platform pipeline for a
+single Thevenin lesson. Its short planning question is followed by explicit
+circuit and numerical-example requirements at the audited page-writing stage.
+Run it with the `llm` environment. The private traces, platform prompt and task
+record are written to `.cache/thevenin-explanation`. The image-boundary adapter
+captures the prompt without invoking the platform's image provider; render that
+prompt with the built-in image-generation tool. The optional `--repair-plan`
+flag uses `plan-for-repair.json` through the platform's existing repair interface.
+For an author-corrected platform draft, `--review-repaired-draft` reads
+`approved-plan.json` and `repaired-page-draft.json` from that private directory,
+normalizes them and reruns the platform's independent outline and page auditors.
+Both reviews must pass before the standard layout designer and image-prompt
+compiler run. No review result is overridden. `--thinking` optionally enables
+the configured text model's thinking mode. The exported record indicates when
+an author-corrected draft was used.
